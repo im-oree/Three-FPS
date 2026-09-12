@@ -70,10 +70,18 @@ Cache locations (deliberately **not** in git — see “What is committed”):
 ## Usage
 
 ```bash
-tools/verify/bootstrap.sh                      # once per sandbox (idempotent)
-node tools/verify/probe-webgl.mjs              # prove WebGL works, writes out/probe-webgl.png
-node tools/verify/verify.mjs --url http://localhost:5173 --out out/boot.png --wait 5000
+npm run verify:setup                                                # once per sandbox (idempotent)
+npm run verify:probe                                                # prove WebGL works -> out/probe-webgl.png
+npm run dev & npm run verify -- --url http://localhost:5173         # generic smoke test
+npm run verify:acceptance -- --url http://localhost:5173            # per-document acceptance suite
 ```
+
+`acceptance-doc1.mjs` automates the Document 1 §9 checklist end-to-end (boot
+health, §6.2 scene screenshot, F3 overlay toggle, resize/aspect, EventBus
+reserved events, InputManager action tracking, SettingsStore persistence
+across reload, AssetLoader preload progress, /assets reachability). It
+provisions and removes its own temporary texture fixture. Each later document
+adds its own `acceptance-docN.mjs` the same way.
 
 `verify.mjs` prints a JSON report `{ url, webgl, errors, warnings, fps, title }`
 and exits non-zero if the page threw, failed requests, or (with

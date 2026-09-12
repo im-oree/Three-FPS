@@ -1,0 +1,28 @@
+# Dependencies & build output
+node_modules/
+dist/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+
+# Verification harness artifacts (screenshots); the harness itself is committed
+tools/verify/out/*
+!tools/verify/out/.gitignore
+
+# Local caches (never in git; re-derivable via tools/verify/bootstrap.sh)
+.verify/
