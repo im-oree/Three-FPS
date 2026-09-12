@@ -32,6 +32,7 @@ export class WeaponSway {
   private breathPhase = 0;
   private strafeX = 0;
   private strafeZ = 0;
+  private speedT = 0; // smoothed walk->sprint fraction driving the tuck
   readonly offsets: SwayOffsets = { rotX: 0, rotY: 0, rotZ: 0, posX: 0, posY: 0, posZ: 0 };
 
   /** RecoilSystem calls this per shot (degrees, viewmodel-exaggerated). */
@@ -88,8 +89,17 @@ export class WeaponSway {
     this.strafeX += (strafeTargetX - this.strafeX) * strafeLerp;
     this.strafeZ += (strafeTargetZ - this.strafeZ) * strafeLerp;
 
-    this.offsets.posX = (this.lagX * SWAY.POS_FACTOR + this.strafeX) * scale;
-    this.offsets.posY = (-this.lagY * SWAY.POS_FACTOR + breath * SWAY.BREATH_POS_FACTOR) * scale;
+    // 4) sprint tuck: speed-fraction blend (walk..sprint), exp-smoothed.
+    const speed = Math.hypot(localVelocity.x, localVelocity.z);
+    const tuckTarget = clamp(
+      (speed - SWAY.TUCK_SPEED_START) / Math.max(0.001, SWAY.TUCK_SPEED_END - SWAY.TUCK_SPEED_START),
+      0, 1,
+    );
+    this.speedT += (tuckTarget - this.speedT) * (1 - Math.exp(-SWAY.SPRINT_TUCK_SMOOTH * dt));
+
+    this.offsets.posX = (this.lagX * SWAY.POS_FACTOR + this.strafeX + this.speedT * SWAY.SPRINT_TUCK.x) * scale;
+    this.offsets.posY =
+      (-this.lagY * SWAY.POS_FACTOR + breath * SWAY.BREATH_POS_FACTOR + this.speedT * SWAY.SPRINT_TUCK.y) * scale;
     // kick jolts the gun backward; strafe depth adds the forward/back hang
     this.offsets.posZ = (this.kickPitch * SWAY.POS_FACTOR * 3 + this.strafeZ) * scale;
     return this.offsets;

@@ -235,6 +235,15 @@ export const SWAY = {
   STRAFE_SMOOTH: 10,
   /** Share of the forward velocity that feeds the depth offset. */
   STRAFE_FWD_SHARE: 0.5,
+  /** Procedural sprint tuck (blend-space stand-in, §4 of the viewmodel
+   *  architecture note): rig offset blended in by speed fraction between
+   *  walk and sprint, on top of the sprint clip's authored roll. */
+  SPRINT_TUCK: { x: 0.03, y: -0.02 },
+  SPRINT_TUCK_SMOOTH: 8,
+  /** Speed window over which the tuck blends in: walk top .. sprint top
+   *  (derived from MOVEMENT so the two can never drift apart). */
+  TUCK_SPEED_START: MOVEMENT.WALK_SPEED,
+  TUCK_SPEED_END: MOVEMENT.WALK_SPEED * MOVEMENT.SPRINT_SPEED_MULTIPLIER,
   BREATH_HZ: 0.35,
   ADS_SWAY_MULTIPLIER: 0.25,
   /** rotZ roll factor applied to the horizontal lag component. */
