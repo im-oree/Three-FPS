@@ -300,26 +300,32 @@ export const MELEE = {
   FINGER_CURL_RAD: [1.15, 1.25, 0.85],
   /** Thumb tucks across the fist. */
   THUMB_CURL_RAD: [0.9, 1.0, 0.6],
-  /** Guard-pose bone deltas (degrees, local XYZ) — tuned by screenshot. */
-  GUARD_POSE_DEG: {
-    'upper_arm.R': [-38, -14, -62], 'forearm.R': [-74, -18, 0],
-    'forearmTwist.R': [-37, -9, 0],
-    'upper_arm.L': [-38, 14, 62], 'forearm.L': [-74, 18, 0],
-    'forearmTwist.L': [-37, 9, 0],
-    'clavicle.R': [0, 0, -6], 'clavicle.L': [0, 0, 6],
-  },
-  /** Right-arm extension at strike peak (replaces the guard deltas). */
-  PUNCH_POSE_DEG: {
-    'upper_arm.R': [-78, -6, -16], 'forearm.R': [-8, -4, 0],
-    'forearmTwist.R': [-4, -2, 0],
-    'upper_arm.L': [-34, 16, 66], 'forearm.L': [-80, 20, 0],
-    'forearmTwist.L': [-40, 10, 0],
-    'clavicle.R': [0, 0, -12], 'clavicle.L': [0, 0, 10],
-  },
-  /** Global weight on the arm euler pose tables. The imported rig's bone
-   *  axes explode under large local deltas, so arms stay authored-rest and
-   *  punches come from hand-bone translation (retargets can raise this). */
-  ARM_POSE_WEIGHT: 0,
+  /** Procedural fist-aim: knuckle direction target in rig space. Imported
+   *  rigs rest at arbitrary orientations; HandsRig measures each hand's
+   *  authored finger direction and rotates it onto this vector (retarget-safe,
+   *  no per-model code). INWARD pulls the knuckles toward the screen center
+   *  line, UP tips them slightly above the view axis. */
+  /** Procedural fist-aim directions (rig space, normalized in code; X is
+   *  INWARD-positive, mirrored per side). The authored arm pose is kept
+   *  as-is (this rig's twist bones are root-parented, so arm rotations tear
+   *  interleaved skin weights); only the fists rotate, about their own
+   *  wrist origin - the exact blend point of the hand/twist weights, so the
+   *  seam never stretches. Measurement-based => retarget-safe. */
+  /** Arm aim-chain directions (rig space, X inward-positive, mirrored per
+   *  side). elbow = upper_arm->forearm dir; forearmDir = the direction the
+   *  forearm points (elbow->wrist). Directions only (no positions) keeps the
+   *  tables rig-unit-independent. Safe because HandsRig re-parents the
+   *  root-hanging twist bones under the forearms at load (world-preserving),
+   *  making the arm chain fully connected. */
+  GUARD_ARM: { elbow: [-0.45, -0.85, 0.30], forearmDir: [0.30, -0.90, -0.30] },
+  STRIKE_ARM: { elbow: [-0.15, -0.30, 0.10], forearmDir: [0.10, 0.15, -1.0] },
+  FIST_GUARD_DIR: [0.30, 0.10, -1.0],
+  FIST_STRIKE_DIR: [0.04, 0.02, -1.0],
+  /** Palm-side direction (the way the curled fingers loop). Guard: palms
+   *  down-inward-slightly-back => knuckles/dorsal face the camera, the
+   *  classic boxing-guard read in first person. Strike: palm down. */
+  FIST_PALM_GUARD_DIR: [0.45, -0.85, 0.0],
+  FIST_PALM_STRIKE_DIR: [0.10, -1.0, 0.0],
   /** Jab depth: how far the servo target thrusts toward the eye axis (m). */
   PUNCH_HAND_THRUST: 0.22,
   /** Lateral cross of the jab toward the centreline, per side (m). */
@@ -335,7 +341,7 @@ export const MELEE = {
   /** Where the skinned hands should sit in viewmodel (camera-local) space.
    *  The HandsRig servo steers the imported rig here regardless of its
    *  authored unit/axis quirks. */
-  HANDS_VIEW_TARGET: { x: 0, y: -0.24, z: -0.42 },
+  HANDS_VIEW_TARGET: { x: 0, y: -0.12, z: -0.34 },
   /** The imported rig's node chain carries a ~100x unit scale; cancel it. */
   HANDS_SCALE: 0.01,
 } as const;

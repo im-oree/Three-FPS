@@ -201,8 +201,8 @@ interface OperatorTestHook {
   arena,
   animationStateMachine,
   sway,
-  recoilSystem,
   handsRig,
+  recoilSystem,
   drawCalls: () => ({ ...drawCalls }),
 };
 // ---------------------------------------------------------------------------

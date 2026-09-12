@@ -1,0 +1,17 @@
+import { launchBrowser } from '/home/user/Three-FPS/tools/verify/browser.mjs';
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const browser = await launchBrowser({ width: 800, height: 450 });
+const page = await browser.newPage();
+await page.goto('http://localhost:5173', { waitUntil: 'domcontentloaded', timeout: 60000 });
+await page.waitForFunction('window.__OPERATOR__ && window.__OPERATOR__.handsRig', { timeout: 60000 });
+await sleep(3000);
+await page.mouse.click(400, 225); await sleep(400);
+await page.evaluate(() => { const pc = window.__OPERATOR__.playerController; if (pc.debugSetOrientation) pc.debugSetOrientation(0, 0); });
+await sleep(1200);
+await page.screenshot({ path: '/home/user/Three-FPS/tools/verify/out/hands-check-guard.png' });
+await page.evaluate(() => window.dispatchEvent(new MouseEvent('mousedown', { button: 0, bubbles: true })));
+await sleep(520);
+await page.screenshot({ path: '/home/user/Three-FPS/tools/verify/out/hands-check-punch.png' });
+await page.evaluate(() => window.dispatchEvent(new MouseEvent('mouseup', { button: 0, bubbles: true })));
+await browser.close();
+console.log('shots ok');

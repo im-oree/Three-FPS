@@ -19,31 +19,44 @@ import type { WeaponViewmodel } from './WeaponViewmodel';
 
 const X_AXIS = new THREE.Vector3(1, 0, 0);
 
+interface PoseBoneFix {
+  bone: THREE.Bone;
+  gQ: THREE.Quaternion; gP: THREE.Vector3;
+  sQ: THREE.Quaternion; sP: THREE.Vector3;
+}
+
 interface FingerChain {
   bones: THREE.Bone[];
   rest: THREE.Quaternion[];
   thumb: boolean;
 }
 
-/** Role keys of the arm pose tables -> bone-name patterns. */
-const ARM_ROLE_PATTERNS: Record<string, string> = {
-  'upper_arm.R': '^upper_armR_', 'forearm.R': '^forearmR_\\d',
-  'forearmTwist.R': '^forearmR001_', 'clavicle.R': '^clavicleR_',
-  'upper_arm.L': '^upper_armL_', 'forearm.L': '^forearmL_\\d',
-  'forearmTwist.L': '^forearmL001_', 'clavicle.L': '^clavicleL_',
-};
-
 export class HandsRig {
   private root: THREE.Group | null = null;
   private readonly fingers: FingerChain[] = [];
-  private readonly armBones = new Map<string, { bone: THREE.Bone; rest: THREE.Quaternion }>();
-  private readonly handBones: Record<'R' | 'L', { bone: THREE.Bone; restPos: THREE.Vector3 } | null> = { R: null, L: null };
+  private readonly knuckBones: Record<'R' | 'L', THREE.Bone | null> = { R: null, L: null };
+  /** Per-side arm aim fixes (elbow dir + forearm->wrist point), same
+   *  measurement/conjugation scheme as the fist fixes. */
+  private readonly armFix: Record<'R' | 'L', {
+    upper: PoseBoneFix; fore: PoseBoneFix; foreEnd: THREE.Bone;
+  } | null> = { R: null, L: null };
+  private readonly tipBones: Record<'R' | 'L', THREE.Bone | null> = { R: null, L: null };
+  /** Per-side fist-aim corrections derived by MEASURING the authored rest
+   *  pose at load time (knuckle pointing dir -> target dir, rotated about
+   *  the wrist origin so the hand/twist skin seam never stretches). Stored
+   *  as local quaternions for guard (g) and strike (s) variants. */
+  private readonly fistFix: Record<'R' | 'L', {
+    bone: THREE.Bone;
+    gQ: THREE.Quaternion; gP: THREE.Vector3;
+    sQ: THREE.Quaternion; sP: THREE.Vector3;
+  } | null> = { R: null, L: null };
   private punchSide: 'R' | 'L' = 'R';
   private strike = 0;
   private lastPoseT = -1;
   private lastCurl = -1;
   private bakedOnce = false;
   private servoSettled = false;
+  private servoMoved = false;
   private curl: number = MELEE.GUARD_CURL;
   private curlTarget: number = MELEE.GUARD_CURL;
   private skin0: THREE.SkinnedMesh | null = null;
@@ -62,8 +75,6 @@ export class HandsRig {
   private poseT = 0; // <0 wind-up, 0 guard, 1 strike peak
   private poseTarget: number = 0;
   private punchClock = -1;
-  private readonly euler = new THREE.Euler();
-  private readonly boneMatScratch = new THREE.Matrix4();
   private readonly quat = new THREE.Quaternion();
 
   constructor(private readonly assetLoader: AssetLoader) {
@@ -160,14 +171,186 @@ export class HandsRig {
       if (f < 0.999 || f > 1.001) m.scale.setScalar(f);
     });
 
-    const guard = MELEE.GUARD_POSE_DEG as Record<string, readonly number[]>;
-    for (const role of Object.keys(guard)) {
-      const bone = findBone(ARM_ROLE_PATTERNS[role] ?? role);
-      if (bone) this.armBones.set(role, { bone, rest: bone.quaternion.clone() });
-    }
+    // World-preserving reparent: this rig hangs the twist bones (parents of
+    // the hands) off the ROOT, which disconnects the arm chain and makes any
+    // arm posing tear interleaved skin weights. Re-parenting under the
+    // forearm keeps every world matrix identical (so skinning is untouched)
+    // but yields a fully connected clavicle->upper->fore->twist->hand tree.
     for (const side of ['R', 'L'] as const) {
-      const bone = findBone(HANDS_BONE_ROLES[side === 'R' ? 'handR' : 'handL'] as string);
-      if (bone) this.handBones[side] = { bone, restPos: bone.position.clone() };
+      const fore = findBone(side === 'R' ? '^forearmR_\\d' : '^forearmL_\\d');
+      const twist = findBone(side === 'R' ? '^forearmR001_' : '^forearmL001_');
+      if (!fore || !twist || twist.parent === fore) continue;
+      fore.updateWorldMatrix(true, false);
+      twist.updateWorldMatrix(true, false);
+      const local = new THREE.Matrix4().copy(fore.matrixWorld).invert().multiply(twist.matrixWorld);
+      fore.add(twist);
+      local.decompose(twist.position, twist.quaternion, twist.scale);
+    }
+
+    for (const side of ['R', 'L'] as const) {
+      const upper = findBone(side === 'R' ? '^upper_armR_' : '^upper_armL_');
+      const fore = findBone(side === 'R' ? '^forearmR_\\d' : '^forearmL_\\d');
+      const foreEnd = findBone(side === 'R' ? '^forearmR_end_' : '^forearmL_end_');
+      if (upper && fore && foreEnd) this.armFix[side] = {
+        upper: { bone: upper, gQ: new THREE.Quaternion(), gP: upper.position.clone(), sQ: new THREE.Quaternion(), sP: upper.position.clone() },
+        fore: { bone: fore, gQ: new THREE.Quaternion(), gP: fore.position.clone(), sQ: new THREE.Quaternion(), sP: fore.position.clone() },
+        foreEnd,
+      };
+      const hand = findBone(HANDS_BONE_ROLES[side === 'R' ? 'handR' : 'handL'] as string);
+      const knuck = findBone(side === 'R' ? '^f_index01R_' : '^f_index01L_');
+      const tip = findBone(side === 'R' ? '^f_index03R_' : '^f_index03L_');
+      if (!hand || !knuck || !tip) continue;
+      this.knuckBones[side] = knuck;
+      this.tipBones[side] = tip;
+      this.fistFix[side] = {
+        bone: hand,
+        gQ: new THREE.Quaternion(), gP: hand.position.clone(),
+        sQ: new THREE.Quaternion(), sP: hand.position.clone(),
+      };
+    }
+    this.computePoseFixes();
+  }
+
+  /** Derive guard + strike corrections for arms AND fists by MEASURING the
+   *  authored rest pose, stage by stage (each measurement sees the corrected
+   *  parent frame):
+   *    1. upper_arm: elbow direction (shoulder pivot),
+   *    2. forearm: aim its end bone at the guard/strike wrist POINT (elbow
+   *       pivot; twist+hand follow through the load-time reparent),
+   *    3. hand: knuckle pointing dir + palm-side roll (wrist pivot).
+   *  Every correction is a pivot-exact rotation conjugated by the FULL parent
+   *  world into bone-local (quaternion + position), so it composes over any
+   *  bind orientation - identical behavior on any future hand model. */
+  private computePoseFixes(): void {
+    const root = this.root;
+    if (!root) return;
+    const rest: Record<string, { q: THREE.Quaternion; p: THREE.Vector3 }> = {};
+    const noteRest = (f: PoseBoneFix) => {
+      rest[f.bone.uuid] = { q: f.bone.quaternion.clone(), p: f.bone.position.clone() };
+    };
+    const setRest = (f: PoseBoneFix) => {
+      const r = rest[f.bone.uuid];
+      if (r) { f.bone.quaternion.copy(r.q); f.bone.position.copy(r.p); }
+    };
+    for (const side of ['R', 'L'] as const) {
+      const a = this.armFix[side];
+      const h = this.fistFix[side];
+      if (a) { noteRest(a.upper); noteRest(a.fore); }
+      if (h) noteRest(h);
+    }
+    this.applyFingerCurl(MELEE.GUARD_CURL);
+    const wp = (b: THREE.Bone) => b.getWorldPosition(new THREE.Vector3());
+    for (const variant of ['g', 's'] as const) {
+      const armTable = (variant === 'g' ? MELEE.GUARD_ARM : MELEE.STRIKE_ARM) as {
+        elbow: readonly number[]; forearmDir: readonly number[];
+      };
+      const fistTable = (variant === 'g' ? MELEE.FIST_GUARD_DIR : MELEE.FIST_STRIKE_DIR) as readonly number[];
+      const palmTable = (variant === 'g'
+        ? MELEE.FIST_PALM_GUARD_DIR : MELEE.FIST_PALM_STRIKE_DIR) as readonly number[];
+      for (const side of ['R', 'L'] as const) {
+        const a = this.armFix[side];
+        const h = this.fistFix[side];
+        if (a) { setRest(a.upper); setRest(a.fore); }
+        if (h) setRest(h);
+      }
+      root.updateWorldMatrix(true, true);
+      const rootQInv = root.getWorldQuaternion(new THREE.Quaternion()).invert();
+      const rootInv = new THREE.Matrix4().copy(root.matrixWorld).invert();
+      /** Pivot-exact root-space rotation M = T(p) Q T(-p) -> bone-local fix. */
+      const solve = (fix: PoseBoneFix, qRoot: THREE.Quaternion, store: 'g' | 's') => {
+        const p = wp(fix.bone).applyMatrix4(rootInv);
+        const M = new THREE.Matrix4().makeTranslation(p.x, p.y, p.z)
+          .multiply(new THREE.Matrix4().makeRotationFromQuaternion(qRoot))
+          .multiply(new THREE.Matrix4().makeTranslation(-p.x, -p.y, -p.z));
+        const WpR = fix.bone.parent
+          ? rootInv.clone().multiply(fix.bone.parent.matrixWorld)
+          : new THREE.Matrix4();
+        const newL = WpR.clone().invert().multiply(M).multiply(WpR).multiply(
+          new THREE.Matrix4().compose(fix.bone.position, fix.bone.quaternion, new THREE.Vector3(1, 1, 1)),
+        );
+        const qF = new THREE.Quaternion().setFromRotationMatrix(newL);
+        const pF = new THREE.Vector3().setFromMatrixPosition(newL);
+        if (store === 'g') { fix.gQ.copy(qF); fix.gP.copy(pF); }
+        else { fix.sQ.copy(qF); fix.sP.copy(pF); }
+        fix.bone.quaternion.copy(qF);
+        fix.bone.position.copy(pF);
+      };
+      for (const side of ['R', 'L'] as const) {
+        const sx = side === 'R' ? 1 : -1;
+        const a = this.armFix[side];
+        if (a) {
+          const elbowWant = new THREE.Vector3(
+            (armTable.elbow[0] ?? 0) * sx, armTable.elbow[1] ?? 0, armTable.elbow[2] ?? 0,
+          ).normalize();
+          const curElbow = wp(a.fore.bone).sub(wp(a.upper.bone)).applyQuaternion(rootQInv).normalize();
+          solve(a.upper, new THREE.Quaternion().setFromUnitVectors(curElbow, elbowWant), variant);
+          root.updateWorldMatrix(true, true);
+          const curWrist = wp(a.foreEnd).sub(wp(a.fore.bone)).applyQuaternion(rootQInv).normalize();
+          const wantWrist = new THREE.Vector3(
+            (armTable.forearmDir[0] ?? 0) * sx, armTable.forearmDir[1] ?? 0, armTable.forearmDir[2] ?? 0,
+          ).normalize();
+          solve(a.fore, new THREE.Quaternion().setFromUnitVectors(curWrist, wantWrist), variant);
+          root.updateWorldMatrix(true, true);
+        }
+        const h = this.fistFix[side];
+        const knuck = this.knuckBones[side];
+        if (!h || !knuck) continue;
+        const cur = wp(knuck).sub(wp(h.bone)).applyQuaternion(rootQInv).normalize();
+        const want = new THREE.Vector3(
+          (fistTable[0] ?? 0) * sx, fistTable[1] ?? 0, fistTable[2] ?? 0,
+        ).normalize();
+        const q1 = new THREE.Quaternion().setFromUnitVectors(cur, want);
+        // Roll about the pointing axis so the dorsal/knuckle face reads
+        // toward the camera instead of the palm loop.
+        const tip = this.tipBones[side];
+        let qRoot = q1;
+        if (tip) {
+          const tipRest = wp(tip).sub(wp(h.bone)).applyQuaternion(rootQInv).normalize();
+          const v1 = tipRest.clone().applyQuaternion(q1);
+          const proj = (v: THREE.Vector3) => v.addScaledVector(want, -v.dot(want)).normalize();
+          const palmWant = proj(new THREE.Vector3(
+            (palmTable[0] ?? 0) * sx, palmTable[1] ?? 0, palmTable[2] ?? 0,
+          ));
+          const v1p = proj(v1);
+          if (v1p.lengthSq() > 1e-6 && palmWant.lengthSq() > 1e-6) {
+            qRoot = new THREE.Quaternion().setFromUnitVectors(v1p, palmWant).multiply(q1);
+          }
+        }
+        solve(h, qRoot, variant);
+        root.updateWorldMatrix(true, true);
+      }
+    }
+    this.applyPoseFixes(0, 0);
+  }
+
+  /** Guard->strike slerp per side (ext = 0 guard, 1 full extension). */
+  private applyPoseFixes(extR: number, extL: number): void {
+    for (const side of ['R', 'L'] as const) {
+      const ext = side === 'R' ? extR : extL;
+      const a = this.armFix[side];
+      if (a) {
+        a.upper.bone.quaternion.copy(a.upper.gQ).slerp(a.upper.sQ, ext);
+        a.upper.bone.position.copy(a.upper.gP).lerp(a.upper.sP, ext);
+        a.fore.bone.quaternion.copy(a.fore.gQ).slerp(a.fore.sQ, ext);
+        a.fore.bone.position.copy(a.fore.gP).lerp(a.fore.sP, ext);
+      }
+      const f = this.fistFix[side];
+      if (f) {
+        f.bone.quaternion.copy(f.gQ).slerp(f.sQ, ext);
+        f.bone.position.copy(f.gP).lerp(f.sP, ext);
+      }
+    }
+  }
+
+  /** Finger clench applied over rest quaternions (shared load/update path). */
+  private applyFingerCurl(curl: number): void {
+    for (const chain of this.fingers) {
+      const rads = chain.thumb ? MELEE.THUMB_CURL_RAD : MELEE.FINGER_CURL_RAD;
+      for (let i = 0; i < chain.bones.length; i += 1) {
+        const rad = curl * (rads[Math.min(i, rads.length - 1)] ?? 0);
+        this.quat.setFromAxisAngle(X_AXIS, rad);
+        chain.bones[i].quaternion.copy(chain.rest[i]).multiply(this.quat);
+      }
     }
   }
 
@@ -183,9 +366,12 @@ export class HandsRig {
     const v = this.servoV;
     for (let k = 0; k < N; k += 1) {
       const idx = Math.floor(((k + 0.5) / N) * pos.count);
+      // The live position attribute IS the baked L (bindMatrix*boneMat*v);
+      // the renderer only supplies meshWorld on top. Re-applying bone
+      // matrices here would measure a doubly-skinned phantom space and steer
+      // the servo away from where the hands actually draw.
+      void si;
       v.fromBufferAttribute(pos, idx);
-      v.applyMatrix4(this.boneMatScratch.fromArray(m.skeleton.boneMatrices, si.getX(idx) * 16));
-      v.applyMatrix4(m.bindMatrix);
       v.applyMatrix4(m.matrixWorld);
       out.add(v);
     }
@@ -211,6 +397,7 @@ export class HandsRig {
     // the root toward HANDS_VIEW_TARGET every frame. Self-calibrating for
     // any future hand model (retarget safety).
     if (this.strike > 0) this.servoSettled = false;
+    this.servoMoved = false;
     if (this.skin0 && this.root.parent && !this.servoSettled) {
       const cur = this.skinnedCenterVM(this.servoAcc);
       const jab = this.strike;
@@ -224,6 +411,10 @@ export class HandsRig {
       if (err.length() > 0.002) {
         err.applyQuaternion(this.root.parent.getWorldQuaternion(this.quat).invert());
         this.root.position.addScaledVector(err, 0.35);
+        // Root translation only reaches the VISIBLE geometry through the CPU
+        // bake (bone matrices are folded into attributes), so steering frames
+        // must rebake or the mesh stays stale where it was first baked.
+        this.servoMoved = true;
       } else {
         this.servoSettled = true; // idle frames cost nothing
       }
@@ -261,52 +452,23 @@ export class HandsRig {
     this.curl += (this.curlTarget - this.curl) * smooth;
 
     // Fingers: rest × local-X curl per phalanx.
-    for (const chain of this.fingers) {
-      const rads = chain.thumb ? MELEE.THUMB_CURL_RAD : MELEE.FINGER_CURL_RAD;
-      for (let i = 0; i < chain.bones.length; i += 1) {
-        const rad = this.curl * (rads[Math.min(i, rads.length - 1)] ?? 0);
-        this.quat.setFromAxisAngle(X_AXIS, rad);
-        chain.bones[i].quaternion.copy(chain.rest[i]).multiply(this.quat);
-      }
-    }
+    this.applyFingerCurl(this.curl);
 
-    // Arms: authored-rest by default (ARM_POSE_WEIGHT = 0 for this rig, whose
-    // bone axes explode under big local deltas); retargets can blend the
-    // guard/strike euler tables over the rest quaternions instead.
-    const guard = MELEE.GUARD_POSE_DEG as Record<string, readonly number[]>;
-    const punch = MELEE.PUNCH_POSE_DEG as Record<string, readonly number[]>;
-    const d2r = (Math.PI / 180) * MELEE.ARM_POSE_WEIGHT;
-    for (const [role, entry] of this.armBones) {
-      const g = guard[role];
-      const p = punch[role];
-      entry.bone.quaternion.copy(entry.rest);
-      if (!g || !p || MELEE.ARM_POSE_WEIGHT <= 0) continue;
-      const t = this.poseT;
-      this.euler.set(
-        (g[0] + (p[0] - g[0]) * t) * d2r,
-        (g[1] + (p[1] - g[1]) * t) * d2r,
-        (g[2] + (p[2] - g[2]) * t) * d2r,
-        'XYZ',
-      );
-      this.quat.setFromEuler(this.euler);
-      entry.bone.quaternion.copy(entry.rest).multiply(this.quat);
-    }
-
-    // Punch: the jab rides the placement servo TARGET (whole-rig rigid
-    // motion => zero seam stretch on any rig), alternating a crosshair
-    // cross per side. Hand bones stay authored-rest.
+    // Arms/hands: procedural aim chain (guard <-> strike slerp per side).
+    // The jab thrust itself rides the placement servo TARGET below
+    // (whole-rig rigid motion => zero seam stretch on any rig).
     void camera;
-    for (const side of ['R', 'L'] as const) {
-      const entry = this.handBones[side];
-      if (entry) entry.bone.position.copy(entry.restPos);
-    }
+    const ext = Math.max(0, Math.min(1, this.poseT));
+    this.applyPoseFixes(this.punchSide === 'R' ? ext : 0, this.punchSide === 'L' ? ext : 0);
+
     this.strike = Math.max(0, Math.min(1, this.poseT));
 
     // Rebake only while something actually deforms (punch arc / clench ease);
     // the idle guard is static and root motion needs no rebake (bone deltas
     // are root-independent), so sustained-idle frames cost zero skinning.
     const deforming = Math.abs(this.poseT - this.lastPoseT) > 1e-4
-      || Math.abs(this.curl - this.lastCurl) > 1e-4;
+      || Math.abs(this.curl - this.lastCurl) > 1e-4
+      || this.servoMoved;
     if (deforming || !this.bakedOnce) {
       this.bakeSkin();
       this.bakedOnce = true;
