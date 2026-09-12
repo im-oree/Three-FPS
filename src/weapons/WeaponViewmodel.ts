@@ -20,6 +20,7 @@ import eventBus from '../core/EventBus';
 import type { AssetLoader } from '../core/AssetLoader';
 import { ANIMATION, VIEWMODEL } from '../utils/Constants';
 import type { WeaponDefinition } from './WeaponBase';
+import { validateWeaponAsset } from './WeaponSockets';
 import type { WeaponSway } from './WeaponSway';
 
 export interface PlayClipOptions {
@@ -98,6 +99,16 @@ export class WeaponViewmodel {
     let cached = this.cache.get(def.id);
     if (!cached) {
       const loaded = await this.assetLoader.loadModelWithAnimations(def.modelPath);
+      // Socket contract (FP-Viewmodel spec §2.2): the /tools export step is
+      // the hard gate; runtime warns so non-conforming assets are loud here
+      // and in the acceptance harness instead of silently mis-gripping.
+      const report = validateWeaponAsset(loaded.scene);
+      if (!report.valid) {
+        console.warn(
+          `[viewmodel] weapon '${def.id}' missing mandatory sockets: ${report.missingSockets.join(', ')}`
+          + ' (IK/ADS/mag-swap fall back to legacy anchors until the asset conforms)',
+        );
+      }
       cached = { scene: loaded.scene, clips: loaded.animations };
       this.cache.set(def.id, cached);
     }

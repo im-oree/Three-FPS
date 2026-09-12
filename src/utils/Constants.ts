@@ -261,6 +261,75 @@ export const SWAY = {
   STATIONARY_SPEED_EPS: 0.15,
 } as const;
 
+/** Layered-animation spring profiles (FP-Viewmodel spec §6.5). Every
+ *  procedural viewmodel motion is a SpringDamper keyed here — no inline
+ *  stiffness/damping anywhere in the animation stack. */
+const ANIMATION_PROFILES = {
+  SPRING_PROFILES: {
+    /** Mouse-look lag: low stiffness, moderate damping => gun lags flicks. */
+    sway: { stiffness: SWAY.SPRING, damping: SWAY.DAMPING },
+    /** Spring-filtered sine (raw sine looks mechanical). */
+    breathing: { stiffness: 30, damping: 9 },
+    /** Recoil: instant displacement then spring back to zero. */
+    recoilRecovery: { stiffness: 90, damping: 12 },
+    /** Movement-state pose offsets: deliberate but not sluggish. */
+    movementPose: { stiffness: 12, damping: 8 },
+    /** Jump float / landing settle. */
+    jumpFloat: { stiffness: 18, damping: 7 },
+  },
+  /** Sway amplitude tables keyed by WeaponProfile.swayProfile. */
+  SWAY_PROFILES: {
+    rifle_default: { rotFactor: SWAY.POS_FACTOR, clampRad: SWAY.CLAMP_RAD, adsMultiplier: SWAY.ADS_SWAY_MULTIPLIER },
+    smg_default: { rotFactor: SWAY.POS_FACTOR * 0.85, clampRad: SWAY.CLAMP_RAD * 0.9, adsMultiplier: SWAY.ADS_SWAY_MULTIPLIER },
+    pistol_default: { rotFactor: SWAY.POS_FACTOR * 0.7, clampRad: SWAY.CLAMP_RAD * 0.8, adsMultiplier: SWAY.ADS_SWAY_MULTIPLIER },
+    unarmed: { rotFactor: SWAY.POS_FACTOR * 0.5, clampRad: SWAY.CLAMP_RAD * 0.6, adsMultiplier: 1 },
+  },
+  /** Breathing amplitude/frequency keyed by WeaponProfile.breathingProfile. */
+  BREATHING_PROFILES: {
+    rifle_default: { ampRad: SWAY.BREATH_AMP_RAD, hz: SWAY.BREATH_HZ, posFactor: SWAY.BREATH_POS_FACTOR },
+    pistol_default: { ampRad: SWAY.BREATH_AMP_RAD * 0.8, hz: SWAY.BREATH_HZ, posFactor: SWAY.BREATH_POS_FACTOR },
+    unarmed: { ampRad: SWAY.BREATH_AMP_RAD * 0.6, hz: SWAY.BREATH_HZ * 1.1, posFactor: SWAY.BREATH_POS_FACTOR },
+  },
+} as const;
+
+/** Tactical Sprint (FP-Viewmodel spec §4.3): distinct faster mode, weapon
+ *  fully lowered, fire/ADS disallowed (press cancels tac sprint instead). */
+export const TAC_SPRINT = {
+  DOUBLE_TAP_WINDOW: 0.3,
+  SPEED_MULTIPLIER: 1.8,
+  STAMINA_DRAIN_RATE: STAMINA.DRAIN_PER_SECOND * 1.8,
+  /** Holster-adjacent rig offset (position metres, rotation degrees). */
+  WEAPON_POSE: { position: [0.06, -0.42, -0.30], rotationEuler: [-32, 14, 0] },
+} as const;
+
+/** Regular-sprint weapon integration (spec §4.2). */
+export const SPRINT_WEAPON = {
+  LOWER_DURATION: 0.2,
+  TO_READY_DURATION: 0.12,
+  READY_JOG_POSE: { position: [0.02, -0.12, -0.05], rotationEuler: [-12, 8, 0] },
+} as const;
+
+/** Movement-state -> weapon pose offset table (spec §4.7). Position in
+ *  metres, rotation in degrees, applied as lerped rigid root offsets. */
+export const WEAPON_POSE_OFFSETS = {
+  IDLE: { position: [0, 0, 0], rotationEuler: [0, 0, 0] },
+  WALK: { position: [0, 0, 0], rotationEuler: [0, 0, 0] },
+  SPRINT: SPRINT_WEAPON.READY_JOG_POSE,
+  TAC_SPRINT: TAC_SPRINT.WEAPON_POSE,
+  CROUCH_IDLE: { position: [0, -0.05, 0], rotationEuler: [0, 0, 0] },
+  CROUCH_WALK: { position: [0, -0.05, 0], rotationEuler: [0, 0, 0] },
+  SLIDE: { position: [0.04, -0.12, -0.06], rotationEuler: [-14, 0, 8] },
+  JUMP: { position: [0, 0.02, 0], rotationEuler: [0, 0, 0] },
+  AIR: { position: [0, 0.02, 0], rotationEuler: [0, 0, 0] },
+  LANDING: { position: [0, -0.03, 0], rotationEuler: [0, 0, 0] },
+} as const;
+
+/** Interaction-feel timings (spec §4.2/§5). */
+export const COMBAT_FEEL = {
+  /** Fire pressed in the last N ms of a reload/switch is buffered. */
+  BUFFERED_FIRE_WINDOW_MS: 100,
+} as const;
+
 /** Viewmodel rig + its dedicated render pass (Document 3 §8). */
 export const VIEWMODEL = {
   // Model origin sits at the receiver centre, so the rig offset must place
@@ -394,6 +463,7 @@ export const EFFECTS = {
 
 /** Viewmodel animation blending (Document 3 §14). */
 export const ANIMATION = {
+  ...ANIMATION_PROFILES,
   CROSSFADE_DEFAULT_SECONDS: 0.15,
   CROSSFADE_FAST_SECONDS: 0.08,
   /** `fire` one-shot keeps priority this long after the shot, then the base
