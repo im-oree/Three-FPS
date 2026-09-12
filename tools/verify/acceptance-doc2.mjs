@@ -138,6 +138,10 @@ await page.evaluate(() => {
 });
 await page.keyboard.down('KeyW');
 await sleep(400);
+// Wall-clock footstep gaps are only meaningful above the MAX_DELTA clamp
+// threshold: at single-digit fps the sim runs slower than the wall clock and
+// the walk/sprint gap ratio inverts. Raise render fps like the bob section.
+await setRenderScale(0.3); await sleep(400);
 await page.evaluate(() => { window.__fsTimes.length = 0; });
 const fsWalk0 = footstepCount();
 const walkSamples = await record(3200, 100, `${PC}.getHorizontalSpeed()`);
@@ -163,6 +167,7 @@ await page.evaluate(() => { window.__fsTimes.length = 0; }); // exclude accel/pa
 const fsSprint0 = footstepCount();
 const sprintSteps = await record(3600, 1000, 'null').then(() => footstepCount() - fsSprint0);
 const sprintTimes = await page.evaluate(() => window.__fsTimes.slice());
+await setRenderScale(0.5); await sleep(200);
 const walkSpeed = Math.max(...walkSamples);
 const sprintSpeed = Math.max(...sprintSamples);
 check('sprint engages with Shift+W (grounded, forward, stamina)', sprintSpeed > walkSpeed * 1.25 && sprintSpeed > 7, `walk=${walkSpeed.toFixed(1)} sprint=${sprintSpeed.toFixed(1)}`);
