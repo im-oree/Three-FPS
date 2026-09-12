@@ -44,15 +44,20 @@ export class AssetLoader {
     this.gltfLoader.setKTX2Loader(ktx2Loader);
   }
 
+  /** Absolute logical paths ('/x.glb') bypass the models root (repo-root imports). */
+  private modelUrl(path: string): string {
+    return path.startsWith('/') ? path : ASSET_ROOTS.models + path;
+  }
+
   async loadModel(path: string): Promise<THREE.Group> {
     const cached = this.modelCache.get(path);
     if (cached) return cached.clone(true);
     try {
-      const gltf = await this.gltfLoader.loadAsync(ASSET_ROOTS.models + path);
+      const gltf = await this.gltfLoader.loadAsync(this.modelUrl(path));
       this.modelCache.set(path, gltf.scene);
       return gltf.scene.clone(true);
     } catch (err) {
-      console.error(`[AssetLoader] failed to load model "${ASSET_ROOTS.models + path}":`, err);
+      console.error(`[AssetLoader] failed to load model "${this.modelUrl(path)}":`, err);
       throw err;
     }
   }
@@ -89,13 +94,13 @@ export class AssetLoader {
       return { scene, animations: cached.animations };
     }
     try {
-      const gltf = await this.gltfLoader.loadAsync(ASSET_ROOTS.models + path);
+      const gltf = await this.gltfLoader.loadAsync(this.modelUrl(path));
       this.gltfCache.set(path, { scene: gltf.scene, animations: gltf.animations });
       const scene = gltf.scene.clone(true);
       AssetLoader.rebindSkeletons(scene);
       return { scene, animations: gltf.animations };
     } catch (err) {
-      console.error(`[AssetLoader] failed to load model "${ASSET_ROOTS.models + path}":`, err);
+      console.error(`[AssetLoader] failed to load model "${this.modelUrl(path)}":`, err);
       throw err;
     }
   }

@@ -79,9 +79,22 @@ export class WeaponViewmodel {
     this.adsTarget = active ? 1 : 0;
   }
 
+  /** Persistent base layer under the weapon (the procedural hands rig). */
+  addBaseLayer(obj: THREE.Object3D): void {
+    this.rig.add(obj);
+  }
+
   /** Load (cached) and attach a weapon; disposes/hides the previous one. */
   async equip(def: WeaponDefinition): Promise<void> {
     this.detach();
+    if (!def.modelPath) {
+      // Melee/fists slot: no gun mesh — the HandsRig base layer IS the
+      // viewmodel. Events still flow so ASM/state machines stay honest.
+      this.currentWeaponId = def.id;
+      this.currentAction = null;
+      eventBus.emit('weapon:viewmodelEquipped', { weaponId: def.id });
+      return;
+    }
     let cached = this.cache.get(def.id);
     if (!cached) {
       const loaded = await this.assetLoader.loadModelWithAnimations(def.modelPath);
@@ -209,7 +222,8 @@ export class WeaponViewmodel {
 
   /** Second render pass (registered via Engine.setPostRenderHook). */
   renderPass(renderer: THREE.WebGLRenderer): void {
-    if (!this.attached) return;
+    // Runs for an attached gun OR bare-hands play (base layers only).
+    if (!this.attached && this.rig.children.length === 0) return;
     // THREE.WebGLRenderer.render() honors renderer.autoClear (default TRUE):
     // without disabling it this second pass would wipe the world framebuffer
     // and draw the gun against an empty scene. Compose instead: clear DEPTH

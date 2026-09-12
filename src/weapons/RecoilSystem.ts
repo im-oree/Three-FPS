@@ -30,7 +30,8 @@ export class RecoilSystem {
   constructor(private readonly camera: PlayerCamera, private readonly sway: WeaponSway) {
     eventBus.on('weapon:fired', (payload) => {
       const { weaponId } = payload as { weaponId: string };
-      const patternId = PATTERN_BY_WEAPON[weaponId] ?? 'assault_rifle';
+      const patternId = PATTERN_BY_WEAPON[weaponId];
+      if (!patternId) return; // fists / melee: no directional recoil kick
       const pattern: RecoilPatternEntry[] = RECOIL_PATTERNS[patternId];
       // Grace-period reset: a fresh burst starts at entry 0 again.
       let index = this.shotIndex.get(weaponId) ?? 0;

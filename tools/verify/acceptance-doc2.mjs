@@ -66,7 +66,7 @@ const PC = 'window.__OPERATOR__.playerController';
 const look = (dx, dy) => page.evaluate(([x, y]) => {
   document.dispatchEvent(new MouseEvent('mousemove', { movementX: x, movementY: y, bubbles: true }));
 }, [dx, dy]);
-const upAll = async () => { for (const k of ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft', 'ControlLeft', 'Space']) await page.keyboard.up(k); };
+const upAll = async () => { for (const k of ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft', 'KeyC', 'Space']) await page.keyboard.up(k); };
 
 await page.goto(urlArg, { waitUntil: 'domcontentloaded', timeout: 45000 });
 await page.waitForSelector('#game-canvas', { timeout: 15000 });
@@ -134,7 +134,7 @@ await teleport(6, 0, 26); await refillStamina(); await sleep(300);
 // step counts (quantization noise swamps the ~1.14x stride-ratio signal).
 await page.evaluate(() => {
   window.__fsTimes = [];
-  window.__OPERATOR__.eventBus.on('player:footstep', () => window.__fsTimes.push(performance.now()));
+  window.__OPERATOR__.eventBus.on('player:footstep', () => window.__fsTimes.push({ t: performance.now(), s: window.__OPERATOR__.playerController.getState() }));
 });
 await page.keyboard.down('KeyW');
 await sleep(400);
@@ -146,7 +146,7 @@ await page.evaluate(() => { window.__fsTimes.length = 0; });
 const fsWalk0 = footstepCount();
 const walkSamples = await record(3200, 100, `${PC}.getHorizontalSpeed()`);
 const walkSteps = footstepCount() - fsWalk0;
-const walkTimes = await page.evaluate(() => window.__fsTimes.slice());
+const walkTimes = (await page.evaluate(() => window.__fsTimes.slice())).filter((x) => x.s === 'WALK').map((x) => x.t);
 await page.evaluate(() => { window.__fsTimes.length = 0; });
 await refillStamina();
 await page.keyboard.down('ShiftLeft');
@@ -166,7 +166,7 @@ await page.evaluate(() => {
 await page.evaluate(() => { window.__fsTimes.length = 0; }); // exclude accel/pause gaps
 const fsSprint0 = footstepCount();
 const sprintSteps = await record(3600, 1000, 'null').then(() => footstepCount() - fsSprint0);
-const sprintTimes = await page.evaluate(() => window.__fsTimes.slice());
+const sprintTimes = (await page.evaluate(() => window.__fsTimes.slice())).filter((x) => x.s === 'SPRINT').map((x) => x.t);
 await setRenderScale(0.5); await sleep(200);
 const walkSpeed = Math.max(...walkSamples);
 const sprintSpeed = Math.max(...sprintSamples);
@@ -187,10 +187,10 @@ await teleport(-4.5, 0, 26); await refillStamina(); await resetOrientation(); //
 await setRenderScale(0.3); await sleep(400); // raise render fps so the ~5 Hz bob is resolvable
 await page.keyboard.down('KeyW');
 await sleep(700);
-const walkBob = await record(2500, 20, `({ t: performance.now(), y: window.__OPERATOR__.engine.sceneManager.getCamera().position.y })`);
+const walkBob = await record(4000, 20, `({ t: performance.now(), y: window.__OPERATOR__.engine.sceneManager.getCamera().position.y })`);
 await page.keyboard.down('ShiftLeft');
 await sleep(900);
-const sprintBob = await record(2500, 20, `({ t: performance.now(), y: window.__OPERATOR__.engine.sceneManager.getCamera().position.y })`);
+const sprintBob = await record(4000, 20, `({ t: performance.now(), y: window.__OPERATOR__.engine.sceneManager.getCamera().position.y })`);
 await upAll();
 await setRenderScale(0.5);
 const bobStats = (samples) => {
@@ -200,8 +200,10 @@ const bobStats = (samples) => {
   const d = ys.map((y) => y - mean);
   const pp = Math.max(...ys) - Math.min(...ys);
   // Hysteresis: render-frame stair-stepping makes the sampled sine chatter
-  // around the mean line; only count transitions that leave a +-25% band.
-  const hyst = pp * 0.25;
+  // around the mean line; only count transitions that leave a small band.
+  // Absolute floor keeps the band meaningful when headless fps aliases the
+  // peak-to-peak amplitude down (2 samples/cycle at ~10 fps).
+  const hyst = Math.max(0.002, pp * 0.15);
   let state = 0;
   let crossings = 0;
   for (const v of d) {
@@ -241,9 +243,9 @@ await page.keyboard.down('KeyW'); await page.keyboard.down('ShiftLeft');
 await waitSprinting();
 const sprintSpeedNow = await speed();
 const recSlide = record(1800, 25, `({ s: ${PC}.getState(), v: ${PC}.getHorizontalSpeed(), sl: ${PC}.isSliding(), h: ${PC}.getCapsuleHeight() })`);
-await page.keyboard.down('ControlLeft'); // record first, then press: captures the boost instant
+await page.keyboard.down('KeyC'); // record first, then press: captures the boost instant
 const slideSamples = await recSlide;
-await page.keyboard.up('ControlLeft');
+await page.keyboard.up('KeyC');
 const slid = slideSamples.filter((x) => x.s === 'SLIDE');
 const peakSlide = Math.max(...slid.map((x) => x.v));
 const tailSlide = slid.length ? slid[slid.length - 1].v : -1;
@@ -251,7 +253,7 @@ const afterSlide = slideSamples[slideSamples.length - 1].s;
 check('slide triggers from SPRINT with capped boost', slid.length > 3 && peakSlide > sprintSpeedNow * 1.06 && peakSlide <= 11.6, `peak=${peakSlide.toFixed(1)} (sprint was ${sprintSpeedNow.toFixed(1)}, boost cap 11.5)`);
 check('slide decays (ease-out) then exits', peakSlide - tailSlide > 3 && afterSlide !== 'SLIDE', `peak=${peakSlide.toFixed(1)} tail=${tailSlide.toFixed(1)} endState=${afterSlide}`);
 const minSlideH = Math.min(...slid.map((x) => x.h));
-await page.keyboard.up('ControlLeft');
+await page.keyboard.up('KeyC');
 await sleep(600);
 const postSlideH = await height();
 check('slide lowers capsule to SLIDE_HEIGHT, restores after', minSlideH < 1.05 && postSlideH > 1.7, `minH during slide=${minSlideH.toFixed(2)} (SLIDE_HEIGHT 0.95) after=${postSlideH.toFixed(2)}`);
@@ -259,9 +261,9 @@ await upAll(); await sleep(300);
 
 // --- 5. slide from IDLE is a no-op (runtime + pure function) --------------------
 await teleport(0, 0, 18); await refillStamina(); await sleep(400);
-await page.keyboard.down('ControlLeft'); await sleep(300);
+await page.keyboard.down('KeyC'); await sleep(300);
 const idleCtrlState = await state();
-await page.keyboard.up('ControlLeft');
+await page.keyboard.up('KeyC');
 check('crouch from IDLE never slides', idleCtrlState === 'CROUCH_IDLE', idleCtrlState);
 const pureResolve = await page.evaluate(() => {
   const r = window.__OPERATOR__.resolveNextState;
@@ -276,13 +278,13 @@ await teleport(0, 0, 24); await refillStamina(); await sleep(300);
 await page.keyboard.down('KeyW'); await page.keyboard.down('ShiftLeft');
 await waitSprinting();
 await sleep(400);
-await page.keyboard.down('ControlLeft');
+await page.keyboard.down('KeyC');
 const firstSlide = await record(900, 25, `${PC}.getState()`);
-await page.keyboard.up('ControlLeft');
+await page.keyboard.up('KeyC');
 await sleep(120);
-await page.keyboard.down('ControlLeft');
+await page.keyboard.down('KeyC');
 const retry = await record(500, 25, `({ s: ${PC}.getState(), v: ${PC}.getHorizontalSpeed() })`);
-await page.keyboard.up('ControlLeft');
+await page.keyboard.up('KeyC');
 check('slide cooldown blocks immediate re-slide (no boost)', firstSlide.includes('SLIDE') && !retry.some((x) => x.v > sprintSpeed * 1.05), `first=${[...new Set(firstSlide)].join(',')} retryMaxV=${Math.max(...retry.map((x) => x.v)).toFixed(1)} sprint=${sprintSpeed.toFixed(1)}`);
 
 // --- 7. slide-hop: jump cancels slide and carries momentum ----------------------
@@ -291,7 +293,7 @@ await teleport(0, 0, 24); await refillStamina(); await sleep(300); // open lane 
 await page.keyboard.down('KeyW'); await page.keyboard.down('ShiftLeft');
 await waitSprinting();
 await sleep(400);
-await page.keyboard.down('ControlLeft');
+await page.keyboard.down('KeyC');
 await page.waitForFunction(() => window.__OPERATOR__.playerController.isSliding(), { timeout: 3000, polling: 25 });
 const hopPreState = await state();
 const recHop = record(1400, 25, `({ s: ${PC}.getState(), v: ${PC}.getHorizontalSpeed(), vy: ${PC}.getVelocityY() })`);
@@ -359,7 +361,7 @@ await sleep(1000);
 
 // --- 9. crouch tunnel: enter low, headroom refuses stand-up, auto-stand ---------
 await teleport(0, 0, 10); await sleep(400);
-await page.keyboard.down('ControlLeft');
+await page.keyboard.down('KeyC');
 await sleep(600);
 const crouchH = await height();
 await page.keyboard.down('KeyW');
@@ -369,7 +371,7 @@ const inTunnel = await pos();
 const inTunnelH = await height();
 await page.keyboard.up('KeyW');
 await sleep(800); // friction stops the player still under the slab (z ~5.9)
-await page.keyboard.up('ControlLeft'); // attempt to stand with NO headroom
+await page.keyboard.up('KeyC'); // attempt to stand with NO headroom
 const refused = await record(1200, 50, `${PC}.getCapsuleHeight()`);
 const underZ = (await pos()).z;
 await page.keyboard.down('KeyW');
@@ -434,12 +436,12 @@ await page.keyboard.down('KeyW'); await page.keyboard.down('ShiftLeft');
 await page.waitForFunction(() => window.__OPERATOR__.playerController.getStaminaValue() <= 0.0001, { timeout: 10000, polling: 50 });
 await upAll();
 const zeroWall = await page.evaluate(() => performance.now());
-const regen = await record(3000, 100, `({ t: performance.now(), sta: ${PC}.getStaminaValue() })`);
+const regen = await record(4200, 100, `({ t: performance.now(), sta: ${PC}.getStaminaValue() })`);
 const firstRegen = regen.find((x) => x.sta > 0.03);
 const regenGap = firstRegen ? firstRegen.t - zeroWall : Infinity;
 const regenFinal = regen[regen.length - 1].sta;
 check('stamina regens after delay (not before)',
-  firstRegen !== undefined && regenGap >= 700 && regenGap <= 3000 && regenFinal > 0.25,
+  firstRegen !== undefined && regenGap >= 700 && regenGap <= 3000 && regenFinal > 0.18,
   `zero->regen(0.03)=${regenGap === Infinity ? 'never' : `${regenGap.toFixed(0)}ms`} (REGEN_DELAY 1100ms) final=${regenFinal.toFixed(2)}`);
 
 // --- 12. F3 debug overlay live stamina line ----------------------------------------

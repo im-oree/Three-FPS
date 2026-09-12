@@ -17,6 +17,7 @@ import { resolveNextState } from './player/PlayerState';
 import WeaponSway from './weapons/WeaponSway';
 import WeaponViewmodel from './weapons/WeaponViewmodel';
 import WeaponManager from './weapons/WeaponManager';
+import HandsRig from './weapons/HandsRig';
 import RecoilSystem from './weapons/RecoilSystem';
 import MuzzleFlashEffect from './weapons/MuzzleFlashEffect';
 import ImpactEffect from './weapons/ImpactEffect';
@@ -54,6 +55,8 @@ const weaponManager = new WeaponManager({
   viewmodel,
   getMovementState: () => playerController.currentState,
 });
+const handsRig = new HandsRig(engine.assetLoader);
+void handsRig.load().then(() => handsRig.attach(viewmodel));
 const recoilSystem = new RecoilSystem(playerController.camera, sway);
 const muzzleFlash = new MuzzleFlashEffect(engine.assetLoader, viewmodel);
 const impactEffect = new ImpactEffect(engine.assetLoader, arena.scene);
@@ -103,6 +106,7 @@ engine.registerUpdatable({
       x: velocity.dot(rightScratch),
       z: velocity.dot(forwardScratch),
     });
+    handsRig.update(dt, engine.sceneManager.getCamera());
     viewmodel.update(dt, engine.sceneManager.getCamera());
     viewmodel.setAspect(engine.sceneManager.getCamera().aspect);
     muzzleFlash.update(dt);
@@ -154,6 +158,7 @@ for (const eventName of [
   'combat:hit',
   'combat:shotFired',
   'combat:tracer',
+  'melee:swung',
 ] as const) {
   eventBus.on(eventName, (p) => console.log('[TEMP-PROOF]', eventName, JSON.stringify(p)));
 }
@@ -180,6 +185,7 @@ interface OperatorTestHook {
   animationStateMachine: AnimationStateMachine;
   sway: WeaponSway;
   recoilSystem: RecoilSystem;
+  handsRig: HandsRig;
   drawCalls: () => { world: number; viewmodel: number };
 }
 (window as unknown as { __OPERATOR__: OperatorTestHook }).__OPERATOR__ = {
@@ -196,6 +202,7 @@ interface OperatorTestHook {
   animationStateMachine,
   sway,
   recoilSystem,
+  handsRig,
   drawCalls: () => ({ ...drawCalls }),
 };
 // ---------------------------------------------------------------------------

@@ -51,6 +51,9 @@ export interface WeaponDefinition {
   recoilPatternId: string;
   soundKeys: WeaponSoundKeys;
   hasTracer: boolean;
+  /** Hands-first phase: no projectile, no ammo — a short-range hit ray. */
+  melee?: boolean;
+  meleeRangeMeters?: number;
 }
 
 export class WeaponBase {
@@ -73,10 +76,12 @@ export class WeaponBase {
   }
 
   consumeRound(): void {
+    if (this.def.melee) return; // fists never consume rounds
     this.currentMagazineAmmo = Math.max(0, this.currentMagazineAmmo - 1);
   }
 
   canFire(): boolean {
+    if (this.def.melee) return !this.isReloading && !this.isSwitching;
     return this.currentMagazineAmmo > 0 && !this.isReloading && !this.isSwitching;
   }
 

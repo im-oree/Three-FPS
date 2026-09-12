@@ -85,7 +85,8 @@ class BallisticsSystem {
     }
 
     this.raycaster.set(camera.position, this.scratchDir);
-    this.raycaster.far = BALLISTICS.MAX_RANGE_METERS;
+    // Melee: exact camera-forward ray, arm's reach only — no spread cone.
+    this.raycaster.far = weapon.def.melee ? (weapon.def.meleeRangeMeters ?? BALLISTICS.MAX_RANGE_METERS) : BALLISTICS.MAX_RANGE_METERS;
     const intersects = this.raycaster.intersectObjects(this.hittables.map((h) => h.object), true);
 
     const start = this.muzzleProvider?.() ?? camera.position;

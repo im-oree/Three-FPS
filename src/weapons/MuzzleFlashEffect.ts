@@ -59,7 +59,10 @@ export class MuzzleFlashEffect {
   update(dt: number): void {
     for (const instance of this.pool) {
       if (!instance.active) continue;
-      instance.life -= dt;
+      // Never burn more than half the lifetime per frame: at low/headless
+      // frame rates a raw dt would spawn-and-expire the flash inside one
+      // update, so it never reaches a rendered frame (§12 two-4 frame life).
+      instance.life -= Math.min(dt, EFFECTS.MUZZLE_LIFETIME_SECONDS * 0.5);
       instance.sprite.material.opacity = Math.max(0, instance.life / EFFECTS.MUZZLE_LIFETIME_SECONDS);
       if (instance.life <= 0) {
         instance.active = false;

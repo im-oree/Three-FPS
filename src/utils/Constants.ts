@@ -47,6 +47,8 @@ export const SETTINGS = {
 /** Asset URL roots (core/AssetLoader.ts resolves logical paths against these). */
 export const ASSET_ROOTS = {
   models: '/assets/models/',
+  /** Community/imported 3D models committed at repo root (hands, real guns). */
+  imported: '/',
   textures: '/assets/textures/',
   audio: '/assets/audio/',
 } as const;
@@ -65,7 +67,7 @@ export const DEFAULT_KEY_BINDINGS = {
   moveRight: 'KeyD',
   jump: 'Space',
   sprint: 'ShiftLeft',
-  crouch: 'ControlLeft',
+  crouch: 'KeyC', // user directive: C, not Ctrl (slide inherits crouch)
   reload: 'KeyR',
   fire: 'Mouse0',
   ads: 'Mouse2',
@@ -276,6 +278,83 @@ export const VIEWMODEL = {
   FOV: 60,
   NEAR: 0.01,
   FAR: 10,
+} as const;
+
+/** Boot loadout: guns are DISABLED for the hands-first phase — fists only.
+ *  WeaponManager.debugSetLoadout() restores guns (acceptance harness, later
+ *  documents). Wheel + slot keys cycle this list, never the raw inventory. */
+export const BOOT_LOADOUT: readonly string[] = ['fists'];
+
+/** Fists / gun-melee feel + procedural hands animation tunables. */
+export const MELEE = {
+  RANGE_METERS: 2.2,
+  DAMAGE: 55,
+  /** Punch timeline seconds: wind-up, strike, recover. */
+  WINDUP_SECONDS: 0.12,
+  STRIKE_SECONDS: 0.09,
+  RECOVER_SECONDS: 0.26,
+  /** Finger curl 0..1 for the boxing guard vs a thrown punch. */
+  GUARD_CURL: 0.8,
+  PUNCH_CURL: 0.8,
+  /** Local-X curl radians per phalanx (proximal, middle, distal). */
+  FINGER_CURL_RAD: [1.15, 1.25, 0.85],
+  /** Thumb tucks across the fist. */
+  THUMB_CURL_RAD: [0.9, 1.0, 0.6],
+  /** Guard-pose bone deltas (degrees, local XYZ) — tuned by screenshot. */
+  GUARD_POSE_DEG: {
+    'upper_arm.R': [-38, -14, -62], 'forearm.R': [-74, -18, 0],
+    'forearmTwist.R': [-37, -9, 0],
+    'upper_arm.L': [-38, 14, 62], 'forearm.L': [-74, 18, 0],
+    'forearmTwist.L': [-37, 9, 0],
+    'clavicle.R': [0, 0, -6], 'clavicle.L': [0, 0, 6],
+  },
+  /** Right-arm extension at strike peak (replaces the guard deltas). */
+  PUNCH_POSE_DEG: {
+    'upper_arm.R': [-78, -6, -16], 'forearm.R': [-8, -4, 0],
+    'forearmTwist.R': [-4, -2, 0],
+    'upper_arm.L': [-34, 16, 66], 'forearm.L': [-80, 20, 0],
+    'forearmTwist.L': [-40, 10, 0],
+    'clavicle.R': [0, 0, -12], 'clavicle.L': [0, 0, 10],
+  },
+  /** Global weight on the arm euler pose tables. The imported rig's bone
+   *  axes explode under large local deltas, so arms stay authored-rest and
+   *  punches come from hand-bone translation (retargets can raise this). */
+  ARM_POSE_WEIGHT: 0,
+  /** Jab depth: how far the servo target thrusts toward the eye axis (m). */
+  PUNCH_HAND_THRUST: 0.22,
+  /** Lateral cross of the jab toward the centreline, per side (m). */
+  PUNCH_JAB_LATERAL: 0.08,
+  /** Vertical lift of the jab at peak (m). */
+  PUNCH_JAB_LIFT: 0.04,
+  /** Skin meshes with fewer verts than this ratio of the largest skin mesh
+   *  are treated as export junk (floating shards) and hidden. */
+  HANDS_JUNK_MESH_RATIO: 0.1,
+  /** Exponential smoothing rate for pose blends (1/s). */
+  POSE_SMOOTH: 22,
+  /** Hands root offset inside the viewmodel rig (camera-local metres). */
+  /** Where the skinned hands should sit in viewmodel (camera-local) space.
+   *  The HandsRig servo steers the imported rig here regardless of its
+   *  authored unit/axis quirks. */
+  HANDS_VIEW_TARGET: { x: 0, y: -0.24, z: -0.42 },
+  /** The imported rig's node chain carries a ~100x unit scale; cancel it. */
+  HANDS_SCALE: 0.01,
+} as const;
+
+/** Retarget map: bone ROLE -> regex matched against node names of whatever
+ *  hand rig is loaded (Blender-style suffixes stripped by the patterns).
+ *  A different hand model only needs new patterns here, never code changes. */
+export const HANDS_BONE_ROLES = {
+  handR: '^handR_', handL: '^handL_',
+  indexR: ['^f_index01R_\\d', '^f_index02R_\\d', '^f_index03R_\\d'],
+  middleR: ['^f_middle01R_\\d', '^f_middle02R_\\d', '^f_middle03R_\\d'],
+  ringR: ['^f_ring01R_\\d', '^f_ring02R_\\d', '^f_ring03R_\\d'],
+  pinkyR: ['^f_pinky01R_\\d', '^f_pinky02R_\\d', '^f_pinky03R_\\d'],
+  thumbR: ['^thumb01R_\\d', '^thumb02R_\\d', '^thumb03R_\\d'],
+  indexL: ['^f_index01L_\\d', '^f_index02L_\\d', '^f_index03L_\\d'],
+  middleL: ['^f_middle01L_\\d', '^f_middle02L_\\d', '^f_middle03L_\\d'],
+  ringL: ['^f_ring01L_\\d', '^f_ring02L_\\d', '^f_ring03L_\\d'],
+  pinkyL: ['^f_pinky01L_\\d', '^f_pinky02L_\\d', '^f_pinky03L_\\d'],
+  thumbL: ['^thumb01L_\\d', '^thumb02L_\\d', '^thumb03L_\\d'],
 } as const;
 
 /** Pooled combat VFX (Document 3 §12). */

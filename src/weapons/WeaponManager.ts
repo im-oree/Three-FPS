@@ -17,11 +17,12 @@ import eventBus from '../core/EventBus';
 import type { InputManager } from '../core/InputManager';
 import type { PlayerCamera } from '../player/PlayerCamera';
 import { PlayerState, type PlayerStateValue } from '../player/PlayerState';
-import { CAMERA_FEEL, WEAPON } from '../utils/Constants';
+import { BOOT_LOADOUT, CAMERA_FEEL, WEAPON } from '../utils/Constants';
 import ballistics from './BallisticsSystem';
 import { AssaultRifle } from './definitions/AssaultRifle';
 import { Pistol } from './definitions/Pistol';
 import { SMG } from './definitions/SMG';
+import { Fists } from './definitions/Fists';
 import FireModeSystem from './FireModeSystem';
 import ReloadSystem from './ReloadSystem';
 import WeaponBase from './WeaponBase';
@@ -41,7 +42,14 @@ export class WeaponManager {
     new WeaponBase(AssaultRifle),
     new WeaponBase(Pistol),
     new WeaponBase(SMG),
+    new WeaponBase(Fists),
   ];
+  /**
+   * Hands-first phase: wheel + slot keys cycle THIS list, not the raw
+   * inventory — guns stay registered (future docs, acceptance harness) but
+   * unreachable until debugSetLoadout() opens them up.
+   */
+  private loadout: string[] = [...BOOT_LOADOUT];
   activeIndex = 0;
   private readonly fireMode = new FireModeSystem();
   private readonly reload = new ReloadSystem();
@@ -53,7 +61,31 @@ export class WeaponManager {
   private prevFireDown = false;
   private clock = 0;
 
-  constructor(private readonly deps: WeaponManagerDeps) {}
+  constructor(private readonly deps: WeaponManagerDeps) {
+    this.activeIndex = this.inventoryIndex(this.loadout[0]);
+  }
+
+  get activeLoadout(): readonly string[] {
+    return this.loadout;
+  }
+
+  private inventoryIndex(id: string): number {
+    const i = this.inventory.findIndex((w) => w.def.id === id);
+    return i < 0 ? 0 : i;
+  }
+
+  /** TEST / future-doc seam: reopen guns (or any subset) in the loadout. */
+  debugSetLoadout(ids: string[], equipFirst = true): void {
+    const valid = ids.length > 0 && ids.every((id) => this.inventory.some((w) => w.def.id === id));
+    if (!valid) return;
+    this.loadout = [...ids];
+    if (!equipFirst) return;
+    this.switching = false;
+    this.switchTarget = -1;
+    this.reload.cancel();
+    this.activeIndex = this.inventoryIndex(ids[0]);
+    void this.deps.viewmodel.equip(this.activeWeapon.def);
+  }
 
   get activeWeapon(): WeaponBase {
     return this.inventory[this.activeIndex];
@@ -77,7 +109,7 @@ export class WeaponManager {
     const firePressed = fireDown && !this.prevFireDown;
     this.prevFireDown = fireDown;
 
-    if (firePressed && !this.switching && !this.reload.isReloading && this.activeWeapon.currentMagazineAmmo === 0) {
+    if (firePressed && !this.switching && !this.reload.isReloading && !this.activeWeapon.def.melee && this.activeWeapon.currentMagazineAmmo === 0) {
       eventBus.emit('weapon:emptyFire', { weaponId: this.activeWeapon.def.id });
     }
 
@@ -88,8 +120,8 @@ export class WeaponManager {
 
     // Reload / slot keys: edge-triggered.
     if (this.wasPressedThisFrame('reload')) this.requestReload();
-    if (this.wasPressedThisFrame('weaponSlot1')) this.switchTo(0);
-    if (this.wasPressedThisFrame('weaponSlot2')) this.switchTo(1);
+    if (this.wasPressedThisFrame('weaponSlot1')) this.switchToSlot(0);
+    if (this.wasPressedThisFrame('weaponSlot2')) this.switchToSlot(1);
     const wheel = input.getWheelDelta();
     if (wheel !== 0 && !this.switching) this.cycle(wheel > 0 ? 1 : -1);
 
@@ -119,6 +151,12 @@ export class WeaponManager {
     if (!weapon.canFireNow(this.clock)) return false;
     weapon.consumeRound();
     weapon.markFired(this.clock);
+    if (weapon.def.melee) {
+      eventBus.emit('melee:swung', {
+        weaponId: weapon.def.id,
+        rangeMeters: weapon.def.meleeRangeMeters ?? 0,
+      });
+    }
     eventBus.emit('weapon:fired', {
       weaponId: weapon.def.id,
       remainingMagazineAmmo: weapon.currentMagazineAmmo,
@@ -137,6 +175,7 @@ export class WeaponManager {
   }
 
   private requestReload(): void {
+    if (this.activeWeapon.def.melee) return; // fists never reload
     if (this.switching || this.reload.isReloading) return;
     if (this.adsActive) this.stopADS(); // cleanly exit ADS first (§7)
     this.fireMode.reset();
@@ -171,6 +210,13 @@ export class WeaponManager {
     });
   }
 
+  /** Slot keys address LOADOUT positions (Digit1 = loadout[0]), not inventory. */
+  private switchToSlot(slot: number): void {
+    const id = this.loadout[slot];
+    if (!id) return;
+    this.switchTo(this.inventoryIndex(id));
+  }
+
   switchTo(index: number): void {
     if (index === this.activeIndex || this.switching) return;
     if (index < 0 || index >= this.inventory.length) return;
@@ -193,9 +239,13 @@ export class WeaponManager {
   }
 
   /** Wheel cycling over the full inventory (AR → Pistol → SMG → …). */
+  /** Wheel cycles the LOADOUT (fists-only until guns are re-enabled). */
   cycle(direction: number): void {
-    const next = (this.activeIndex + direction + this.inventory.length) % this.inventory.length;
-    this.switchTo(next);
+    if (this.switching) return;
+    const pos = this.loadout.indexOf(this.activeWeapon.def.id);
+    const from = pos < 0 ? 0 : pos;
+    const nextId = this.loadout[(from + direction + this.loadout.length) % this.loadout.length];
+    this.switchTo(this.inventoryIndex(nextId));
   }
 
   private finishSwitch(): void {
