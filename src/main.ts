@@ -88,16 +88,17 @@ engine.registerUpdatable({
   update: (dt: number) => {
     weaponManager.update(dt);
     recoilSystem.update(dt);
+    const velocity = playerController.movement.state.velocity;
+    const yaw = playerController.movement.state.yaw;
+    rightScratch.set(Math.cos(yaw), 0, -Math.sin(yaw));
+    forwardScratch.set(-Math.sin(yaw), 0, -Math.cos(yaw));
     sway.update(
       dt,
       playerController.camera.lastMouseDelta,
       weaponManager.isADSActive,
       playerController.getHorizontalSpeed() < SWAY.STATIONARY_SPEED_EPS && playerController.isGrounded(),
+      { x: velocity.dot(rightScratch), z: velocity.dot(forwardScratch) },
     );
-    const velocity = playerController.movement.state.velocity;
-    const yaw = playerController.movement.state.yaw;
-    rightScratch.set(Math.cos(yaw), 0, -Math.sin(yaw));
-    forwardScratch.set(-Math.sin(yaw), 0, -Math.cos(yaw));
     animationStateMachine.update(dt, playerController.currentState, {
       x: velocity.dot(rightScratch),
       z: velocity.dot(forwardScratch),

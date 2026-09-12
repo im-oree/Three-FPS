@@ -63,13 +63,37 @@ export class AssetLoader {
    * them). Clips are shared immutable data; the scene is cloned per caller so
    * each equipped viewmodel gets its own node hierarchy for mixer binding.
    */
+  /**
+   * THREE.Object3D.clone() does NOT remap SkinnedMesh skeletons (long-standing
+   * three.js gotcha): a cloned skinned mesh keeps pointing its skeleton at the
+   * SOURCE hierarchy's bones, so the clone's vertices animate with an orphaned
+   * original tree while its own nodes/mixer do nothing. Remap every skeleton's
+   * bones onto the cloned hierarchy by node name (boneInverses are rest-pose
+   * data and stay valid).
+   */
+  private static rebindSkeletons(root: THREE.Object3D): void {
+    root.traverse((o) => {
+      const mesh = o as THREE.SkinnedMesh;
+      if (!mesh.isSkinnedMesh) return;
+      mesh.skeleton.bones = mesh.skeleton.bones.map(
+        (bone) => (root.getObjectByName(bone.name) as THREE.Bone | undefined) ?? bone,
+      );
+    });
+  }
+
   async loadModelWithAnimations(path: string): Promise<{ scene: THREE.Group; animations: THREE.AnimationClip[] }> {
     const cached = this.gltfCache.get(path);
-    if (cached) return { scene: cached.scene.clone(true), animations: cached.animations };
+    if (cached) {
+      const scene = cached.scene.clone(true);
+      AssetLoader.rebindSkeletons(scene);
+      return { scene, animations: cached.animations };
+    }
     try {
       const gltf = await this.gltfLoader.loadAsync(ASSET_ROOTS.models + path);
       this.gltfCache.set(path, { scene: gltf.scene, animations: gltf.animations });
-      return { scene: gltf.scene.clone(true), animations: gltf.animations };
+      const scene = gltf.scene.clone(true);
+      AssetLoader.rebindSkeletons(scene);
+      return { scene, animations: gltf.animations };
     } catch (err) {
       console.error(`[AssetLoader] failed to load model "${ASSET_ROOTS.models + path}":`, err);
       throw err;

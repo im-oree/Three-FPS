@@ -221,8 +221,47 @@ const firstAvg = worldSeries.slice(0, half).reduce((a, b) => a + b, 0) / half;
 const secondAvg = worldSeries.slice(half).reduce((a, b) => a + b, 0) / (worldSeries.length - half);
 check('sustained fire: pooled effects (bounded steady state, back to baseline)',
   secondAvg - firstAvg <= 3 && after.world <= before.world + 3 && Math.max(...vmSeries) - Math.min(...vmSeries) <= 1,
-  `idle ${before.world}, firing ${firstAvg.toFixed(0)}→${secondAvg.toFixed(0)}, after ${after.world}, vm ${vmSeries[0]}`);
+  `idle ${before.world}, firing ${firstAvg.toFixed(0)}→${secondAvg.toFixed(0)}, after ${after.world}, vm ${vmSeries.join('/')}`);
 check('viewmodel second pass renders every frame (anti-clip pass alive)', before.viewmodel >= 1 && after.viewmodel >= 1);
+
+// Regression: THREE.Object3D.clone() leaves SkinnedMesh skeletons pointing at
+// the SOURCE hierarchy. An equipped clone then renders at the orphan's rest
+// pose (giant slabs flooding the frame, deaf to rig/mixer/ADS). Every skeleton
+// bone must live inside the equipped rig subtree.
+const skinBound = await page.evaluate(() => {
+  const vm = window.__OPERATOR__.viewmodel;
+  let ok = true;
+  vm.attached.traverse((o) => {
+    if (!o.isSkinnedMesh) return;
+    for (const bone of o.skeleton.bones) {
+      let p = bone;
+      let inRig = false;
+      while (p) { if (p === vm.rig) inRig = true; p = p.parent; }
+      if (!inRig) ok = false;
+    }
+  });
+  return ok;
+});
+check('viewmodel skeleton bound to equipped hierarchy (clone-remap regression)', skinBound);
+
+// The held gun must track the view: muzzle-socket NDC (in the vm camera)
+// stays put when the player looks elsewhere.
+const socketNDC = () => page.evaluate(() => {
+  const vm = window.__OPERATOR__.viewmodel;
+  const s = vm.getMuzzleSocket();
+  const v = s.getWorldPosition(s.position.clone());
+  return v.project(vm.vmCamera).toArray().slice(0, 2).map((x) => +x.toFixed(3));
+});
+const ndc1 = await socketNDC();
+await page.evaluate(() => window.__OPERATOR__.playerController.debugSetOrientation(0.6, 0.15));
+await sleep(120); // one frame in: the chase must be visibly behind the flick
+const lagPeak = await page.evaluate(() => window.__OPERATOR__.viewmodel.getFollowLagRad());
+await sleep(900); // settled: lag decayed, socket back at its resting NDC
+const lagSettled = await page.evaluate(() => window.__OPERATOR__.viewmodel.getFollowLagRad());
+const ndc2 = await socketNDC();
+check('viewmodel chases the camera with weighted lag (trails on flick, settles glued)',
+  lagPeak > 0.02 && lagSettled < 0.01 && Math.hypot(ndc1[0] - ndc2[0], ndc1[1] - ndc2[1]) < 0.06,
+  `lag ${lagPeak.toFixed(3)}->${lagSettled.toFixed(4)} rad, ndc ${ndc1} -> ${ndc2}`);
 
 // --- 4. camera-center rays: hip scatter vs ADS pinpoint; damage falloff -----
 const spreadNums = await page.evaluate(() => {

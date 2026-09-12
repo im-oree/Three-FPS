@@ -30,6 +30,8 @@ export class WeaponSway {
   private kickVelPitch = 0;
   private kickVelYaw = 0;
   private breathPhase = 0;
+  private strafeX = 0;
+  private strafeZ = 0;
   readonly offsets: SwayOffsets = { rotX: 0, rotY: 0, rotZ: 0, posX: 0, posY: 0, posZ: 0 };
 
   /** RecoilSystem calls this per shot (degrees, viewmodel-exaggerated). */
@@ -44,6 +46,7 @@ export class WeaponSway {
     mouseDelta: { x: number; y: number },
     isADS: boolean,
     isStationary: boolean,
+    localVelocity: { x: number; z: number } = { x: 0, z: 0 },
   ): SwayOffsets {
     const scale = isADS ? SWAY.ADS_SWAY_MULTIPLIER : 1;
 
@@ -72,9 +75,23 @@ export class WeaponSway {
     this.offsets.rotX = (this.lagY + this.kickPitch) * scale;
     this.offsets.rotY = (this.lagX + this.kickYaw) * scale;
     this.offsets.rotZ = this.lagX * SWAY.ROTZ_FACTOR * scale;
-    this.offsets.posX = this.lagX * SWAY.POS_FACTOR * scale;
+    // 3) inertial strafe sway: the weapon hangs back opposite the body's
+    //    camera-local velocity, exp-smoothed both in and out (weight).
+    const strafeTargetX = clamp(
+      -localVelocity.x * SWAY.STRAFE_POS_FACTOR, -SWAY.STRAFE_POS_MAX, SWAY.STRAFE_POS_MAX,
+    );
+    const strafeTargetZ = clamp(
+      -localVelocity.z * SWAY.STRAFE_POS_FACTOR * SWAY.STRAFE_FWD_SHARE,
+      -SWAY.STRAFE_POS_MAX, SWAY.STRAFE_POS_MAX,
+    );
+    const strafeLerp = 1 - Math.exp(-SWAY.STRAFE_SMOOTH * dt);
+    this.strafeX += (strafeTargetX - this.strafeX) * strafeLerp;
+    this.strafeZ += (strafeTargetZ - this.strafeZ) * strafeLerp;
+
+    this.offsets.posX = (this.lagX * SWAY.POS_FACTOR + this.strafeX) * scale;
     this.offsets.posY = (-this.lagY * SWAY.POS_FACTOR + breath * SWAY.BREATH_POS_FACTOR) * scale;
-    this.offsets.posZ = this.kickPitch * SWAY.POS_FACTOR * 3 * scale; // kick jolts the gun backward
+    // kick jolts the gun backward; strafe depth adds the forward/back hang
+    this.offsets.posZ = (this.kickPitch * SWAY.POS_FACTOR * 3 + this.strafeZ) * scale;
     return this.offsets;
   }
 

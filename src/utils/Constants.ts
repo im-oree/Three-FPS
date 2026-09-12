@@ -228,6 +228,13 @@ export const SWAY = {
   DAMPING: 7,
   CLAMP_RAD: 0.07,
   BREATH_AMP_RAD: 0.0035,
+  /** Inertial strafe sway: metres of rig offset per m/s of camera-local
+   *  horizontal velocity (opposite the movement), capped, exp-smoothed. */
+  STRAFE_POS_FACTOR: 0.012,
+  STRAFE_POS_MAX: 0.06,
+  STRAFE_SMOOTH: 10,
+  /** Share of the forward velocity that feeds the depth offset. */
+  STRAFE_FWD_SHARE: 0.5,
   BREATH_HZ: 0.35,
   ADS_SWAY_MULTIPLIER: 0.25,
   /** rotZ roll factor applied to the horizontal lag component. */
@@ -245,9 +252,18 @@ export const SWAY = {
 
 /** Viewmodel rig + its dedicated render pass (Document 3 §8). */
 export const VIEWMODEL = {
-  HIP_LOCAL_OFFSET: { x: 0.17, y: -0.16, z: -0.42 },
-  ADS_LOCAL_OFFSET: { x: 0.0, y: -0.118, z: -0.36 },
+  // Model origin sits at the receiver centre, so the rig offset must place
+  // the GRIP (local z ~ +0.02) at hands distance and let the stock fall into
+  // the bottom-right corner near the near plane — putting the receiver at
+  // hands distance instead floods the lower frame with unidentifiable slabs.
+  HIP_LOCAL_OFFSET: { x: 0.24, y: -0.24, z: -0.5 },
+  // Sight line (local y ~ +0.05) onto the camera axis for a centred picture.
+  ADS_LOCAL_OFFSET: { x: 0.0, y: -0.055, z: -0.34 },
   ADS_LERP_RATE: 12,
+  /** 1/s exponential rate at which the decoupled viewmodel rig chases the
+   *  camera frame. High = tight; the residual lag on fast flicks is what
+   *  gives the weapon its weight (industry practice: never weld 1:1). */
+  FOLLOW_RATE: 20,
   FOV: 60,
   NEAR: 0.01,
   FAR: 10,

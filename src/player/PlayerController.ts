@@ -71,10 +71,16 @@ export class PlayerController {
   private previousSprinting = false;
   private crouchLatched = false; // toggle-mode crouch (SettingsStore flag)
 
-  /** TEMPORARY placeholder for Document 5's click-to-play flow. */
-  private readonly onFirstClick = (): void => {
-    this.input.requestPointerLock(this.canvas);
-    this.canvas.removeEventListener('click', this.onFirstClick);
+  /**
+   * TEMPORARY placeholder for Document 5's click-to-play flow. Stays attached
+   * for the lifetime of the controller: re-clicking after the lock drops
+   * (Esc, tab-away, "leave and come back") must re-acquire it — a one-shot
+   * listener left the game look-dead after the first unlock.
+   */
+  private readonly onCanvasClick = (): void => {
+    if (document.pointerLockElement !== this.canvas) {
+      this.input.requestPointerLock(this.canvas);
+    }
   };
 
   constructor(
@@ -90,7 +96,7 @@ export class PlayerController {
     this.camera = new PlayerCamera(sceneManager.getCamera(), input);
     this.prevVisualPos.copy(this.movement.state.position);
     this.currVisualPos.copy(this.movement.state.position);
-    this.canvas.addEventListener('click', this.onFirstClick);
+    this.canvas.addEventListener("click", this.onCanvasClick);
     // Document 3 ADS wiring: the weapons layer owns ADS state; the player
     // layer only reacts (sprint gating + move-speed multiplier).
     eventBus.on('weapon:adsStart', (payload: { moveSpeedMultiplier?: number }) => {
