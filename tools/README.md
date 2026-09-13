@@ -36,3 +36,26 @@ node tools/generateTraversalClips.js
 
 Per Document A no finger joints are authored — grip realism comes from
 shoulder/elbow/wrist rotation only.
+
+## Document D weapon roster
+
+`generateWeaponModels.js` now emits the full six-weapon roster plus the rocket
+projectile, all from `/tools` builders:
+
+```
+node tools/generateWeaponModels.js
+```
+
+| output | builder | notes |
+|---|---|---|
+| `rifle.glb` | `RifleBuilder.js` | Document C reference weapon |
+| `pistol.glb` | `PistolBuilder.js` | one-handed |
+| `shotgun.glb` | `ShotgunBuilder.js` | `Bone_Pump` racked by CyclingActionSystem |
+| `smg.glb` | `SMGBuilder.js` | red-dot optic body + glass on the rail |
+| `sniper.glb` | `SniperBuilder.js` | scope tube; `Socket_Optic` at the eyepiece |
+| `rocket_launcher.glb` | `RocketLauncherBuilder.js` | `Socket_ShoulderRest`; back-blast vent at +Z |
+| `rocket_projectile.glb` | `RocketLauncherBuilder.js` | the in-flight rocket mesh |
+
+Every muzzle and optic socket is validated to face -Z (down the barrel) by
+`node tools/validateModelOrientation.js <path>` and again at runtime by
+`tools/verify/acceptance-docd.mjs` check 7.

@@ -11,6 +11,8 @@ import Engine from './core/Engine';
 import gameStateManager, { GameState } from './state/GameStateManager';
 import eventBus from './core/EventBus';
 import characterState from './character/CharacterStateSystem';
+import projectileSystem from './weapons/ProjectileSystem';
+import explosionDamage from './weapons/ExplosionDamageResolver';
 import { TraversalPrompt } from './ui/TraversalPrompt';
 import TestArena from './environment/TestArena';
 
@@ -324,6 +326,20 @@ animationEngine.registerLayer({
 
 const recoilSystem = new RecoilSystem(playerController.camera, sway);
 const muzzleFlash = new MuzzleFlashEffect(engine.assetLoader, viewmodel);
+// --- Document D §2.2: projectile + splash damage wiring --------------------
+projectileSystem.attach(physics.world, arena.scene);
+// The rocket mesh is a real generated asset (tools/builders/RocketLauncherBuilder
+// .js -> rocket_projectile.glb), never geometry built in gameplay code.
+void engine.assetLoader.loadModel('weapons/rocket_projectile.glb').then((proto) => {
+  projectileSystem.setMeshFactory(() => proto.clone(true));
+});
+explosionDamage.start();
+// §7.1: the blast reaches the shooter too — firing at your own feet hurts.
+explosionDamage.setPlayerTarget(
+  () => playerController.getPosition().clone(),
+  (amount) => eventBus.emit('player:damaged', { amount, source: 'explosion' }),
+);
+
 const impactEffect = new ImpactEffect(engine.assetLoader, arena.scene);
 const tracerEffect = new TracerEffect(engine.assetLoader, arena.scene);
 
@@ -436,6 +452,8 @@ engine.registerUpdatable({
     meleeCombo.update(dt);
     meleeHit.update(dt);
     casingPhysics.update(dt);
+    // Document D §2.2: advance in-flight rockets (swept collision + detonation).
+    projectileSystem.update(dt);
     fidgets.update(dt, viewmodel.currentWeaponId ?? '', playerController.getHorizontalSpeed() > 0.5, viewmodel.isOneShotRunning);
     muzzleFlash.update(dt);
     impactEffect.update(dt);
@@ -488,6 +506,7 @@ interface OperatorTestHook {
   engine: Engine;
   /** THE state authority — inspect current channels, log and rejections. */
   characterState: typeof characterState;
+  projectileSystem: typeof projectileSystem;
   gameStateManager: typeof gameStateManager;
   eventBus: typeof eventBus;
   playerController: PlayerController;
@@ -522,6 +541,7 @@ interface OperatorTestHook {
 (window as unknown as { __OPERATOR__: OperatorTestHook }).__OPERATOR__ = {
   engine,
   characterState,
+  projectileSystem,
   gameStateManager,
   eventBus,
   playerController,

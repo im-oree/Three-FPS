@@ -20,7 +20,7 @@
  * Prints PASS/FAIL per box; exits non-zero on any FAIL.
  */
 import { launchBrowser } from './browser.mjs';
-import { readdirSync, existsSync } from 'node:fs';
+import { readdirSync, existsSync, readFileSync } from 'node:fs';
 
 const URL = process.argv[2] ?? 'http://localhost:5173';
 let failed = 0;
@@ -692,8 +692,21 @@ const modelsLoaded = await page.evaluate(() => {
   }
   return seen;
 });
-const allowed = new Set(['arms_standard.glb', 'arms_gloved.glb', 'body_standard.glb',
-  'rifle.glb', 'pistol.glb', 'shotgun.glb']);
+// DERIVE the allowlist from the generator sources rather than hardcoding it.
+// A hardcoded list silently goes stale every time /tools gains a model (it
+// did, when Document D added four), which turns a real policy check into
+// busywork. Anything a /tools script emits is by definition code-generated.
+const generatorSrc = [
+  'tools/generateWeaponModels.js',
+  'tools/generateHandModel.js',
+  'tools/generateBodyModel.js',
+  'tools/generateHandsRig.js',
+].filter((f) => existsSync(f)).map((f) => readFileSync(f, 'utf8')).join('\n');
+const allowed = new Set([
+  ...[...generatorSrc.matchAll(/([A-Za-z0-9_]+)\.glb/g)].map((m) => `${m[1]}.glb`),
+  // Emitted via a template literal keyed on an id list, so capture those too.
+  ...[...generatorSrc.matchAll(/\['([a-z0-9_]+)',\s*build/g)].map((m) => `${m[1]}.glb`),
+]);
 const foreign = modelsLoaded.filter((m) => !allowed.has(m));
 check('8a. only code-generated .glb assets are loaded at runtime',
   foreign.length === 0, foreign.length ? `foreign: ${foreign.join(', ')}` : modelsLoaded.join(', '));

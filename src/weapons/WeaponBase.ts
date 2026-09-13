@@ -57,7 +57,12 @@ export interface WeaponDefinition {
   damageFalloffStartDistance: number;
   damageFalloffEndDistance: number;
   fireRateRPM: number;
-  fireMode: 'auto' | 'semi' | 'burst';
+  /**
+   * Document D §2: 'manualCycle' (pump/bolt) and 'projectile' (launcher) join
+   * the original three. Both are additive branches in FireModeSystem and
+   * BallisticsSystem respectively — no existing mode changed behaviour.
+   */
+  fireMode: 'auto' | 'semi' | 'burst' | 'manualCycle' | 'projectile';
   burstCount: number | null;
   burstDelaySeconds: number | null;
   magazineSize: number;
@@ -79,6 +84,33 @@ export interface WeaponDefinition {
   /** Hands-first phase: no projectile, no ammo — a short-range hit ray. */
   melee?: boolean;
   meleeRangeMeters?: number;
+
+  // --- Document D §2.1: manually-cycled actions (shotgun pump, sniper bolt) --
+  /** Requires racking between shots; gated by CyclingActionSystem. */
+  requiresManualCycle?: boolean;
+  /** Seconds the cycle takes. */
+  cycleDurationSeconds?: number;
+
+  // --- Document D §4: multi-pellet hitscan (shotgun) ------------------------
+  /** >1 spawns this many independently-jittered rays per trigger pull. */
+  pelletCount?: number;
+  /** Cone half-angle for pellet jitter, degrees. */
+  pelletSpreadConeDeg?: number;
+  damagePerPelletNear?: number;
+  damagePerPelletFar?: number;
+
+  // --- Document D §4.6: per-shell reload ------------------------------------
+  reloadStyle?: 'magazine' | 'perShell' | 'singleRound';
+  reloadShellInsertDuration?: number;
+
+  // --- Document D §2.2 / §7: projectile ballistics (rocket launcher) --------
+  projectileSpeed?: number;
+  projectileGravityScale?: number;
+  projectileDrag?: number;
+  projectileMaxLifetime?: number;
+  blastRadius?: number;
+  blastDamage?: number;
+  blastFalloffCurve?: 'linear' | 'quadratic';
 }
 
 export class WeaponBase {

@@ -13,7 +13,7 @@ export interface RecoilPatternEntry {
   yawDeg: number;
 }
 
-export type RecoilPatternId = 'rifle' | 'pistol' | 'shotgun';
+export type RecoilPatternId = 'rifle' | 'pistol' | 'shotgun' | 'smg' | 'sniper';
 
 export const RECOIL_PATTERNS: Record<RecoilPatternId, RecoilPatternEntry[]> = {
   rifle: [
@@ -35,6 +35,34 @@ export const RECOIL_PATTERNS: Record<RecoilPatternId, RecoilPatternEntry[]> = {
     { pitchDeg: 0.6, yawDeg: 0.02 },
     { pitchDeg: 0.65, yawDeg: 0.03 },
     { pitchDeg: 0.7, yawDeg: 0.0 },
+  ],
+  /**
+   * Document D §5.4 acceptance: the SMG's pattern must be visibly, distinctly
+   * MORE HORIZONTAL than the rifle's, using nothing but data.
+   *
+   * The rifle climbs steadily and drifts one way (max |yaw| 0.52, monotonic).
+   * This zigzags hard and alternates sign every step or two, so the cumulative
+   * horizontal wander dominates while per-shot pitch stays low. Sprayed at
+   * 950 RPM that reads as a weapon you must burst-fire to control.
+   */
+  smg: [
+    { pitchDeg: 0.42, yawDeg: 0.0 },
+    { pitchDeg: 0.50, yawDeg: -0.55 },
+    { pitchDeg: 0.58, yawDeg: 0.75 },
+    { pitchDeg: 0.62, yawDeg: -0.95 },
+    { pitchDeg: 0.66, yawDeg: 1.10 },
+    { pitchDeg: 0.68, yawDeg: -1.25 },
+    { pitchDeg: 0.70, yawDeg: 1.30 },
+    { pitchDeg: 0.70, yawDeg: -1.20 },
+    { pitchDeg: 0.68, yawDeg: 1.35 },
+    { pitchDeg: 0.66, yawDeg: -1.40 },
+    { pitchDeg: 0.64, yawDeg: 1.25 },
+    { pitchDeg: 0.62, yawDeg: -1.30 },
+  ],
+  /** One enormous, near-vertical kick — there is no second shot to control. */
+  sniper: [
+    { pitchDeg: 3.6, yawDeg: 0.05 },
+    { pitchDeg: 3.4, yawDeg: -0.05 },
   ],
   shotgun: [
     { pitchDeg: 2.6, yawDeg: 0.0 },

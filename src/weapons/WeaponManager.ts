@@ -29,8 +29,12 @@ import ballistics from './BallisticsSystem';
 import { Rifle } from './definitions/Rifle';
 import { Pistol } from './definitions/Pistol';
 import { Shotgun } from './definitions/Shotgun';
+import { SMG } from './definitions/SMG';
+import { Sniper } from './definitions/Sniper';
+import { RocketLauncher } from './definitions/RocketLauncher';
 import { Fists } from './definitions/Fists';
 import FireModeSystem from './FireModeSystem';
+import { CyclingActionSystem } from './CyclingActionSystem';
 import ReloadSystem from './ReloadSystem';
 import WeaponBase from './WeaponBase';
 import type { WeaponViewmodel } from './WeaponViewmodel';
@@ -53,12 +57,18 @@ export class WeaponManager {
     new WeaponBase(Rifle),
     new WeaponBase(Pistol),
     new WeaponBase(Shotgun),
+    // Document D roster.
+    new WeaponBase(SMG),
+    new WeaponBase(Sniper),
+    new WeaponBase(RocketLauncher),
     new WeaponBase(Fists),
   ];
   private loadout: string[] = [...BOOT_LOADOUT];
   activeIndex = 0;
   private readonly fireMode = new FireModeSystem();
   private readonly reload = new ReloadSystem();
+  /** Document D §2.1: shared by the shotgun's pump and the sniper's bolt. */
+  readonly cycling = new CyclingActionSystem();
   private adsActive = false;
   private adsLatched = false; // toggle-ADS mode latch
   private switching = false;
@@ -134,6 +144,8 @@ export class WeaponManager {
 
   update(dt: number): void {
     this.clock += dt;
+    // Document D §2.1: advance any in-flight pump/bolt cycle.
+    this.cycling.update(dt);
     const { input } = this.deps;
     const movementState = this.deps.getMovementState();
     const tacSprinting = this.deps.getTacticalSprinting();
@@ -216,6 +228,10 @@ export class WeaponManager {
     if (this.wasPressedThisFrame('weaponSlot1')) this.switchToSlot(0, tacSprinting);
     if (this.wasPressedThisFrame('weaponSlot2')) this.switchToSlot(1, tacSprinting);
     if (this.wasPressedThisFrame('weaponSlot3')) this.switchToSlot(2, tacSprinting);
+    if (this.wasPressedThisFrame('weaponSlot4')) this.switchToSlot(3, tacSprinting);
+    if (this.wasPressedThisFrame('weaponSlot5')) this.switchToSlot(4, tacSprinting);
+    if (this.wasPressedThisFrame('weaponSlot6')) this.switchToSlot(5, tacSprinting);
+    if (this.wasPressedThisFrame('weaponSlot7')) this.switchToSlot(6, tacSprinting);
     const wheel = input.getWheelDelta();
     if (wheel !== 0 && !this.switching && !tacSprinting) this.cycle(wheel > 0 ? 1 : -1);
     if (this.wasPressedThisFrame('inspect')) this.tryInspect(movementState, tacSprinting);
@@ -279,6 +295,11 @@ export class WeaponManager {
     if (this.switching || this.reload.isReloading) return false;
     if (movementState === PlayerState.SPRINT && this.deps.getTacticalSprinting()) return false;
     if (!weapon.canFireNow(this.clock)) return false;
+    // Document D §2.1: a manually-cycled weapon refuses to fire until the
+    // pump/bolt has been racked. The gate consumes the chambered round.
+    if (weapon.def.requiresManualCycle && !this.cycling.onFireAttempt().allowed) {
+      return false;
+    }
     weapon.consumeRound();
     weapon.markFired(this.clock);
     this.lastShotClock = this.clock;
@@ -302,6 +323,11 @@ export class WeaponManager {
       isADS: this.adsActive,
       isJumping: AIRBORNE.includes(movementState),
     });
+    // Rack the action AFTER the shot has gone out (§2.1). If the magazine is
+    // now empty there is nothing to chamber, so let the reload handle it.
+    if (weapon.def.requiresManualCycle && weapon.currentMagazineAmmo > 0) {
+      this.cycling.begin(weapon);
+    }
     return true;
   }
 
@@ -371,6 +397,7 @@ export class WeaponManager {
 
   switchTo(index: number): void {
     if (index === this.activeIndex || this.switching) return;
+    this.cycling.cancel();
     if (index < 0 || index >= this.inventory.length) return;
     if (this.adsActive) this.stopADS();
     if (this.reload.isReloading) this.reload.cancel(); // no ammo, no complete event

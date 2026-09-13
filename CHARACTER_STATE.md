@@ -39,7 +39,7 @@ exclusive machine, plus a few scalar **facts**:
 |---|---|---|
 | `locomotion` | how the body moves | `IDLE` `WALK` `SPRINT` `TAC_SPRINT` `CROUCH_IDLE` `CROUCH_WALK` `SLIDE` `JUMP` `AIR` `LANDING` |
 | `traversal` | is the character climbing | `NONE` `VAULT` `MANTLE` |
-| `weaponAction` | what the hands are doing | `NONE` `FIRING` `RELOADING` `SWITCHING` `INSPECTING` `MELEE` |
+| `weaponAction` | what the hands are doing | `NONE` `FIRING` `RELOADING` `SWITCHING` `INSPECTING` `MELEE` `CYCLING` |
 | `aim` | sighting mode | `HIP` `ADS` |
 | `carry` | where the weapon physically is | `READY` `LOWERED` `STOWED` |
 
@@ -141,6 +141,7 @@ Exactly one site may originate a non-forced request per channel:
 | `traversal` | `PlayerController` jump-traversal block |
 | `weaponAction` → `RELOADING` | `ReloadSystem.begin` |
 | `weaponAction` → `SWITCHING` | `WeaponManager.switchTo` |
+| `weaponAction` → `CYCLING` | `CyclingActionSystem.begin` (pump/bolt) |
 | `aim` | `WeaponManager.startADS` / `stopADS` |
 | `carry` | interaction effects only — no gameplay system sets it directly |
 

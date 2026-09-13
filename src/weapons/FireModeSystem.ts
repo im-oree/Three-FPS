@@ -48,6 +48,17 @@ export class FireModeSystem {
       case 'semi':
         if (intent.firePressed) tryConsumeShot();
         return;
+      case 'projectile':
+        // Launchers are single-shot-per-press, like semi.
+        if (intent.firePressed) tryConsumeShot();
+        return;
+      case 'manualCycle':
+        // Document D §2.1: one shot per press, and only while a round is
+        // chambered. The chamber gate itself lives in CyclingActionSystem —
+        // WeaponManager consults it before calling tryConsumeShot, so this
+        // branch stays a pure input-shape rule like every other fire mode.
+        if (intent.firePressed) tryConsumeShot();
+        return;
       case 'burst':
         if (intent.firePressed && this.burstRemaining === 0) {
           this.burstRemaining = def.burstCount ?? 3;

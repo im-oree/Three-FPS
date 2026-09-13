@@ -77,8 +77,12 @@ export const DEFAULT_KEY_BINDINGS = {
   ads: 'Mouse2',
   weaponSlot1: 'Digit1',
   weaponSlot2: 'Digit2',
-  /** Melee-only stance (fists), the way every shooter exposes it. */
   weaponSlot3: 'Digit3',
+  weaponSlot4: 'Digit4',
+  weaponSlot5: 'Digit5',
+  weaponSlot6: 'Digit6',
+  /** Melee-only stance (fists), the way every shooter exposes it. */
+  weaponSlot7: 'Digit7',
   // Document 2.5 §5: future-reserved melee bind (edge-triggered pattern only).
   melee: 'KeyV',
   // Document 2.5 §8: cosmetic inspect one-shot, idle-only.
@@ -496,7 +500,13 @@ export const HANDS = {
 /** §11/A: adding a weapon = one definitions file + one profile entry. */
 // Slot 3 is the melee-only (fists) stance, matching the standard shooter
 // loadout of primary / secondary / melee.
-export const BOOT_LOADOUT: readonly string[] = ['rifle', 'pistol', 'fists'];
+/**
+ * Document D: the full six-weapon roster plus the melee slot, bound to
+ * Digit1..Digit7 in this order.
+ */
+export const BOOT_LOADOUT: readonly string[] = [
+  'rifle', 'pistol', 'shotgun', 'smg', 'sniper', 'rocket_launcher', 'fists',
+];
 
 /**
  * Gun-melee data (Document B): timing windows drive MeleeHitDetection and the
@@ -715,6 +725,12 @@ export const DUMMY = {
 } as const;
 
 export const BALLISTICS = {
+  /**
+   * Document D §7.6: metres to push a projectile's spawn point forward along
+   * the launch axis. The viewmodel muzzle is inside the player's own capsule,
+   * so a rocket spawned exactly there hits the shooter immediately.
+   */
+  PROJECTILE_SPAWN_OFFSET: 1.2,
   MAX_RANGE_METERS: 300,
 } as const;
 

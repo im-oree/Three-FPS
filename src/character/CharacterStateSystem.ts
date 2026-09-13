@@ -87,6 +87,12 @@ export const WeaponAction = Object.freeze({
   SWITCHING: 'SWITCHING',
   INSPECTING: 'INSPECTING',
   MELEE: 'MELEE',
+  /**
+   * Document D §2.1 — racking a pump/bolt between shots. A distinct state
+   * because it blocks firing and reloading but is NOT a reload, and the HUD
+   * and animation layer both need to tell the two apart.
+   */
+  CYCLING: 'CYCLING',
 } as const);
 
 /** AIM — sight picture. Orthogonal to everything else. */
@@ -163,6 +169,8 @@ const TRANSITIONS: Record<ChannelName, Record<string, readonly string[]>> = {
     SWITCHING: ['NONE', 'FIRING', 'RELOADING'],
     INSPECTING: ['NONE'],
     MELEE: ['NONE', 'FIRING'],
+    // Cycling follows the shot that caused it, so FIRING is the normal source.
+    CYCLING: ['NONE', 'FIRING'],
   },
   aim: {
     HIP: ['*'],
