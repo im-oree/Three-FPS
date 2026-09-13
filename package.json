@@ -1,0 +1,33 @@
+{
+  "name": "operator-fps",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OPERATOR — a Call of Duty-style 3D first-person shooter built on Three.js + Vite (Document 1: foundation & core engine).",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && node tools/copyAssets.mjs",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "verify:setup": "bash tools/verify/bootstrap.sh",
+    "verify:probe": "node tools/verify/probe-webgl.mjs",
+    "verify": "node tools/verify/verify.mjs",
+    "verify:acceptance": "node tools/verify/acceptance-doc2.mjs",
+    "verify:acceptance:doc1": "node tools/verify/acceptance-doc1.mjs",
+    "verify:acceptance:doc2": "node tools/verify/acceptance-doc2.mjs"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.20.0",
+    "three": "0.170.0"
+  },
+  "devDependencies": {
+    "@sparticuz/chromium": "153.0.0",
+    "@types/three": "0.170.0",
+    "puppeteer-core": "25.10.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.6"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}
