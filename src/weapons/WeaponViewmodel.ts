@@ -142,6 +142,22 @@ export class WeaponViewmodel {
   private _adsWeight = 0;
   private adsWeightTarget = 0;
   /** Eased ADS weight (0..1) — shared with the rig layer (pose suppression). */
+  /**
+   * Document C §8.4 step 1: at full magnified-scope ADS the shooter's eye is
+   * pressed against the glass, so the arms and weapon are not visible. We
+   * hide the RIG ROOT rather than skipping the viewmodel pass, so the
+   * perspective system's own visibility rules stay untouched.
+   */
+  setHiddenByScope(hidden: boolean): void {
+    this.hiddenByScope = hidden;
+    this.rigRoot.visible = !hidden;
+  }
+
+  get isHiddenByScope(): boolean {
+    return this.hiddenByScope;
+  }
+  private hiddenByScope = false;
+
   get adsWeight(): number {
     return this._adsWeight;
   }

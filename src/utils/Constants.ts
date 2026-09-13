@@ -981,3 +981,36 @@ export const WEAPON_SHAKE = {
   FIRE_YAW_RAD: 0.022,
   FIRE_WRIST_RAD: 0.070,
 } as const;
+
+/**
+ * Magnified-optic behaviour (Document C §8.4/§8.5, Document D §6.5).
+ * The scope tunnel itself is CSS (ScopeOverlay); these govern simulation.
+ */
+export const SCOPE = {
+  /** Magnification change per wheel notch. */
+  ZOOM_STEP: 0.5,
+  /** Default breath-hold budget when a profile does not state one. */
+  BREATH_HOLD_SECONDS: 4,
+  /** Breath regenerated per second when not holding. */
+  BREATH_REGEN_RATE: 0.5,
+  /** Sway multiplier while the breath is held (near-still). */
+  BREATH_HOLD_SWAY_SCALE: 0.15,
+  /** Sway multiplier during the post-exhaustion penalty window. */
+  POST_HOLD_SWAY_SCALE: 1.8,
+  POST_HOLD_PENALTY_SECONDS: 1.5,
+  /** Base sway half-amplitude in radians, at min magnification, standing. */
+  BASE_SWAY_RAD: 0.0016,
+  /** Speed (m/s) at which the movement sway penalty saturates. */
+  MOVE_SWAY_SPEED_REF: 5,
+  /** Extra sway multiplier at full movement speed. */
+  MOVE_SWAY_MULTIPLIER: 3,
+  // Incommensurate frequencies so the drift never visibly loops.
+  SWAY_FREQ_A: 0.7,
+  SWAY_FREQ_B: 1.9,
+  SWAY_FREQ_C: 0.53,
+  SWAY_FREQ_D: 1.31,
+  /** Seconds for the tunnel mask to fade in/out. */
+  OVERLAY_FADE_SECONDS: 0.12,
+  /** ADS weight beyond which the scope tunnel engages and the rig hides. */
+  ENGAGE_AT_ADS_WEIGHT: 0.86,
+} as const;

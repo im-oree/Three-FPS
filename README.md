@@ -8,6 +8,53 @@
 > `characterState.request(...)`, read it only via its getters and derived
 > helpers, and never keep a private `isReloading`-style mirror.
 
+
+## Controls
+
+| Action | Key |
+|---|---|
+| Move | `W` `A` `S` `D` |
+| Sprint | hold `Shift` |
+| Tactical sprint | double-tap `Shift` (within 0.3 s) |
+| Crouch / slide | `C` (slide = crouch while sprinting) |
+| Jump | `Space` |
+| **Mantle / vault** | `Space` while a ledge prompt is showing (never automatic) |
+| Fire | `Mouse 1` |
+| Aim down sights | hold `Mouse 2` |
+| Reload | `R` |
+| Melee | `V` |
+| Inspect weapon | `F` |
+| **Switch weapon** | `1`-`7`, or the **scroll wheel** |
+| **Toggle 1st / 3rd person** | `P` |
+| Debug overlay | `F3` |
+| Axis gizmos | `F4` |
+| Pause | `Esc` |
+
+### Weapon slots
+
+| Key | Weapon |
+|---|---|
+| `1` | Rifle (auto, iron sights) |
+| `2` | Pistol (semi, one-handed) |
+| `3` | Shotgun (pump-action, 8-pellet spread) |
+| `4` | SMG (950 RPM, red dot) |
+| `5` | Sniper (bolt-action, 4-10x variable scope) |
+| `6` | Rocket launcher (physics projectile, splash) |
+| `7` | Fists (melee only) |
+
+### Scoped sniper
+
+While aiming the sniper (`5`, then hold `Mouse 2`):
+
+| Action | Key |
+|---|---|
+| Zoom in / out | **scroll wheel** (4x - 10x) |
+| Hold breath (steady the scope) | hold `Shift` |
+
+The scroll wheel switches weapons normally, but while you are scoped it
+adjusts magnification instead.
+
+
 ## 0. Purpose of This Document
 
 This is a complete build specification meant to be handed to a developer or AI coding agent as the single source of truth for building the **core single-player FPS engine and gameplay loop**. It intentionally defines base concepts from scratch so nothing is assumed or left ambiguous. This document covers **movement, controls, weapons, animation, environments, UI/menus, audio, and visual fidelity**. It deliberately does **NOT** cover AI enemy logic (a separate follow-up document) or networked multiplayer (a future document), but the architecture below must be built so those systems can be dropped in later without refactoring.

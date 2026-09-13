@@ -12,6 +12,8 @@ import gameStateManager, { GameState } from './state/GameStateManager';
 import eventBus from './core/EventBus';
 import characterState from './character/CharacterStateSystem';
 import projectileSystem from './weapons/ProjectileSystem';
+import scopeSystem from './weapons/ScopeSystem';
+import scopeOverlay from './ui/ScopeOverlay';
 import explosionDamage from './weapons/ExplosionDamageResolver';
 import { TraversalPrompt } from './ui/TraversalPrompt';
 import TestArena from './environment/TestArena';
@@ -40,7 +42,7 @@ import ballistics from './weapons/BallisticsSystem';
 import { PhysicsWorld } from './physics/PhysicsWorld';
 import { ColliderFactory } from './physics/ColliderFactory';
 import PlayerCharacterController from './physics/PlayerCharacterController';
-import { SWAY } from './utils/Constants';
+import { SWAY, SCOPE } from './utils/Constants';
 import AnimationStateMachine from './animation/AnimationStateMachine';
 import AnimationBlender from './animation/AnimationBlender';
 import AnimationLayerCompositor from './animation/AnimationLayerCompositor';
@@ -119,6 +121,8 @@ const weaponManager = new WeaponManager({
 const handsRig = new HandsRig(engine.assetLoader);
 // Manual-traversal HUD hint (pure state consumer) — see /CHARACTER_STATE.md §6.
 const traversalPrompt = new TraversalPrompt();
+// Document C §8.4: the scope tunnel is a DOM overlay over the canvas.
+scopeOverlay.mount();
 
 // --- Document C §3.6: F4 socket/joint orientation axes ----------------------
 const orientationGizmos = new OrientationGizmos(engine.inputManager, () => {
@@ -447,6 +451,25 @@ engine.registerUpdatable({
     // Runs AFTER PlayerCamera wrote the eye transform (PlayerController is an
     // earlier updatable): it consumes that as the 1PS end of the S-curve.
     traversalPrompt.update(playerController.traversalPrompt);
+
+    // --- Document C §8.4/§8.5 + D §6.5: magnified-optic scope --------------
+    // Engage only at near-full ADS weight so the tunnel snaps in as the eye
+    // reaches the glass, rather than fading over the whole raise.
+    const scopeEngaged = scopeSystem.isScoped
+      && viewmodel.adsWeight >= SCOPE.ENGAGE_AT_ADS_WEIGHT;
+    const scopeSway = scopeSystem.update(dt, playerController.getHorizontalSpeed());
+    playerController.camera.setScopeSway(scopeSway.yaw, scopeSway.pitch);
+    scopeOverlay.setVisible(scopeEngaged);
+    if (scopeEngaged) {
+      const prof = weaponManager.activeWeapon.def.presentation;
+      scopeOverlay.setMagnification(
+        scopeSystem.currentMagnification, prof.minMagnification ?? 1,
+      );
+      scopeOverlay.setBreath(scopeSystem.breathFraction, scopeSystem.isHoldingBreath);
+    }
+    // §8.4 step 1: at full scope the eye is pressed to the glass, so the
+    // arms and weapon are not visible at all.
+    viewmodel.setHiddenByScope(scopeEngaged);
   perspective.update(dt);
 
     meleeCombo.update(dt);
@@ -507,6 +530,8 @@ interface OperatorTestHook {
   /** THE state authority — inspect current channels, log and rejections. */
   characterState: typeof characterState;
   projectileSystem: typeof projectileSystem;
+  scopeSystem: typeof scopeSystem;
+  scopeOverlay: typeof scopeOverlay;
   gameStateManager: typeof gameStateManager;
   eventBus: typeof eventBus;
   playerController: PlayerController;
@@ -542,6 +567,8 @@ interface OperatorTestHook {
   engine,
   characterState,
   projectileSystem,
+  scopeSystem,
+  scopeOverlay,
   gameStateManager,
   eventBus,
   playerController,

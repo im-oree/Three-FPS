@@ -77,6 +77,11 @@ export class PlayerCamera {
   private timeSinceKick = Infinity;
   /** 0..1 ADS blend — WeaponManager pushes it; scales the punch (§6.4). */
   private adsWeight = 0;
+  // Document C §6 / D §6.5: scope breath sway. Like recoil it is ADDITIVE
+  // ONLY — it must never touch the stored sim aim, or it would compound with
+  // mouse input and fight the player.
+  private scopeSwayPitch = 0;
+  private scopeSwayYaw = 0;
   private clockNow = 0;
   /** Raw look delta consumed this frame (read-only mirror for WeaponSway). */
   readonly lastMouseDelta: { x: number; y: number } = { x: 0, y: 0 };
@@ -108,8 +113,16 @@ export class PlayerCamera {
    * Distinct from shake() — recoil punches the true aim and springs back to
    * center after firing stops; shake() is nondirectional tremor for impacts.
    */
+  /** ScopeSystem pushes its per-frame drift here (additive, never sim). */
+  setScopeSway(yaw: number, pitch: number): void {
+    this.scopeSwayYaw = yaw;
+    this.scopeSwayPitch = pitch;
+  }
+
   /** TEST seam support: drop queued kicks + the whole additive layer. */
   clearRecoil(): void {
+    this.scopeSwayPitch = 0;
+    this.scopeSwayYaw = 0;
     this.pendingKickPitch = 0;
     this.pendingKickYaw = 0;
     this.pendingKickShots = 0;
@@ -265,9 +278,11 @@ export class PlayerCamera {
     const recoilOn = RECOIL.CAMERA_ENABLED;
     this.clockNow += dt;
     const camPitch = sim.pitch
-      + (recoilOn ? this.climbPitch + this.punchPitch + this.jitterPitch : 0);
+      + (recoilOn ? this.climbPitch + this.punchPitch + this.jitterPitch : 0)
+      + this.scopeSwayPitch;
     const camYaw = sim.yaw
-      + (recoilOn ? this.climbYaw + this.punchYaw + this.jitterYaw : 0);
+      + (recoilOn ? this.climbYaw + this.punchYaw + this.jitterYaw : 0)
+      + this.scopeSwayYaw;
     this.camera.rotation.set(camPitch, camYaw, this.slideTiltRad + shakeRoll, 'YXZ');
 
     // 3) FOV: highest-priority active modifier wins; smooth blend, never snap.

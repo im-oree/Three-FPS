@@ -35,6 +35,7 @@ import { RocketLauncher } from './definitions/RocketLauncher';
 import { Fists } from './definitions/Fists';
 import FireModeSystem from './FireModeSystem';
 import { CyclingActionSystem } from './CyclingActionSystem';
+import scopeSystem from './ScopeSystem';
 import ReloadSystem from './ReloadSystem';
 import WeaponBase from './WeaponBase';
 import type { WeaponViewmodel } from './WeaponViewmodel';
@@ -233,7 +234,22 @@ export class WeaponManager {
     if (this.wasPressedThisFrame('weaponSlot6')) this.switchToSlot(5, tacSprinting);
     if (this.wasPressedThisFrame('weaponSlot7')) this.switchToSlot(6, tacSprinting);
     const wheel = input.getWheelDelta();
-    if (wheel !== 0 && !this.switching && !tacSprinting) this.cycle(wheel > 0 ? 1 : -1);
+    if (wheel !== 0 && !this.switching && !tacSprinting) {
+      // Document D §6.5: while scoped through a variable optic the wheel
+      // adjusts MAGNIFICATION instead of cycling weapons — swapping guns
+      // mid-shot with the same gesture would be indefensible.
+      if (scopeSystem.isScoped) {
+        // Wheel delta is +1 when scrolling DOWN; zooming in should be up.
+        scopeSystem.adjustZoom(wheel > 0 ? -1 : 1);
+        this.applyScopeFov();
+      } else {
+        this.cycle(wheel > 0 ? 1 : -1);
+      }
+    }
+    // Breath hold: the sprint key, while scoped (Document C §8.5).
+    scopeSystem.setHoldingBreath(
+      scopeSystem.isScoped && input.isActionDown('sprint'),
+    );
     if (this.wasPressedThisFrame('inspect')) this.tryInspect(movementState, tacSprinting);
     // §8: inspect cancels instantly on movement/fire/ADS input.
     if (this.inspectHoldTimer > 0 && movementState !== PlayerState.IDLE) this.inspectHoldTimer = 0;
@@ -331,6 +347,15 @@ export class WeaponManager {
     return true;
   }
 
+  /** Re-apply the FOV modifier after a live magnification change. */
+  private applyScopeFov(): void {
+    const fov = scopeSystem.adsFovFor(CAMERA.DEFAULT_FOV);
+    if (fov === null) return;
+    this.deps.camera.applyFOVModifier(
+      'ads', fov, CAMERA_FEEL.ADS_FOV_LERP_SPEED, CAMERA_FEEL.ADS_FOV_PRIORITY,
+    );
+  }
+
   private requestReload(tacSprinting: boolean): void {
     if (this.activeWeapon.def.melee) return; // fists never reload
     if (this.switching || this.reload.isReloading) return;
@@ -363,9 +388,12 @@ export class WeaponManager {
     const adsFov = profile.magnification > 0 && this.activeWeapon.def.id !== 'fists'
       ? CAMERA.DEFAULT_FOV / Math.max(profile.magnification, 1 / CAMERA_FEEL.ADS_ONE_X_FEEL)
       : this.activeWeapon.def.adsZoomFOV;
+    // A magnified optic derives its FOV live from current magnification.
+    scopeSystem.setScoped(true);
+    const scopedFov = scopeSystem.adsFovFor(CAMERA.DEFAULT_FOV);
     this.deps.camera.applyFOVModifier(
       'ads',
-      adsFov,
+      scopedFov ?? adsFov,
       CAMERA_FEEL.ADS_FOV_LERP_SPEED,
       CAMERA_FEEL.ADS_FOV_PRIORITY,
     );
@@ -380,6 +408,7 @@ export class WeaponManager {
     characterState.request({ channel: 'aim', to: Aim.HIP, source: 'WeaponManager.stopADS', force: true });
     this.adsActive = false;
     this.adsLatched = false;
+    scopeSystem.setScoped(false);
     this.deps.camera.clearFOVModifier('ads');
     eventBus.emit('weapon:adsStop', {
       weaponId: this.activeWeapon.def.id,
@@ -398,6 +427,9 @@ export class WeaponManager {
   switchTo(index: number): void {
     if (index === this.activeIndex || this.switching) return;
     this.cycling.cancel();
+    // New optic: reset magnification to its base and refill the breath meter.
+    scopeSystem.setScoped(false);
+    scopeSystem.setProfile(getProfile(this.inventory[index].def.id));
     if (index < 0 || index >= this.inventory.length) return;
     if (this.adsActive) this.stopADS();
     if (this.reload.isReloading) this.reload.cancel(); // no ammo, no complete event

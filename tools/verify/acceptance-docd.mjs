@@ -179,6 +179,155 @@ check('5. sniper is a bolt-action with a true variable scope (4-10x, breath hold
   && sniper.mode === 'manualCycle' && sniper.cycle > 0,
   `${sniper.min}-${sniper.max}x, relief ${sniper.relief} m, breath hold ${sniper.hold}s, bolt ${sniper.cycle}s`);
 
+// --- box 5b: the scope system actually renders and behaves ------------------
+const scope = await page.evaluate(`(async () => {
+  ${EQUIP}
+  const O = window.__OPERATOR__;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const adsIn = async () => {
+    O.inputManager.heldMouseButtons.add(2);
+    for (let k = 0; k < 250; k += 1) {
+      await new Promise((r) => requestAnimationFrame(r));
+      if (O.viewmodel.adsWeight >= 0.99) break;
+    }
+    await sleep(800);
+  };
+  const adsOut = async () => {
+    O.inputManager.heldMouseButtons.delete(2);
+    await sleep(800);
+  };
+  O.perspective.setPerspective('FIRST');
+  O.playerController.debugTeleport(0, 0, 25);
+  O.playerController.debugSetOrientation(0, 0);
+
+  // --- unmagnified optics must NOT get a tunnel ---------------------------
+  const unmagnified = {};
+  for (const id of ['rifle', 'smg']) {
+    await equip(id);
+    await adsIn();
+    unmagnified[id] = {
+      tunnel: O.scopeOverlay.isVisible,
+      rigHidden: O.viewmodel.isHiddenByScope,
+      fov: O.playerController.camera.threeCamera.fov,
+    };
+    await adsOut();
+  }
+
+  // --- the sniper's variable scope ----------------------------------------
+  await equip('sniper');
+  const baseFov = O.playerController.camera.threeCamera.fov;
+  await adsIn();
+  const at4x = {
+    fov: O.playerController.camera.threeCamera.fov,
+    mag: O.scopeSystem.currentMagnification,
+    tunnel: O.scopeOverlay.isVisible,
+    rigHidden: O.viewmodel.isHiddenByScope,
+    hasElement: Boolean(document.getElementById('scope-overlay')),
+    reticle: document.getElementById('scope-reticle')?.style.transform ?? '',
+  };
+
+  // Zoom in on the wheel; FOV must fall and the reticle must shrink.
+  for (let i = 0; i < 8; i += 1) {
+    O.inputManager.wheelDelta = -1;
+    await sleep(110);
+  }
+  await sleep(600);
+  const zoomedIn = {
+    fov: O.playerController.camera.threeCamera.fov,
+    mag: O.scopeSystem.currentMagnification,
+    reticle: document.getElementById('scope-reticle')?.style.transform ?? '',
+  };
+  // Clamp at max: keep scrolling, magnification must stop at maxMagnification.
+  // wheelDelta is drained once per frame by WeaponManager.update, so each
+  // notch needs its own frame — hammering it faster silently drops notches.
+  for (let i = 0; i < 30; i += 1) {
+    O.inputManager.wheelDelta = -1;
+    await sleep(70);
+  }
+  await sleep(400);
+  const clampedMax = O.scopeSystem.currentMagnification;
+
+  // --- breath hold ---------------------------------------------------------
+  const beforeHold = O.scopeSystem.breathFraction;
+  O.inputManager.heldKeys.add('ShiftLeft');
+  // Wall-clock sleep, NOT a rAF loop: headless Chromium throttles animation
+  // frames aggressively, so a frame-counted wait can span a fraction of the
+  // real time it looks like it should.
+  await sleep(6000);
+  const duringHold = {
+    frac: O.scopeSystem.breathFraction,
+    holding: O.scopeSystem.isHoldingBreath,
+  };
+  // Sway must be much smaller while the breath is held.
+  //
+  // Sample the SCOPE SYSTEM'S OWN output, not camera.rotation.y: the camera
+  // also carries recoil, bob and look input, and the slowest sway component
+  // is 0.7 Hz (a 1.4 s period), so a short sample of the composite angle
+  // returns a arbitrary slice of the waveform rather than its amplitude.
+  // Integrate |sway| over >2 full periods instead.
+  const sample = async (ms) => {
+    let peak = 0;
+    const t0 = performance.now();
+    while (performance.now() - t0 < ms) {
+      await sleep(16);
+      // READ the last frame's sway; calling update() here would advance the
+      // meter a second time per frame and refill the breath under us.
+      const sw = O.scopeSystem.lastSway;
+      peak = Math.max(peak, Math.hypot(sw.yaw, sw.pitch));
+    }
+    return peak;
+  };
+  const swayHeld = await sample(2500);
+  // Read the meter at the END of the hold: sample() above keeps the key down,
+  // so this is the true drained depth.
+  const drainedTo = O.scopeSystem.breathFraction;
+  O.inputManager.heldKeys.delete('ShiftLeft');
+  // Let the post-exhaustion penalty lapse so we compare against NORMAL sway.
+  await sleep(3000);
+  const swayFree = await sample(2500);
+
+  await adsOut();
+  const afterUnscope = {
+    tunnel: O.scopeOverlay.isVisible,
+    rigHidden: O.viewmodel.isHiddenByScope,
+  };
+  return {
+    unmagnified, baseFov, at4x, zoomedIn, clampedMax,
+    beforeHold, duringHold, drainedTo, swayHeld, swayFree, afterUnscope,
+  };
+})()`);
+
+check('5b. only a variableScope gets the tunnel; irons/red-dot keep their arms',
+  scope.unmagnified.rifle.tunnel === false && scope.unmagnified.smg.tunnel === false
+  && scope.unmagnified.rifle.rigHidden === false
+  && scope.at4x.tunnel === true && scope.at4x.rigHidden === true
+  && scope.at4x.hasElement === true,
+  `rifle tunnel=${scope.unmagnified.rifle.tunnel}, smg tunnel=${scope.unmagnified.smg.tunnel}, sniper tunnel=${scope.at4x.tunnel} (rig hidden ${scope.at4x.rigHidden})`);
+
+check('5c. adsFOV = baseFOV / magnification, live on the scroll wheel',
+  scope.at4x.mag === 4 && Math.abs(scope.at4x.fov - 90 / 4) < 2.5
+  && scope.zoomedIn.mag > scope.at4x.mag
+  && scope.zoomedIn.fov < scope.at4x.fov
+  && scope.clampedMax === 10,
+  `${scope.at4x.mag}x -> fov ${scope.at4x.fov.toFixed(1)}; zoomed ${scope.zoomedIn.mag}x -> fov ${scope.zoomedIn.fov.toFixed(1)}; clamps at ${scope.clampedMax}x`);
+
+const reticleScale = (t) => {
+  const m = /scale\(([\d.]+)\)/.exec(t);
+  return m ? +m[1] : NaN;
+};
+check('5d. reticle scales INVERSELY with zoom (constant angular subtension)',
+  reticleScale(scope.zoomedIn.reticle) < reticleScale(scope.at4x.reticle),
+  `scale ${reticleScale(scope.at4x.reticle)} at ${scope.at4x.mag}x -> ${reticleScale(scope.zoomedIn.reticle)} at ${scope.zoomedIn.mag}x`);
+
+check('5e. breath-hold drains a meter and visibly suppresses scope sway',
+  scope.beforeHold > 0.99 && scope.duringHold.holding === true
+  && scope.drainedTo <= 0.12
+  && scope.swayHeld < scope.swayFree * 0.5,
+  `meter ${scope.beforeHold.toFixed(2)} -> ${scope.drainedTo.toFixed(2)} (exhausted); sway held ${scope.swayHeld.toExponential(2)} vs free ${scope.swayFree.toExponential(2)} (${(scope.swayFree / scope.swayHeld).toFixed(1)}x reduction)`);
+
+check('5f. un-scoping restores the viewmodel and removes the tunnel',
+  scope.afterUnscope.tunnel === false && scope.afterUnscope.rigHidden === false);
+
 // --- box 6: rocket launcher — real arcing body + splash incl. self ----------
 const rocket = await page.evaluate(`(async () => {
   ${EQUIP}
