@@ -1,0 +1,4 @@
+NSS_3.22 {
+    global: PK11_HasAttributeSet;
+    local: *;
+};
