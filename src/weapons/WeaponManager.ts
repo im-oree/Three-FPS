@@ -18,6 +18,7 @@
  *    switch executes the instant the blocking action completes (§5).
  */
 import eventBus from '../core/EventBus';
+import characterState, { WeaponAction, Aim } from '../character/CharacterStateSystem';
 import type { InputManager } from '../core/InputManager';
 import settingsStore from '../core/SettingsStore';
 import type { PlayerCamera } from '../player/PlayerCamera';
@@ -324,6 +325,7 @@ export class WeaponManager {
       this.snapToReadyTimer = WEAPON.SPRINT_TO_READY_DURATION;
       return;
     }
+    if (!characterState.request({ channel: 'aim', to: Aim.ADS, source: 'WeaponManager.startADS' })) return;
     this.adsActive = true;
     // ADS zoom rides the Doc-2 FOV modifier stack at a priority above
     // sprint's, so both coexist and blending never pops (§6.4/§15 + §7.1).
@@ -349,6 +351,7 @@ export class WeaponManager {
 
   stopADS(): void {
     if (!this.adsActive) return;
+    characterState.request({ channel: 'aim', to: Aim.HIP, source: 'WeaponManager.stopADS', force: true });
     this.adsActive = false;
     this.adsLatched = false;
     this.deps.camera.clearFOVModifier('ads');
@@ -375,12 +378,15 @@ export class WeaponManager {
     this.bufferedFire = false;
     const from = this.activeWeapon;
     const to = this.inventory[index];
-    from.isSwitching = true;
-    to.isSwitching = true;
+    
+    
     this.switching = true;
     this.switchTarget = index;
     this.switchElapsed = 0;
     this.switchEquipDone = false;
+    if (!characterState.request({
+      channel: 'weaponAction', to: WeaponAction.SWITCHING, source: 'WeaponManager.switchTo',
+    })) return;
     eventBus.emit('weapon:switchStart', {
       fromWeaponId: from.def.id,
       toWeaponId: to.def.id,
@@ -398,12 +404,15 @@ export class WeaponManager {
   }
 
   private finishSwitch(): void {
-    const from = this.activeWeapon;
-    from.isSwitching = false;
     this.activeIndex = this.switchTarget;
-    this.activeWeapon.isSwitching = false;
+    
     this.switching = false;
     this.switchJustCompleted = true;
+    characterState.setFact('weaponId', this.activeWeapon.def.id);
+    characterState.request({
+      channel: 'weaponAction', to: WeaponAction.NONE,
+      source: 'WeaponManager.finishSwitch', force: true,
+    });
     eventBus.emit('weapon:switchComplete', { weaponId: this.activeWeapon.def.id });
   }
 

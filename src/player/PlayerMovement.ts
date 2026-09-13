@@ -10,6 +10,7 @@
  */
 import * as THREE from 'three';
 import eventBus from '../core/EventBus';
+import characterState, { Locomotion } from '../character/CharacterStateSystem';
 import { JUMP, MOVEMENT, PLAYER, SLIDE, TAC_SPRINT } from '../utils/Constants';
 import { clamp, easeOutQuad, lerp } from '../utils/MathUtils';
 import type PlayerCharacterController from '../physics/PlayerCharacterController';
@@ -108,6 +109,11 @@ export class PlayerMovement {
     const forwardInput = this.lastMoveLocal.y;
     if (forwardInput < TAC_SPRINT.MIN_FORWARD_INPUT) return false;
     if (!this.isTacticalSprinting) {
+      // Promotion must clear the authority: TAC_SPRINT is declared reachable
+      // only from SPRINT, so this also enforces "no cold-start tac sprint".
+      if (!characterState.request({
+        channel: 'locomotion', to: Locomotion.TAC_SPRINT, source: 'PlayerMovement.requestTacticalSprint',
+      })) return false;
       this.isTacticalSprinting = true;
       this.wallStallTimer = 0;
       eventBus.emit('player:tacSprintStart', {});
@@ -120,6 +126,12 @@ export class PlayerMovement {
     if (!this.isTacticalSprinting) return;
     this.isTacticalSprinting = false;
     this.wallStallTimer = 0;
+    if (characterState.locomotion === Locomotion.TAC_SPRINT) {
+      characterState.request({
+        channel: 'locomotion', to: Locomotion.SPRINT,
+        source: `PlayerMovement.endTacticalSprint(${reason})`, force: true,
+      });
+    }
     eventBus.emit('player:tacSprintEnd', { reason });
   }
 
@@ -233,9 +245,28 @@ export class PlayerMovement {
       sim.velocity.z = approach(sim.velocity.z, this.desiredDir.z, accel * dt);
       this.probe('postApproach', sim.velocity.z);
     } else if (sim.isGrounded) {
+      // NO INPUT: come to a REAL stop, not an asymptotic one.
+      //
+      // Exponential decay alone (v *= 1 - k*dt) never reaches zero, so the
+      // player kept sliding for a few tenths of a metre after releasing a
+      // movement key — which is exactly the "shooting while standing still
+      // keeps drifting me sideways" bug. Real stopping uses an exponential
+      // term for the initial bite plus a LINEAR term that actually terminates,
+      // then snaps the last sub-epsilon crawl to zero.
       const decay = Math.max(0, 1 - MOVEMENT.GROUND_FRICTION * dt);
       sim.velocity.x *= decay;
       sim.velocity.z *= decay;
+
+      const speed = Math.hypot(sim.velocity.x, sim.velocity.z);
+      if (speed <= MOVEMENT.STOP_EPSILON) {
+        sim.velocity.x = 0;
+        sim.velocity.z = 0;
+      } else {
+        const drop = MOVEMENT.GROUND_STOP_DECELERATION * dt;
+        const scale = Math.max(0, speed - drop) / speed;
+        sim.velocity.x *= scale;
+        sim.velocity.z *= scale;
+      }
     }
   }
 

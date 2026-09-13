@@ -355,9 +355,27 @@ const vault = await page.evaluate(async () => {
   window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW' }));
   const trace = [];
   let started = false; let peakY = null; let physicsSuspended = false; let exitSpeed = 0;
-  for (let i = 0; i < 200; i += 1) {
+  // Traversal is JUMP-TRIGGERED (never automatic): run at the ledge, wait for
+  // the prompt to arm, then tap jump. Also record how long we were armed
+  // without jumping, to prove nothing auto-fires.
+  let armedFramesWithoutJump = 0; let jumped = false; let autoTriggered = false; let landedAt = null;
+  for (let i = 0; i < 260; i += 1) {
     await new Promise((r) => requestAnimationFrame(r));
     const p = O.playerController.getPosition();
+    const prompt = O.playerController.traversalPrompt;
+    if (!jumped) {
+      if (O.playerController.isVaulting()) autoTriggered = true;
+      if (prompt) {
+        armedFramesWithoutJump += 1;
+        // Hold the prompt for a beat first, then press jump.
+        if (armedFramesWithoutJump > 12) {
+          window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' }));
+          await new Promise((r) => requestAnimationFrame(r));
+          window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Space' }));
+          jumped = true;
+        }
+      }
+    }
     const active = O.playerController.isVaulting();
     if (active) {
       started = true;
@@ -366,7 +384,16 @@ const vault = await page.evaluate(async () => {
       trace.push({ y: p.y, z: p.z, prog: O.playerController.vault.state.progress,
         hand: O.playerController.vault.state.handWeight });
     }
-    if (started && !active) { exitSpeed = O.playerController.getHorizontalSpeed(); break; }
+    if (started && !active) {
+      // Sample a few frames AFTER handover: a standing jump-mantle legitimately
+      // enters at ~0 m/s (you are pressed against the wall), so what matters is
+      // that control returns and the still-held W accelerates you again.
+      // Capture the landing BEFORE letting the still-held W carry us onward.
+      landedAt = { y: p.y, z: p.z };
+      for (let k = 0; k < 8; k += 1) await new Promise((r) => requestAnimationFrame(r));
+      exitSpeed = O.playerController.getHorizontalSpeed();
+      break;
+    }
   }
   window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyW' }));
   await sleep(400);
@@ -374,7 +401,8 @@ const vault = await page.evaluate(async () => {
   const speedAfter = O.playerController.getHorizontalSpeed();
   return {
     target, started, peakY, physicsSuspended, trace,
-    afterY: after.y, afterZ: after.z, startZ, speedAfter, exitSpeed,
+    armedFramesWithoutJump, autoTriggered, jumped,
+    afterY: landedAt ? landedAt.y : after.y, afterZ: landedAt ? landedAt.z : after.z, startZ, speedAfter, exitSpeed,
     events: events.map(([k]) => k),
     handPeak: Math.max(0, ...trace.map((t) => t.hand)),
   };
@@ -384,6 +412,9 @@ if (vault.noTarget) {
 } else {
   check('6a. forward+height probes trigger a vault on a waist-high ledge',
     vault.started, `ledge h=${vault.target.h.toFixed(2)} m`);
+  check('6a-i. traversal NEVER auto-triggers: prompt arms but nothing happens until jump',
+    vault.armedFramesWithoutJump >= 12 && !vault.autoTriggered && vault.jumped,
+    `armed for ${vault.armedFramesWithoutJump} frames without moving; auto-fired=${vault.autoTriggered}`);
   check('6b. traversal arcs UP over the lip (Bezier apex above the ledge)',
     vault.peakY !== null && vault.peakY > vault.target.maxY - 0.05,
     `apex y ${vault.peakY === null ? 'n/a' : vault.peakY.toFixed(2)} vs ledge top ${vault.target.maxY.toFixed(2)}`);
@@ -394,13 +425,145 @@ if (vault.noTarget) {
   check('6e. player surmounts the ledge and advances past its near edge',
     vault.afterY > vault.target.maxY - 0.1 && vault.afterZ < vault.target.maxZ,
     `ended (y ${vault.afterY.toFixed(2)}, z ${vault.afterZ.toFixed(2)}); ledge top ${vault.target.maxY.toFixed(2)}, near edge z ${vault.target.maxZ.toFixed(2)}`);
-  check('6f. physics restored with momentum preserved (not a dead stop)',
-    vault.exitSpeed > 0.5, `speed at handover ${vault.exitSpeed.toFixed(2)} m/s`);
+  check('6f. physics + player control restored after the curve (not a dead stop)',
+    vault.exitSpeed > 0.5, `speed shortly after handover ${vault.exitSpeed.toFixed(2)} m/s`);
   check('6g. vault emitted start and end events exactly once',
     vault.events.filter((e) => e === 'start').length === 1
     && vault.events.filter((e) => e === 'end').length === 1,
     vault.events.join(','));
 }
+
+// === 6.5 Dedicated mantle: jump-triggered, two-handed, weapon stowed ========
+// Walk a RIFLE-ARMED player up to the 1.8 m wall in the mantle gallery, let
+// them come to a complete stop, then press jump. Everything below must hold.
+const mantle = await page.evaluate(async () => {
+  const O = window.__OPERATOR__;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  O.playerController.debugTeleport(-10.5, 0, -17.2);
+  O.playerController.debugSetOrientation(0, 0);
+  await sleep(600);
+  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW' }));
+  const qx = (o) => (o ? o.quaternion.x : 0);
+  const arm = []; const oneShots = new Set(); const carry = new Set();
+  let prompt = null; let peakY = 0; let jumped = false; let armed = 0;
+  let active = false; let sawActive = false; let stoppedBeforeJump = null;
+  for (let i = 0; i < 320; i += 1) {
+    await new Promise((r) => requestAnimationFrame(r));
+    carry.add(O.characterState.carry);
+    const p = O.playerController.traversalPrompt;
+    if (p) prompt = p;
+    if (!jumped && p) {
+      armed += 1;
+      if (armed > 14) {
+        // Prove the mantle starts from a DEAD STOP, not from run-up momentum.
+        stoppedBeforeJump = O.playerController.getHorizontalSpeed();
+        window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' }));
+        await new Promise((r) => requestAnimationFrame(r));
+        window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Space' }));
+        jumped = true;
+      }
+    }
+    active = O.playerController.isVaulting();
+    if (active) {
+      sawActive = true;
+      peakY = Math.max(peakY, O.playerController.getPosition().y);
+      oneShots.add(O.viewmodel.activeOneShotName);
+      const ch = O.handsRig.chainsForTest;
+      arm.push({
+        eR: qx(ch.R?.elbowPivot), eL: qx(ch.L?.elbowPivot),
+        sR: qx(ch.R?.shoulderPivot), sL: qx(ch.L?.shoulderPivot),
+      });
+    } else if (sawActive) break;
+  }
+  window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyW' }));
+  const range = (k) => {
+    const v = arm.map((a) => a[k]);
+    return v.length ? Math.max(...v) - Math.min(...v) : 0;
+  };
+  return {
+    prompt, peakY, stoppedBeforeJump,
+    carry: [...carry], oneShots: [...oneShots].filter(Boolean),
+    frames: arm.length,
+    ranges: { eR: range('eR'), eL: range('eL'), sR: range('sR'), sL: range('sL') },
+    bakedNames: O.viewmodel.bakedClipNames,
+  };
+});
+check('6h. a 1.8 m wall arms a MANTLE prompt (not a vault)',
+  mantle.prompt === 'mantle', `prompt = ${mantle.prompt}`);
+check('6i. mantle starts from a dead stop when jump is pressed',
+  mantle.peakY > 1.75 && (mantle.stoppedBeforeJump ?? 9) < 0.5,
+  `speed at jump ${(mantle.stoppedBeforeJump ?? -1).toFixed(2)} m/s, apex y ${mantle.peakY.toFixed(2)}`);
+check('6j. the dedicated mantle_climb clip is the one that plays',
+  mantle.oneShots.includes('mantle_climb'),
+  `one-shots during climb: ${mantle.oneShots.join(', ') || 'none'}`);
+check('6k. BOTH arms are driven by the clip (two visible hands on the ledge)',
+  mantle.ranges.eR > 0.1 && mantle.ranges.eL > 0.1
+  && mantle.ranges.sR > 0.1 && mantle.ranges.sL > 0.1,
+  `elbow R ${mantle.ranges.eR.toFixed(2)} / L ${mantle.ranges.eL.toFixed(2)}, shoulder R ${mantle.ranges.sR.toFixed(2)} / L ${mantle.ranges.sL.toFixed(2)} over ${mantle.frames} frames`);
+check('6l. the held weapon is STOWED for the climb (animated empty-handed)',
+  mantle.carry.includes('STOWED') && mantle.carry.includes('READY'),
+  `carry channel visited: ${mantle.carry.join(' -> ')}`);
+
+// === 6.6 Stationary fire must not move the player ===========================
+// Regression: ground friction used to be purely exponential, so releasing a
+// movement key left the player gliding asymptotically. Standing still and
+// shooting then read as "the game keeps sliding me sideways".
+const stationary = await page.evaluate(async () => {
+  const O = window.__OPERATOR__;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const trial = async (label, setup) => {
+    O.playerController.debugTeleport(0, 0, 25);
+    O.playerController.debugSetOrientation(0, 0);
+    O.weaponManager.activeWeapon.currentMagazineAmmo = 30;
+    await sleep(650);
+    if (setup) await setup();
+    // Let the player come to rest first: this isolates drift caused by FIRING
+    // from legitimate deceleration after a movement key is released.
+    for (let i = 0; i < 40; i += 1) await new Promise((r) => requestAnimationFrame(r));
+    const speedAtFire = O.playerController.getHorizontalSpeed();
+    const p0 = { ...O.playerController.getPosition() };
+    window.dispatchEvent(new MouseEvent('mousedown', { button: 0 }));
+    let maxDrift = 0;
+    for (let i = 0; i < 110; i += 1) {
+      await new Promise((r) => requestAnimationFrame(r));
+      const p = O.playerController.getPosition();
+      maxDrift = Math.max(maxDrift, Math.hypot(p.x - p0.x, p.z - p0.z));
+    }
+    window.dispatchEvent(new MouseEvent('mouseup', { button: 0 }));
+    await sleep(200);
+    return { label, speedAtFire, maxDrift };
+  };
+  const press = (code, ms) => async () => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { code }));
+    await sleep(ms);
+    window.dispatchEvent(new KeyboardEvent('keyup', { code }));
+  };
+  const results = [];
+  results.push(await trial('cold stop'));
+  results.push(await trial('after strafe', press('KeyD', 600)));
+  results.push(await trial('after forward', press('KeyW', 600)));
+
+  // Separately: how long does it take to actually STOP after releasing a key?
+  O.playerController.debugTeleport(0, 0, 25);
+  O.playerController.debugSetOrientation(0, 0);
+  await sleep(600);
+  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyD' }));
+  await sleep(700);
+  window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyD' }));
+  let stopFrames = 999;
+  for (let i = 0; i < 200; i += 1) {
+    await new Promise((r) => requestAnimationFrame(r));
+    if (O.playerController.getHorizontalSpeed() === 0) { stopFrames = i + 1; break; }
+  }
+  return { results, stopFrames };
+});
+const worstDrift = Math.max(...stationary.results.map((r) => r.maxDrift));
+check('6m. firing while stationary does not move the player at all',
+  worstDrift < 0.01,
+  stationary.results.map((r) => `${r.label}: drift ${r.maxDrift.toFixed(4)} m`).join('; '));
+check('6n. releasing a movement key reaches EXACTLY zero speed, and quickly',
+  stationary.stopFrames <= 12,
+  `velocity hit exact zero after ${stationary.stopFrames} frames`);
 
 // === 7. Cross-perspective sync ==============================================
 const sync = await page.evaluate(async () => {

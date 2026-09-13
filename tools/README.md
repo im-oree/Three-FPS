@@ -17,3 +17,22 @@
 - `generateLevelGeometry.js` (Document 4)
 - `bakeTextures.js` (Document 4/6)
 - `exportAnimationClips.js` (Document 3)
+
+## Traversal animation clips
+
+`generateTraversalClips.js` authors the mantle and vault hand animations into
+`/assets/animations/` as real committed JSON clips:
+
+```
+node tools/generateTraversalClips.js
+```
+
+- `mantle_climb.json` — 1.0 s logical, `ownsIK: "both"`, six tracks
+  (shoulder/elbow/wrist per side) across five phases: reach, plant, pull,
+  press, recover. Both hands are visibly on the ledge; the weapon is stowed by
+  the CharacterStateSystem for the duration, so the climb is animated
+  empty-handed whether or not a gun is equipped.
+- `vault_over.json` — 0.62 s, `ownsIK: "R"`, one decisive leading-hand plant.
+
+Per Document A no finger joints are authored — grip realism comes from
+shoulder/elbow/wrist rotation only.

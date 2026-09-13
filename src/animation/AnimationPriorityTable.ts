@@ -4,7 +4,13 @@
  * may only start if its tier >= everything currently running.
  */
 export const PRIORITY = {
-  Death: 10,
+  Death: 11,
+  /**
+   * Traversal outranks every weapon action. While the CharacterStateSystem
+   * holds traversal !== NONE both hands are physically on the ledge, so no
+   * reload/switch/melee clip may take the arms back.
+   */
+  Traversal: 10,
   Melee: 9,
   Switch: 8,
   Reload: 7,
@@ -32,6 +38,8 @@ const CLIP_TIERS: Record<string, PriorityName> = {
   shotgun_reload_tactical: 'Reload',
   shotgun_reload_empty: 'Reload',
   inspect: 'IdleFidget',
+  mantle_climb: 'Traversal',
+  vault_over: 'Traversal',
 };
 
 export function tierOf(clipName: string): number {

@@ -6,6 +6,7 @@
  * Pattern choice (spec §6.1): a base class consumed by composition —
  * WeaponManager owns one WeaponBase per equipped slot.
  */
+import characterState, { WeaponAction } from '../character/CharacterStateSystem';
 import { SPREAD } from '../utils/Constants';
 import { clamp, lerp } from '../utils/MathUtils';
 import type { PlayerStateValue } from '../player/PlayerState';
@@ -84,9 +85,15 @@ export class WeaponBase {
   readonly def: WeaponDefinition;
   currentMagazineAmmo: number;
   currentReserveAmmo: number;
-  /** Set by ReloadSystem / WeaponManager while those actions are in flight. */
-  isReloading = false;
-  isSwitching = false;
+  /**
+   * Reload/switch status is NOT stored here. The CharacterStateSystem is the
+   * single authority for what the character is doing; a local copy would drift
+   * (it has before). These are derived reads — see tools/verify/state-authority.mjs.
+   */
+  get busyWithAction(): boolean {
+    const a = characterState.weaponAction;
+    return a === WeaponAction.RELOADING || a === WeaponAction.SWITCHING;
+  }
   private lastFiredAt = -Infinity;
 
   constructor(def: WeaponDefinition) {
@@ -105,8 +112,8 @@ export class WeaponBase {
   }
 
   canFire(): boolean {
-    if (this.def.melee) return !this.isReloading && !this.isSwitching;
-    return this.currentMagazineAmmo > 0 && !this.isReloading && !this.isSwitching;
+    if (this.def.melee) return !this.busyWithAction;
+    return this.currentMagazineAmmo > 0 && !this.busyWithAction;
   }
 
   canFireNow(currentTime: number): boolean {

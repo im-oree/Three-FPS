@@ -15,6 +15,7 @@
  * verifies. Tac sprint engagement cancels via WeaponManager (§8).
  */
 import eventBus from '../core/EventBus';
+import characterState, { WeaponAction } from '../character/CharacterStateSystem';
 import { WEAPON } from '../utils/Constants';
 import type { ReloadEvent } from './WeaponProfile';
 import { getProfile } from './WeaponProfile';
@@ -76,7 +77,13 @@ export class ReloadSystem {
       { weaponId: weapon.def.id, isTactical: this.isTactical },
       (beat) => this.fireBeat(weapon, beat.event),
     );
-    weapon.isReloading = true;
+    // Authority gate: RELOADING must be accepted before anything observable
+    // happens. A rejection here (mid-vault, already switching) is the reason
+    // the reload does not start, and it is recorded in the rejection log.
+    if (!characterState.request({
+      channel: 'weaponAction', to: WeaponAction.RELOADING, source: 'ReloadSystem.begin',
+    })) return false;
+    
     eventBus.emit('weapon:reloadStart', {
       weaponId: weapon.def.id,
       isTactical: this.isTactical,
@@ -127,11 +134,15 @@ export class ReloadSystem {
           reserveAmmo: weapon.currentReserveAmmo,
         });
       }
-      weapon.isReloading = false;
+      
       this.weapon = null;
       this.completedThisFrame = true;
       if (this.timelineId) animationEngine.scheduler.finish(this.timelineId);
       this.timelineId = null;
+      characterState.request({
+        channel: 'weaponAction', to: WeaponAction.NONE,
+        source: 'ReloadSystem.complete', force: true,
+      });
       eventBus.emit('weapon:reloadComplete', { weaponId: weapon.def.id });
     }
   }
@@ -142,7 +153,7 @@ export class ReloadSystem {
     if (!weapon) return;
     if (this.timelineId) animationEngine.scheduler.cancel(this.timelineId);
     this.timelineId = null;
-    weapon.isReloading = false;
+    
     this.weapon = null;
   }
 }

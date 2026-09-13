@@ -10,6 +10,8 @@ import * as THREE from 'three';
 import Engine from './core/Engine';
 import gameStateManager, { GameState } from './state/GameStateManager';
 import eventBus from './core/EventBus';
+import characterState from './character/CharacterStateSystem';
+import { TraversalPrompt } from './ui/TraversalPrompt';
 import TestArena from './environment/TestArena';
 
 import PlayerController from './player/PlayerController';
@@ -113,6 +115,8 @@ const weaponManager = new WeaponManager({
 });
 
 const handsRig = new HandsRig(engine.assetLoader);
+// Manual-traversal HUD hint (pure state consumer) — see /CHARACTER_STATE.md §6.
+const traversalPrompt = new TraversalPrompt();
 
 // --- Document C §3.6: F4 socket/joint orientation axes ----------------------
 const orientationGizmos = new OrientationGizmos(engine.inputManager, () => {
@@ -298,7 +302,10 @@ animationEngine.registerLayer({
 animationEngine.registerLayer({
   name: 'ProceduralSpring',
   category: 'spring',
-  update: (dt) => handsRig.update(dt, viewmodel.activeOneShotOwnership, viewmodel.isOneShotRunning),
+  update: (dt) => {
+    handsRig.setClipDrivesShoulder(viewmodel.activeOneShotDrivesShoulder);
+    handsRig.update(dt, viewmodel.activeOneShotOwnership, viewmodel.isOneShotRunning);
+  },
   contribute: () => undefined,
 });
 animationEngine.registerLayer({
@@ -399,6 +406,10 @@ engine.registerUpdatable({
       capsuleHeight: playerController.getCapsuleHeight(),
       movementState: playerController.currentState,
       traversalActive: playerController.isVaulting(),
+      traversalProgress: playerController.vault.state.progress,
+      traversalKind: playerController.isVaulting()
+        ? (characterState.traversal === 'MANTLE' ? 'mantle' : 'vault')
+        : null,
     });
 
     animationEngine.update(dt);
@@ -415,7 +426,8 @@ engine.registerUpdatable({
     }
     // Runs AFTER PlayerCamera wrote the eye transform (PlayerController is an
     // earlier updatable): it consumes that as the 1PS end of the S-curve.
-    perspective.update(dt);
+    traversalPrompt.update(playerController.traversalPrompt);
+  perspective.update(dt);
 
     meleeCombo.update(dt);
     meleeHit.update(dt);
@@ -470,6 +482,8 @@ animationStateMachine.registerTarget(mockAnimationTarget);
 
 interface OperatorTestHook {
   engine: Engine;
+  /** THE state authority — inspect current channels, log and rejections. */
+  characterState: typeof characterState;
   gameStateManager: typeof gameStateManager;
   eventBus: typeof eventBus;
   playerController: PlayerController;
@@ -503,6 +517,7 @@ interface OperatorTestHook {
 }
 (window as unknown as { __OPERATOR__: OperatorTestHook }).__OPERATOR__ = {
   engine,
+  characterState,
   gameStateManager,
   eventBus,
   playerController,

@@ -105,6 +105,11 @@ export class HandsRig {
    * keeps working unchanged, because they only ever addressed the chain by
    * name and this supplies the same named chain.
    */
+  /** TEST seam: the live arm chains, for harnesses to sample bone poses. */
+  get chainsForTest(): Record<'R' | 'L', JointChain | null> {
+    return this.chains;
+  }
+
   bindToCharacter(root: THREE.Group, chains: { R: JointChain | null; L: JointChain | null }): void {
     this.armed = false;
     // Drop the standalone arms asset if load() built one — the character's
@@ -244,6 +249,17 @@ export class HandsRig {
    * IK command lands later in applyArmCommand(). Baked clips own their joints
    * via the ownership query, so nothing fights the mixer (§7.4).
    */
+  /**
+   * True when the running clip animates the SHOULDER joints (not just the
+   * elbow/wrist). Set by the viewmodel from the clip's own track list, so this
+   * is data-driven rather than a hardcoded clip-name check.
+   */
+  private clipDrivesShoulder = false;
+
+  setClipDrivesShoulder(value: boolean): void {
+    this.clipDrivesShoulder = value;
+  }
+
   update(dt: number, ownership: ClipOwnership, oneShotRunning: boolean): void {
     if (!this.armed || !this.chains.R || !this.chains.L) return;
 
@@ -258,13 +274,22 @@ export class HandsRig {
     }
 
     // --- apply spring deltas as LOCAL rotations on the pose pivots ---------
-    // The shoulder pivots are pure procedural (never IK-owned), so they take
-    // the full pose delta; elbow/wrist springs layer over whatever the mixer
-    // + IK produced (right side) or the baked clip produced (owned side).
-    this.applySpring(this.chains.R!.shoulderPivot, this.springShoulderR.value, 1);
-    this.applySpring(this.chains.L!.shoulderPivot, this.springShoulderL.value, 1);
+    // Elbow/wrist springs layer over whatever the mixer + IK produced (right
+    // side) or the baked clip produced (owned side).
     const rightOwned = ownership === 'R' || ownership === 'both' || ownership === 'wristR';
     const leftOwned = ownership === 'L' || ownership === 'both';
+    // SHOULDERS: normally pure procedural, so they take the full pose delta.
+    // The exception is a clip that OWNS the chain and animates the shoulder
+    // itself — the mantle climb does exactly that, because a pull-up is driven
+    // from the shoulder, not the wrist. Writing the spring on top of it
+    // silently cancelled the clip's shoulder track and the arms never left
+    // their rest pose. Ownership means ownership: all the way up the chain.
+    if (!(rightOwned && this.clipDrivesShoulder)) {
+      this.applySpring(this.chains.R!.shoulderPivot, this.springShoulderR.value, 1);
+    }
+    if (!(leftOwned && this.clipDrivesShoulder)) {
+      this.applySpring(this.chains.L!.shoulderPivot, this.springShoulderL.value, 1);
+    }
     if (!rightOwned) {
       this.applySpring(this.chains.R!.elbowPivot, this.springElbowR.value, 1);
       this.applySpring(this.chains.R!.wristPivot, this.springWristR.value, 1);

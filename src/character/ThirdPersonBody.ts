@@ -26,6 +26,8 @@ import * as THREE from 'three';
 import {
   AIM_OFFSET, FOOT_IK, PERSPECTIVE, PLAYER, TPS_LOCOMOTION,
 } from '../utils/Constants';
+import characterState, { Carry } from './CharacterStateSystem';
+import { ClipPoseSampler } from '../animation/ClipPoseSampler';
 import { LAYER, setLayerRecursive } from '../core/RenderLayers';
 import { TPS_CARRY } from '../utils/Constants';
 import { clamp, lerp } from '../utils/MathUtils';
@@ -49,6 +51,10 @@ export interface BodyPoseInput {
   movementState: string;
   /** Suppresses locomotion while a vault drives the body explicitly. */
   traversalActive: boolean;
+  /** 0..1 through the traversal curve — drives the shared mantle/vault clip. */
+  traversalProgress: number;
+  /** Which traversal clip to sample, or null when not traversing. */
+  traversalKind: 'vault' | 'mantle' | null;
 }
 
 /** Downward ground probe, supplied by whoever owns the collision world. */
@@ -112,6 +118,15 @@ export class ThirdPersonBody {
   private armsExternallyDriven = false;
 
   private weaponProp: THREE.Object3D | null = null;
+  /**
+   * Shared traversal clips. The third-person arms sample the SAME authored
+   * JSON the first-person mixer plays, so a mantle looks identical from both
+   * perspectives and there is only one place to edit the animation.
+   */
+  private readonly mantleClip = new ClipPoseSampler('/assets/animations/mantle_climb.json');
+  private readonly vaultClip = new ClipPoseSampler('/assets/animations/vault_over.json');
+  /** Clip-track node name -> joint on THIS rig instance. */
+  private readonly jointsByName = new Map<string, THREE.Object3D>();
   /** Half the chest's front-to-back depth, measured from the loaded model. */
   private torsoHalfDepth = 0.12;
   private groundProbe: GroundProbe | null = null;
@@ -122,6 +137,8 @@ export class ThirdPersonBody {
   constructor(private readonly assetLoader: AssetLoader) {}
 
   async load(scene: THREE.Scene): Promise<void> {
+    void this.mantleClip.load();
+    void this.vaultClip.load();
     const model = await this.assetLoader.loadModel(PERSPECTIVE.BODY_PATH);
     this.root = model;
     const byName = (n: string): THREE.Object3D | null => model.getObjectByName(n) ?? null;
@@ -148,6 +165,9 @@ export class ThirdPersonBody {
       const wrist = byName(`WristPivot_${side}`);
       if (shoulder && upperArm && elbow && wrist) {
         this.arms[side] = { shoulderPivot: shoulder, upperArmPivot: upperArm, elbowPivot: elbow, wristPivot: wrist };
+        // Name -> joint, so a clip track can address this rig by the same
+        // node names the first-person rig uses.
+        for (const j of [shoulder, upperArm, elbow, wrist]) this.jointsByName.set(j.name, j);
       }
     }
 
@@ -314,6 +334,19 @@ export class ThirdPersonBody {
     this.weaponProp = prop;
   }
 
+  /**
+   * Drive the third-person arms from the shared traversal clip. The clip is
+   * the single source of truth for the climb; nothing here re-authors it.
+   * Blended in and out so the arms do not pop at the boundaries.
+   */
+  private applyTraversalClip(kind: 'vault' | 'mantle', progress: number): void {
+    const sampler = kind === 'mantle' ? this.mantleClip : this.vaultClip;
+    if (!sampler.isReady) return;
+    // Short ease at both ends of the curve.
+    const fade = Math.min(1, progress / 0.12, (1 - progress) / 0.12);
+    sampler.applyPose(progress, (name) => this.jointsByName.get(name), Math.max(0, fade));
+  }
+
   /** Carry pose: both arms brought up onto the weapon (two-handed hold). */
   private applyWeaponCarryPose(): void {
     if (!this.weaponProp) return;
@@ -338,6 +371,12 @@ export class ThirdPersonBody {
    *   5. foot IK against real ground.
    */
   update(dt: number, input: BodyPoseInput): void {
+    // CARRY CHANNEL CONSUMER — see WeaponViewmodel.update(). The third-person
+    // weapon prop is hidden by the same authority read, so both perspectives
+    // agree about whether the hands are holding anything.
+    if (this.weaponProp) {
+      this.weaponProp.visible = characterState.carry !== Carry.STOWED;
+    }
     if (!this.ready || !this.root) return;
 
     for (const [node, rest] of this.restQuat) {
@@ -372,7 +411,19 @@ export class ThirdPersonBody {
       this.applyLocomotion(dt, input);
     }
     this.applyStancePose();
-    this.applyWeaponCarryPose();
+    // CARRY CHANNEL: when the weapon is STOWED the hands are not on a gun, so
+    // neither the two-handed carry pose nor the aim offset may touch the arms
+    // — the traversal clip owns them. Without this gate the carry pose wrote
+    // over the mantle animation every frame and the climb was invisible.
+    const handsOnWeapon = characterState.carry !== Carry.STOWED;
+    if (input.traversalActive && input.traversalKind) {
+      // Same authored asset the first-person arms use, sampled at the
+      // traversal's own progress, so both perspectives show one climb.
+      this.applyTraversalClip(input.traversalKind, input.traversalProgress);
+    } else if (handsOnWeapon) {
+      this.applyWeaponCarryPose();
+    }
+    // The aim offset only drives spine bones, so it is safe either way.
     this.applyAimOffset(dt, input);
     this.root.updateMatrixWorld(true);
     if (this.footIkEnabled && input.isGrounded && !input.traversalActive) {

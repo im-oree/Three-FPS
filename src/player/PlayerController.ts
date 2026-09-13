@@ -25,6 +25,7 @@ import HeadBob, { type BobGait } from './HeadBob';
 import PlayerCamera from './PlayerCamera';
 import type PlayerCharacterController from '../physics/PlayerCharacterController';
 import PlayerMovement from './PlayerMovement';
+import characterState, { Traversal } from '../character/CharacterStateSystem';
 import { PlayerState, resolveNextState, type InputSnapshot, type PhysicsSnapshot, type PlayerStateValue } from './PlayerState';
 import StaminaSystem from './StaminaSystem';
 import VaultSystem, { type VaultProbes } from './VaultSystem';
@@ -51,6 +52,8 @@ export class PlayerController {
   /** Document 2.5 §4.3 double-tap detection: last sprint PRESS-edge time (sim clock). */
   private lastSprintPressAt = -Infinity;
   private tacSprintRequestPending = false;
+  /** Which traversal (if any) the current ledge probe says is available. */
+  private traversalArmed: 'vault' | 'mantle' | null = null;
   /** §4.2: fire/ADS-cancel suppression — sprint re-entry blocked while > 0. */
   private sprintSuppressTimer = 0;
 
@@ -177,6 +180,11 @@ export class PlayerController {
     return this.adsActive;
   }
 
+  /** HUD seam: 'vault' | 'mantle' when a ledge is in reach, else null. */
+  get traversalPrompt(): 'vault' | 'mantle' | null {
+    return this.traversalArmed;
+  }
+
   /** Document 2.5 §4.1: the orthogonal tactical-sprint flag. */
   get isTacticalSprinting(): boolean {
     return this.movement.isTacticalSprinting;
@@ -291,6 +299,10 @@ export class PlayerController {
       if (!this.vault.isActive) {
         // Physics restored immediately on curve completion, momentum kept.
         this.vault.exitVelocity(this.movement.state.velocity);
+        characterState.request({
+          channel: 'traversal', to: Traversal.NONE,
+          source: 'PlayerController.traversalComplete', force: true,
+        });
       }
       this.previousCrouchDown = this.input.isActionDown('crouch');
       this.previousJumpDown = this.input.isActionDown('jump');
@@ -300,10 +312,23 @@ export class PlayerController {
 
     const snapshot = this.gatherSnapshot();
     const physics = this.gatherPhysicsSnapshot();
+    // --- state authority: PlayerState RESOLVES, CharacterStateSystem DECIDES -
+    // resolveNextState is a pure suggestion function; the transition only
+    // becomes real once the authority accepts it. If it is rejected (e.g. a
+    // traversal owns the capsule) the previous state simply persists, which is
+    // exactly the behaviour we want and is visible in the rejection log.
     const next = resolveNextState(this.state, snapshot, physics);
+    characterState.setFact('grounded', physics.isGrounded);
     if (next !== this.state) {
-      this.state = next;
-      this.timeInState = 0;
+      const accepted = characterState.request({
+        channel: 'locomotion', to: next, source: 'PlayerController.fixedStep',
+      });
+      if (accepted) {
+        this.state = next;
+        this.timeInState = 0;
+      } else {
+        this.timeInState += dt;
+      }
     } else {
       this.timeInState += dt;
     }
@@ -314,7 +339,9 @@ export class PlayerController {
       state: this.state,
       sprintActive: this.state === PlayerState.SPRINT,
       crouchActive: snapshot.crouchHeld,
-      jumpQueued: snapshot.jumpPressedThisFrame,
+      // A jump press while a ledge prompt is armed is CONSUMED by the
+      // traversal below — you climb instead of hopping into the wall.
+      jumpQueued: snapshot.jumpPressedThisFrame && this.traversalArmed === null,
       slideTriggered,
       adsSpeedMultiplier: this.adsSpeedMultiplier,
       tacSprintRequested: this.tacSprintRequestPending,
@@ -325,16 +352,47 @@ export class PlayerController {
     // §2 vault trigger: probed AFTER the movement step so the obstruction
     // test sees this frame's real position (a pre-step test triggers a frame
     // early and the Bezier starts inside the wall).
+    // --- traversal is JUMP-TRIGGERED, never automatic ----------------------
+    // Previously any forward movement into a ledge silently mantled you. Now
+    // it works like every other shooter: you must be facing something
+    // climbable AND press jump. `vaultArmed` reports whether a ledge is in
+    // reach, so the HUD can show a prompt.
     const moveInput = this.moveLocal();
-    if (moveInput.y > 0.1) {
-      this.vault.tryStart({
-        position: this.movement.state.position,
-        yaw: this.movement.state.yaw,
-        velocity: this.movement.state.velocity,
-        isGrounded: this.movement.state.isGrounded,
-        capsuleHeight: this.movement.state.capsuleHeight,
-        forwardInput: true,
-      });
+    // Decide against the prompt that was armed BEFORE this step: the player
+    // pressed jump because they saw that prompt. Re-probing first would test
+    // a position the jump has already moved.
+    const wantsTraversal = snapshot.jumpPressedThisFrame
+      && moveInput.y > 0.1 && this.traversalArmed !== null;
+    const armedKind = this.traversalArmed;
+    this.traversalArmed = this.vault.probeOnly({
+      position: this.movement.state.position,
+      yaw: this.movement.state.yaw,
+      velocity: this.movement.state.velocity,
+      isGrounded: this.movement.state.isGrounded,
+      capsuleHeight: this.movement.state.capsuleHeight,
+      forwardInput: true,
+    });
+    if (wantsTraversal && armedKind && characterState.canTraverse()) {
+      const kind = armedKind === 'mantle' ? Traversal.MANTLE : Traversal.VAULT;
+      // The authority gates it; only on acceptance does the Bezier start.
+      if (characterState.request({
+        channel: 'traversal', to: kind, source: 'PlayerController.jumpTraversal',
+      })) {
+        const started = this.vault.tryStart({
+          position: this.movement.state.position,
+          yaw: this.movement.state.yaw,
+          velocity: this.movement.state.velocity,
+          isGrounded: this.movement.state.isGrounded,
+          capsuleHeight: this.movement.state.capsuleHeight,
+          forwardInput: true,
+        });
+        if (!started) {
+          characterState.request({
+            channel: 'traversal', to: Traversal.NONE,
+            source: 'PlayerController.jumpTraversal(abort)', force: true,
+          });
+        }
+      }
     }
 
     // §4.3: tac sprint drains the meter at its own steeper constant, and a

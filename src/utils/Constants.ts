@@ -121,6 +121,23 @@ export const MOVEMENT = {
   GROUND_ACCELERATION: 46,
   AIR_ACCELERATION: 11,
   GROUND_FRICTION: 12,
+  /**
+   * Linear stopping force (m/s per second) applied alongside the exponential
+   * friction when there is no movement input.
+   *
+   * WHY BOTH: exponential decay (v *= 1 - k*dt) is asymptotic — it approaches
+   * zero but never reaches it, so releasing a strafe key left the player
+   * gliding for ~0.4 m. That glide is invisible while you are moving, but the
+   * moment you stop and shoot it reads as "the gun keeps drifting sideways on
+   * its own". A constant linear term actually terminates the motion.
+   */
+  GROUND_STOP_DECELERATION: 34,
+  /**
+   * Below this speed (m/s) with no input, horizontal velocity is snapped to
+   * exactly zero. Without a hard floor the residual millimetre-per-second
+   * creep still animates sway and micro-bob forever.
+   */
+  STOP_EPSILON: 0.12,
 } as const;
 
 /** Sprint eligibility (Document 2, Section 6.3). */
@@ -836,6 +853,7 @@ export const VAULT = {
   /** A mantle may be started from a near standstill; a vault may not. */
   ALLOW_STANDING_MANTLE: true,
   /** Minimum approach speed for a mantle (m/s) — allows walking into it. */
+  /** @deprecated Traversal is jump-triggered; a standing mantle is normal. */
   MIN_MANTLE_SPEED: 0.2,
   /** A mantle ends standing ON the ledge, this far past the lip (m). */
   MANTLE_LANDING_INSET: 0.42,

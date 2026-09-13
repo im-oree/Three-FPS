@@ -57,6 +57,16 @@ export interface VaultState {
 const FORWARD = new THREE.Vector3();
 const DOWN = new THREE.Vector3(0, -1, 0);
 const _probeOrigin = new THREE.Vector3();
+
+/** Result of the pure geometry solve — enough to start a traversal. */
+interface TraversalPlan {
+  ledgeY: number;
+  ledgeHeight: number;
+  overshoot: number;
+  isMantle: boolean;
+  duration: number;
+  horizontalSpeed: number;
+}
 const _tmp = new THREE.Vector3();
 
 export class VaultSystem {
@@ -100,9 +110,29 @@ export class VaultSystem {
    * caller must then suspend normal movement integration until isActive
    * goes false (PlayerController does this).
    */
+  /**
+   * Probe only: report which traversal (if any) the ledge ahead supports,
+   * WITHOUT starting it. Drives the on-screen prompt and lets
+   * PlayerController gate the move behind a jump press.
+   */
+  probeOnly(input: VaultTriggerInput): 'vault' | 'mantle' | null {
+    const plan = this.solve(input);
+    return plan ? (plan.isMantle ? 'mantle' : 'vault') : null;
+  }
+
   tryStart(input: VaultTriggerInput): boolean {
-    if (this.active || this.cooldown > 0 || !this.probes) return false;
-    if (!input.isGrounded || !input.forwardInput) return false;
+    const plan = this.solve(input);
+    if (!plan) return false;
+    return this.begin(input, plan);
+  }
+
+  /**
+   * Pure geometry solve. Returns the traversal plan or null. No mutation, so
+   * it is safe to call every frame for the prompt.
+   */
+  private solve(input: VaultTriggerInput): TraversalPlan | null {
+    if (this.active || this.cooldown > 0 || !this.probes) return null;
+    if (!input.isGrounded || !input.forwardInput) return null;
 
     // --- reach envelope, derived from the CHARACTER's own stature ----------
     // Nothing here is a hardcoded world height. Every limit is a fraction of
@@ -119,14 +149,14 @@ export class VaultSystem {
 
     const horizontalSpeed = Math.hypot(input.velocity.x, input.velocity.z);
     // A mantle is a standing pull-up; only the faster vault-over needs run-up.
-    if (horizontalSpeed < VAULT.MIN_SPEED && !VAULT.ALLOW_STANDING_MANTLE) return false;
+    if (horizontalSpeed < VAULT.MIN_SPEED && !VAULT.ALLOW_STANDING_MANTLE) return null;
 
     FORWARD.set(-Math.sin(input.yaw), 0, -Math.cos(input.yaw)).normalize();
 
     // --- Raycast 1: forward obstacle, fired at mid-torso height -------------
     _probeOrigin.copy(input.position).addScaledVector(UP, minLedge * 0.9);
     const wallDistance = this.probes.ray(_probeOrigin, FORWARD, VAULT.PROBE_FORWARD);
-    if (wallDistance === null) return false;
+    if (wallDistance === null) return null;
 
     // --- Raycast 2: height finder, straight DOWN from above the obstacle ----
     // Search from full overhead reach so tall walls are found too; whether the
@@ -137,31 +167,33 @@ export class VaultSystem {
       .addScaledVector(FORWARD, overshoot)
       .addScaledVector(UP, searchTop);
     const downDistance = this.probes.ray(_probeOrigin, DOWN, searchTop);
-    if (downDistance === null) return false;
+    if (downDistance === null) return null;
 
     const ledgeY = _probeOrigin.y - downDistance;
     const ledgeHeight = ledgeY - input.position.y;
     // Too low to be worth animating, or physically out of reach: refuse. This
     // single comparison is what stops the player climbing arbitrary walls.
-    if (ledgeHeight < minLedge || ledgeHeight > mantleMax) return false;
+    if (ledgeHeight < minLedge || ledgeHeight > mantleMax) return null;
 
     // Classify. A VAULT clears a low obstacle in one running motion; a MANTLE
     // is a slower pull-up onto a ledge above waist height.
     const isMantle = ledgeHeight > vaultMax;
-    if (isMantle && horizontalSpeed < VAULT.MIN_MANTLE_SPEED) return false;
+    // NO speed requirement for a mantle. Traversal is jump-triggered now, and
+    // the whole point is that you can walk up to a ledge, come to a stop, and
+    // press jump. Requiring residual speed made the prompt vanish at exactly
+    // the moment the player was in position to use it.
 
     // A running vault-over needs the head to be clear; a mantle explicitly
     // does not, because the wall continues upward past the character.
     if (!isMantle) {
       _probeOrigin.copy(input.position).addScaledVector(UP, vaultMax);
       const headBlocked = this.probes.ray(_probeOrigin, FORWARD, wallDistance + 0.15);
-      if (headBlocked !== null) return false;
+      if (headBlocked !== null) return null;
     }
     // Duration scales with how far the body has to be lifted, so a high
     // mantle reads as effortful rather than teleporting.
     const duration = VAULT.DURATION
       * (isMantle ? 1 + (ledgeHeight - vaultMax) / Math.max(0.01, mantleMax - vaultMax) * VAULT.MANTLE_DURATION_SCALE : 1);
-    this.duration = duration;
 
     // --- Raycast 3: is there room to actually land beyond the lip? ----------
     // Probe the spot the traversal will actually END on, which differs by
@@ -176,9 +208,16 @@ export class VaultSystem {
     );
     const landingBlocked = this.probes.ray(_probeOrigin, DOWN, 0.05);
     const headroom = this.probes.ray(_probeOrigin, UP, PLAYER.STAND_HEIGHT - input.capsuleHeight * 0.6);
-    if (landingBlocked !== null || headroom !== null) return false;
+    if (landingBlocked !== null || headroom !== null) return null;
 
-    // --- build the Bezier ---------------------------------------------------
+    return { ledgeY, ledgeHeight, overshoot, isMantle, duration, horizontalSpeed };
+  }
+
+  /** Apply a solved plan: build the Bezier and enter the active traversal. */
+  private begin(input: VaultTriggerInput, plan: TraversalPlan): boolean {
+    const { ledgeY, ledgeHeight, overshoot, isMantle, duration, horizontalSpeed } = plan;
+    FORWARD.set(-Math.sin(input.yaw), 0, -Math.cos(input.yaw)).normalize();
+    this.duration = duration;
     this.travelDir.copy(FORWARD);
     this.entrySpeed = horizontalSpeed;
     this.start.copy(input.position);

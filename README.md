@@ -1,5 +1,13 @@
 # MASTER SPECIFICATION: "OPERATOR" — A Call of Duty–Style 3D First-Person Shooter
 
+> **⚠ Character state — read before touching the character.**
+> **All character behaviour goes through one authority.**
+> See [`CHARACTER_STATE.md`](CHARACTER_STATE.md) — it is normative, and
+> `tools/verify/state-authority.mjs` (part of `npm run verify`) fails the build
+> if a subsystem bypasses it. In short: change state only via
+> `characterState.request(...)`, read it only via its getters and derived
+> helpers, and never keep a private `isReloading`-style mirror.
+
 ## 0. Purpose of This Document
 
 This is a complete build specification meant to be handed to a developer or AI coding agent as the single source of truth for building the **core single-player FPS engine and gameplay loop**. It intentionally defines base concepts from scratch so nothing is assumed or left ambiguous. This document covers **movement, controls, weapons, animation, environments, UI/menus, audio, and visual fidelity**. It deliberately does **NOT** cover AI enemy logic (a separate follow-up document) or networked multiplayer (a future document), but the architecture below must be built so those systems can be dropped in later without refactoring.
