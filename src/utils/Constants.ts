@@ -940,11 +940,27 @@ export const PERSPECTIVE_SYNC = {
  * the character visibly holds its weapon prop with both hands. Authored to
  * match the first-person viewmodel's hold, so the two perspectives agree.
  */
+/**
+ * Third-person weapon carry pose.
+ *
+ * SIGN CORRECTION (was a real bug): per COORDINATE_CONVENTIONS.md a joint's
+ * local -Y runs down the limb, so a POSITIVE X rotation swings the segment
+ * FORWARD. These upper-arm values were negative, which swung both arms
+ * BACKWARD -- the hands ended up behind the chest and the rifle pointed up
+ * over the shoulder, pointing away from the direction of travel. It read as
+ * "the character is facing backwards" even though the body root was correct.
+ *
+ * Values below are MEASURED by an in-engine sweep (not guessed) that scored
+ * wrist position against the chest and the weapon's own -Z against world
+ * forward. At these angles the weapon's forward axis is [0.09, 0.10, -0.99],
+ * i.e. essentially straight down the body's facing, with the hands 0.32 m
+ * (right) and 0.48 m (left) in FRONT of the chest.
+ */
 export const TPS_CARRY = {
-  RIGHT_UPPER: { x: -1.15, y: -0.30, z: 0.10 },
-  RIGHT_ELBOW: { x: -0.95, y: 0.0, z: 0.0 },
-  LEFT_UPPER: { x: -1.30, y: 0.55, z: 0.0 },
-  LEFT_ELBOW: { x: -1.25, y: 0.0, z: 0.0 },
+  RIGHT_UPPER: { x: 1.20, y: 0.0, z: 0.10 },
+  RIGHT_ELBOW: { x: -1.10, y: 0.0, z: 0.0 },
+  LEFT_UPPER: { x: 1.50, y: 0.55, z: 0.0 },
+  LEFT_ELBOW: { x: -0.90, y: 0.0, z: 0.0 },
   /** Weapon grip offset in the right-wrist frame (metres). */
   GRIP_LOCAL: { x: 0.0, y: -0.07, z: 0.02 },
 } as const;

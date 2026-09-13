@@ -648,6 +648,81 @@ check('6q. switching away from fists releases arm ownership (no zombie clip)',
   fists.weaponId === 'rifle' && fists.ownershipAfter === 'none',
   `back to ${fists.weaponId}, ownership=${fists.ownershipAfter}`);
 
+// === 6.8 Third-person facing: the weapon must point where we are going =====
+// Regression: TPS_CARRY's upper-arm X rotations were NEGATIVE, which swings a
+// limb BACKWARD under the -Y-down-the-limb convention. The hands ended up
+// behind the chest and the rifle pointed back over the shoulder, which read
+// as "the character is facing backwards" -- most obvious during a slide,
+// where the body moves forward but the arms trailed behind.
+const facing = await page.evaluate(async () => {
+  const O = window.__OPERATOR__;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Earlier sections leave the fists slot equipped; this check is about the
+  // WEAPON carry pose, so put a rifle in the character's hands first.
+  const wm = O.weaponManager;
+  const rifleIdx = wm.inventory.findIndex((w) => w.def.id === 'rifle');
+  // switchTo() is a no-op when the slot is already active, so only wait when
+  // a real swap was actually started.
+  if (wm.activeIndex !== rifleIdx) {
+    wm.switchTo(rifleIdx);
+    for (let k = 0; k < 400; k += 1) {
+      await new Promise((r) => requestAnimationFrame(r));
+      if (!wm.switching && wm.activeWeapon.def.id === 'rifle') break;
+    }
+  }
+  await sleep(600);
+  O.perspective.setPerspective('THIRD');
+  O.playerController.debugTeleport(0, 0, 25);
+  O.playerController.debugSetOrientation(0, 0);
+  await sleep(1300);
+  const tb = O.thirdPersonBody;
+  const root = tb.root;
+  const V = O.playerController.getPosition().constructor;
+  const Q = root.quaternion.constructor;
+  const sample = (label) => {
+    root.updateMatrixWorld(true);
+    const bodyFwd = new V(0, 0, -1).applyQuaternion(root.getWorldQuaternion(new Q()));
+    const wp = tb.carriedWeapon;
+    const weaponFwd = wp
+      ? new V(0, 0, -1).applyQuaternion(wp.getWorldQuaternion(new Q()))
+      : null;
+    const chest = new V(); root.getObjectByName('Bone_Chest').getWorldPosition(chest);
+    const hr = new V(); root.getObjectByName('Socket_HandGrip_R')?.getWorldPosition(hr);
+    const hl = new V(); root.getObjectByName('Socket_HandGrip_L')?.getWorldPosition(hl);
+    // "In front" = along the body's own forward axis, not a raw world axis.
+    const aheadR = hr.clone().sub(chest).dot(bodyFwd);
+    const aheadL = hl.clone().sub(chest).dot(bodyFwd);
+    return {
+      label,
+      loco: O.characterState.locomotion,
+      alignment: weaponFwd ? weaponFwd.dot(bodyFwd) : null,
+      aheadR, aheadL,
+    };
+  };
+  const out = [];
+  out.push(sample('idle'));
+  O.inputManager.heldKeys.add('KeyW');
+  await sleep(1500);
+  out.push(sample('run'));
+  O.inputManager.heldKeys.add('ShiftLeft');
+  await sleep(1300);
+  out.push(sample('sprint'));
+  O.inputManager.heldKeys.add('KeyC');
+  await sleep(400);
+  out.push(sample('slide'));
+  O.inputManager.heldKeys.clear();
+  await sleep(500);
+  return out;
+});
+const badAim = facing.filter((f) => f.alignment === null || f.alignment < 0.8);
+const badHands = facing.filter((f) => f.aheadR <= 0.05 || f.aheadL <= 0.05);
+check('6r. third-person weapon points along the body facing in every state',
+  badAim.length === 0,
+  facing.map((f) => `${f.label} ${f.alignment === null ? 'NO WEAPON' : f.alignment.toFixed(2)}`).join(', '));
+check('6s. third-person hands stay IN FRONT of the chest (never trailing)',
+  badHands.length === 0,
+  facing.map((f) => `${f.label} R+${f.aheadR.toFixed(2)} L+${f.aheadL.toFixed(2)}`).join(', '));
+
 // === 7. Cross-perspective sync ==============================================
 const sync = await page.evaluate(async () => {
   const O = window.__OPERATOR__;

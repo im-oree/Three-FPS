@@ -168,17 +168,38 @@ void thirdPersonBody.load(arena.scene).then(() => {
   thirdPersonBody.setArmsExternallyDriven(false);
 
   // Keep the body's weapon prop in lockstep with the equipped weapon.
-  const syncWeaponProp = async (): Promise<void> => {
-    const def = weaponManager.activeWeapon.def;
-    if (def.melee || !def.modelPath) {
+  //
+  // RACE GUARD: loadModel() is async, so two quick switches can resolve out of
+  // order and leave the body holding the WRONG weapon -- or, when the second
+  // switch is to fists (which resolves synchronously to null), leave a real
+  // gun's late-arriving prop attached to empty hands. Stamp each request and
+  // drop any result that is no longer the active weapon.
+  // The guard compares the ACTIVE WEAPON ID on resolve, not a request counter.
+  // A single switch emits weapon:viewmodelEquipped more than once, so a
+  // counter made every in-flight load look superseded by its own successor
+  // and the body ended up holding nothing.
+  // Drive this off the EVENT'S weaponId, not weaponManager.activeWeapon.
+  // weapon:viewmodelEquipped fires from inside equip(), at which point the
+  // manager's activeIndex still points at the OUTGOING weapon -- so reading
+  // activeWeapon here attached the previous gun (and, coming from fists,
+  // attached nothing at all and stripped the body's weapon entirely).
+  let equippedPropId: string | null = null;
+  const syncWeaponProp = async (weaponId: string): Promise<void> => {
+    equippedPropId = weaponId;
+    const def = weaponManager.inventory.find((w) => w.def.id === weaponId)?.def;
+    if (!def || def.melee || !def.modelPath) {
       thirdPersonBody.setWeaponProp(null, TPS_CARRY.GRIP_LOCAL);
       return;
     }
     const prop = await engine.assetLoader.loadModel(def.modelPath);
+    // Superseded by a later equip while this model was loading: discard.
+    if (equippedPropId !== weaponId) return;
     thirdPersonBody.setWeaponProp(prop, TPS_CARRY.GRIP_LOCAL);
   };
-  eventBus.on('weapon:viewmodelEquipped', () => { void syncWeaponProp(); });
-  void syncWeaponProp();
+  eventBus.on('weapon:viewmodelEquipped', (payload) => {
+    void syncWeaponProp((payload as { weaponId: string }).weaponId);
+  });
+  void syncWeaponProp(weaponManager.activeWeapon.def.id);
 
   // §4 foot IK traces against the REAL collision world (Rapier statics).
   thirdPersonBody.setGroundProbe((origin, maxDistance) => {

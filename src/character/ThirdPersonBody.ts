@@ -357,6 +357,14 @@ export class ThirdPersonBody {
     this.rotateLocal(this.arms.L?.elbowPivot, c.LEFT_ELBOW.x, c.LEFT_ELBOW.y, c.LEFT_ELBOW.z);
   }
 
+  /**
+   * Debug/test seam: the third-person weapon prop, so harnesses can verify
+   * where the carried weapon actually points without reaching into privates.
+   */
+  get carriedWeapon(): THREE.Object3D | null {
+    return this.weaponProp;
+  }
+
   /** The arm chains, for the shared HandsRig to drive (unified character). */
   get armChains(): { R: JointChain | null; L: JointChain | null } {
     return { R: this.arms.R, L: this.arms.L };
