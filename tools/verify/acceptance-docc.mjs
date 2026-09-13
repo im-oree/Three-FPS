@@ -227,5 +227,9 @@ check('dropped mag: Rapier body settles on real geometry (§5.6)',
 
 check('zero page errors across the suite', pageErrors.length === 0, pageErrors[0]?.slice(0, 120));
 
+// Always tear the browser down and exit explicitly. Without this the script
+// printed all its results and then hung forever on the live Chromium handle,
+// which is why this harness could never be run to completion in CI.
+await browser.close();
 console.log(`\nACCEPTANCE DOC C: ${9 - failed}/9 boxes passed`);
-if (failed > 0) process.exit(1);
+process.exit(failed === 0 ? 0 : 1);

@@ -15,7 +15,9 @@
     "verify:acceptance": "node tools/verify/acceptance-doc2.mjs",
     "verify:acceptance:doc1": "node tools/verify/acceptance-doc1.mjs",
     "verify:acceptance:doc2": "node tools/verify/acceptance-doc2.mjs",
-    "verify:state": "node tools/verify/state-authority.mjs"
+    "verify:state": "node tools/verify/state-authority.mjs",
+    "verify:acceptance:docc": "node tools/verify/acceptance-docc.mjs",
+    "verify:acceptance:tps": "node tools/verify/acceptance-tps.mjs"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.20.0",
