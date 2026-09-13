@@ -64,6 +64,8 @@ export class AnimationLayerCompositor {
   };
   private readonly qHip = new THREE.Quaternion();
   private readonly qIdentity = new THREE.Quaternion();
+  private readonly qAdsDrop = new THREE.Quaternion();
+  private readonly adsDropEuler = new THREE.Euler();
   private lastResetKey = '';
 
   update(dt: number, input: CompositorInput): ComposedPose {
@@ -90,16 +92,44 @@ export class AnimationLayerCompositor {
       // at full ADS — camera z-space target for the OPTIC is −eyeRelief
       // (negative = in front). The grip anchor = optic target − (optic's
       // measured camera-space offset from the grip).
+      // Sway is heavily damped while braced against the sight. At the old 0.4
+      // scale, running or strafing while aiming swung the receiver far enough
+      // to sweep the near plane — the "lots of clipping when aiming while
+      // moving" the player reported. Bracing a weapon against your shoulder
+      // genuinely suppresses most of that motion, so damping it is both the
+      // fix and the realistic behaviour. Longitudinal (Z) sway is damped
+      // hardest because that is the axis that drives near-plane intersection.
+      const swayScale = VIEWMODEL.ADS_SWAY_SCALE;
       this.adsAnchor.set(
-        adsOff[0] - rel.x + sway.posX * 0.4,
-        adsOff[1] - rel.y + sway.posY * 0.4,
-        -profile.eyeRelief - rel.z + sway.posZ * 0.4,
+        adsOff[0] - rel.x + sway.posX * swayScale,
+        adsOff[1] - rel.y + sway.posY * swayScale,
+        -profile.eyeRelief - rel.z + sway.posZ * swayScale * VIEWMODEL.ADS_SWAY_Z_SCALE,
       );
-      // Hard anti-clip guard: the grip anchor (and thus the whole weapon)
-      // must stay IN FRONT of the eye plane — a solve that commands the
-      // grip behind z=-0.10 is demanding an unreachable fold and would
-      // drag the receiver through the camera.
+      // Anti-clip guard. The §8.2 eye-relief solve is deliberately left intact
+      // (the optic must sit exactly `eyeRelief` in front of the eye, which is
+      // what makes irons line up), and the GRIP legitimately ends up behind
+      // the eye plane — a real rifle's stock is beside your cheek, and
+      // geometry behind the camera is simply not rasterised.
+      //
+      // What actually caused visible ADS clipping is geometry crossing the
+      // NEAR PLANE while sway/bob pushes the weapon around. So the guard caps
+      // how far back the anchor may travel rather than forcing it in front:
+      // beyond this the receiver starts sweeping through the near plane.
       this.adsAnchor.z = Math.min(this.adsAnchor.z, VIEWMODEL.ADS_ANCHOR_MIN_FRONT);
+
+      // --- ADS DROP: lower the weapon in frame, keep the aim honest --------
+      // A geometrically perfect eye-relief solve puts the optic exactly on the
+      // camera axis, which means the receiver fills the screen and the stock
+      // sweeps the near plane. Real games solve this by seating the weapon
+      // LOWER in the frame than true sight alignment would demand, so the
+      // player can actually see it and see past it.
+      //
+      // The drop is purely a framing offset: the barrel is counter-pitched by
+      // the exact angle the drop introduces (see adsDropPitch below), so the
+      // muzzle still converges on the same point down-range. Aim stays
+      // accurate; only the presentation moves.
+      this.adsAnchor.y -= VIEWMODEL.ADS_DROP_Y;
+      this.adsAnchor.z -= VIEWMODEL.ADS_DROP_Z;
       adsAnchorValid = true;
     }
 
@@ -128,6 +158,18 @@ export class AnimationLayerCompositor {
     this.pose.anchorRotation
       .copy(this.qIdentity)
       .slerp(this.qHip, lerp(1, swayShareAtAds, adsWeight));
+
+    // Counter-pitch for the ADS drop (see above). Dropping the grip by dy at a
+    // sight radius of ADS_CONVERGENCE_DISTANCE tilts the bore off-target by
+    // atan(dy / distance); rotating the weapon back up by that angle puts the
+    // muzzle line back through the crosshair. Positive X rotation pitches the
+    // muzzle up in this rig's convention (-Z forward, +Y up).
+    if (adsWeight > 0.001) {
+      const pitch = Math.atan2(VIEWMODEL.ADS_DROP_Y, VIEWMODEL.ADS_CONVERGENCE_DISTANCE);
+      this.adsDropEuler.set(pitch * adsWeight, 0, 0, 'YXZ');
+      this.qAdsDrop.setFromEuler(this.adsDropEuler);
+      this.pose.anchorRotation.multiply(this.qAdsDrop);
+    }
 
     // --- rigid rig-root offsets: ROOT_FOLLOW_FACTOR of the full sum ---------
     const f = VIEWMODEL.ROOT_FOLLOW_FACTOR;

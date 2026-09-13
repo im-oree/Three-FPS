@@ -164,6 +164,20 @@ export class PlayerCharacterController {
     return best;
   }
 
+  /**
+   * Arbitrary-direction static probe (FPS/TPS Spec §2 vault raycasts).
+   * Single ray, not a footprint sweep: the traversal probes deliberately
+   * sample precise points (torso height, above the lip, the landing pad)
+   * rather than a capsule envelope, so a footprint spread would smear the
+   * exact ledge geometry the Bezier is built from.
+   */
+  raycastHorizontal(origin: THREE.Vector3, direction: THREE.Vector3, maxDistance: number): CollisionHit | null {
+    const dir = direction.clone().normalize();
+    const hit = this.physics.castRayStatic(origin, dir, maxDistance);
+    if (!hit || hit.toi <= INSIDE_EPSILON) return null;
+    return { point: hit.point, normal: hit.normal, distance: hit.toi };
+  }
+
   /** Centre + rim sample points of the capsule footprint. */
   private footprint(): THREE.Vector3[] {
     const r = PLAYER.CAPSULE_RADIUS * RIM_EPSILON;

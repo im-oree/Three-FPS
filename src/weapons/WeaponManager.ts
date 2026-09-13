@@ -214,6 +214,7 @@ export class WeaponManager {
     if (this.wasPressedThisFrame('reload')) this.requestReload(tacSprinting);
     if (this.wasPressedThisFrame('weaponSlot1')) this.switchToSlot(0, tacSprinting);
     if (this.wasPressedThisFrame('weaponSlot2')) this.switchToSlot(1, tacSprinting);
+    if (this.wasPressedThisFrame('weaponSlot3')) this.switchToSlot(2, tacSprinting);
     const wheel = input.getWheelDelta();
     if (wheel !== 0 && !this.switching && !tacSprinting) this.cycle(wheel > 0 ? 1 : -1);
     if (this.wasPressedThisFrame('inspect')) this.tryInspect(movementState, tacSprinting);

@@ -77,10 +77,14 @@ export const DEFAULT_KEY_BINDINGS = {
   ads: 'Mouse2',
   weaponSlot1: 'Digit1',
   weaponSlot2: 'Digit2',
+  /** Melee-only stance (fists), the way every shooter exposes it. */
+  weaponSlot3: 'Digit3',
   // Document 2.5 §5: future-reserved melee bind (edge-triggered pattern only).
   melee: 'KeyV',
   // Document 2.5 §8: cosmetic inspect one-shot, idle-only.
   inspect: 'KeyF',
+  // FPS/TPS Spec §1: 1PS <-> 3PS perspective toggle.
+  togglePerspective: 'KeyP',
   debugToggle: 'F3',
   debugGizmos: 'F4', // Document C §3.6 socket/joint orientation axes
   pause: 'Escape',
@@ -353,7 +357,28 @@ export const VIEWMODEL = {
   ADS_LEAN_Z: 0.2,
   /** §8.2 anti-clip: the commanded ADS grip anchor must stay at least this
    *  far IN FRONT of the eye (camera-space z ≤ −this). Metres. */
+  /**
+   * Cap (m, camera space) on how far BEHIND the eye the ADS grip anchor may
+   * sit. The stock belongs behind the eye at full ADS; this only stops sway
+   * from dragging the receiver far enough back to sweep the near plane.
+   */
   ADS_ANCHOR_MIN_FRONT: 0.1,
+  /** Sway retained while braced in ADS (vs 1.0 at the hip). */
+  ADS_SWAY_SCALE: 0.12,
+  /** Extra damping on the longitudinal axis (near-plane safety). */
+  ADS_SWAY_Z_SCALE: 0.35,
+  /**
+   * ADS framing drop (m, camera space). The weapon sits this far BELOW true
+   * optical alignment so it stays visible and does not fill the screen or
+   * sweep the near plane. Accuracy is preserved: the bore is counter-pitched
+   * by atan(ADS_DROP_Y / ADS_CONVERGENCE_DISTANCE), so the muzzle line still
+   * passes through the crosshair.
+   */
+  ADS_DROP_Y: 0.055,
+  /** Small push forward with the drop, so the stock clears the eye. */
+  ADS_DROP_Z: 0.03,
+  /** Range (m) at which the counter-pitched bore re-converges on the reticle. */
+  ADS_CONVERGENCE_DISTANCE: 30,
   /** Fraction of the summed procedural offsets (sway/recoil/pose) that the
    *  RIG ROOT itself follows. The IK grip anchor follows 100%; the shoulders
    *  follow this fraction, so arms absorb the residual — the weapon lands
@@ -452,7 +477,9 @@ export const HANDS = {
 } as const;
 
 /** §11/A: adding a weapon = one definitions file + one profile entry. */
-export const BOOT_LOADOUT: readonly string[] = ['rifle', 'pistol'];
+// Slot 3 is the melee-only (fists) stance, matching the standard shooter
+// loadout of primary / secondary / melee.
+export const BOOT_LOADOUT: readonly string[] = ['rifle', 'pistol', 'fists'];
 
 /**
  * Gun-melee data (Document B): timing windows drive MeleeHitDetection and the
@@ -646,4 +673,251 @@ export const DUMMY = {
 
 export const BALLISTICS = {
   MAX_RANGE_METERS: 300,
+} as const;
+
+// ===========================================================================
+// FPS/TPS Unified Character Controller (Architectural Specification)
+// ===========================================================================
+
+/**
+ * Perspective layers (§1). The world renders on layer 0, the first-person
+ * viewmodel on VIEWMODEL.LAYER_INDEX (1). The third-person body owns layer 2
+ * so the perspective toggle is a LAYER-MASK operation on the single camera —
+ * no second camera, no material swapping, and shadow casting is unaffected
+ * (the shadow pass tests object.layers against the LIGHT's camera, which we
+ * leave on the default mask, so "hidden" parts still cast full-body shadows).
+ */
+export const PERSPECTIVE = {
+  /** THREE.Layers index the whole third-person body subtree lives on. */
+  BODY_LAYER_INDEX: 2,
+  /** Which perspective the game boots in. */
+  DEFAULT: 'FIRST' as 'FIRST' | 'THIRD',
+  /** Camera-matrix S-curve blend duration between eye socket and boom (s). */
+  BLEND_SECONDS: 0.38,
+  /** Near-clip while in 1PS (tight, so the viewmodel never clips the eye). */
+  NEAR_CLIP_FIRST: 0.02,
+  /** Near-clip while in 3PS (normal — the body must not clip away). */
+  NEAR_CLIP_THIRD: 0.1,
+  /** 3PS spring-arm: boom length, shoulder offset and obstruction probe. */
+  BOOM: {
+    LENGTH: 2.6,
+    /** Over-the-shoulder lateral + vertical offset (metres, camera space). */
+    OFFSET_X: 0.55,
+    OFFSET_Y: 0.18,
+    /** Sphere radius the obstruction probe sweeps so the camera never clips. */
+    PROBE_RADIUS: 0.2,
+    /** Rate (1/s) the boom re-extends after an obstruction clears. */
+    EXTEND_RATE: 4.0,
+    /** Collapsing toward the head is instant-ish so walls never show through. */
+    COLLAPSE_RATE: 30.0,
+  },
+  /**
+   * Meshes hidden from the 1PS camera (the "camera inside the skull" set).
+   * Hidden via LAYER REASSIGNMENT, never `visible = false`, so they keep
+   * casting shadows (§1 "Shadows Only" requirement).
+   */
+  /**
+   * Meshes excluded from the first-person camera.
+   *
+   * The camera sits inside the skull AND inside the chest cavity, so the head,
+   * neck AND upper torso must all be dropped in first person — otherwise the
+   * chest renders as a wall directly across the lens and intersects the near
+   * plane every time the body leans or the aim offset pitches the spine. The
+   * pelvis and both legs stay on the CHARACTER layer, which is what the player
+   * sees when they look down.
+   */
+  HEAD_MESHES: ['Mesh_Head', 'Mesh_Helmet', 'Mesh_Neck', 'Mesh_Chest'] as readonly string[],
+  /**
+   * How many torso half-depths to push the body BEHIND the eye anchor.
+   * 1.0 puts the chest's front face on the lens; values above that keep the
+   * torso and thighs clear of the camera as the body leans and strides.
+   */
+  BODY_SETBACK_FACTOR: 1.9,
+  /** Third-person body asset (code-generated by tools/generateBodyModel.js). */
+  BODY_PATH: 'characters/body_standard.glb',
+} as const;
+
+/**
+ * Aim Offset (§4): the 2D composite blend space replacing a 9-frame pose set.
+ * Because the rig is rigid (no skinning), the "blend space" is evaluated
+ * analytically: normalized pitch/yaw drive spine-bone rotations directly,
+ * distributed across the spine chain so no single joint hinges unnaturally.
+ */
+export const AIM_OFFSET = {
+  /** Fraction of total aim PITCH each spine joint absorbs (must sum to 1). */
+  PITCH_DISTRIBUTION: { pelvis: 0.0, spine: 0.30, chest: 0.45, neck: 0.10, head: 0.15 },
+  /** Fraction of the residual aim YAW (torso twist) per joint (sums to 1). */
+  YAW_DISTRIBUTION: { pelvis: 0.0, spine: 0.35, chest: 0.40, neck: 0.10, head: 0.15 },
+  /** Max torso twist before the legs are forced to re-plant (radians). */
+  MAX_YAW_RAD: 1.48, // ~85°
+  /** Max spine pitch either way (radians). */
+  MAX_PITCH_RAD: 1.22, // ~70°
+  /** Rate (1/s) the blend-space coordinates chase the controller rotation. */
+  BLEND_RATE: 16,
+  /** Yaw beyond this triggers a foot re-plant (the "turn in place" step). */
+  REPLANT_YAW_RAD: 1.22,
+  /** Rate (1/s) the body yaw snaps to the aim yaw during a re-plant. */
+  REPLANT_RATE: 9,
+} as const;
+
+/** Third-person procedural locomotion (rigid rig — no baked leg clips). */
+export const TPS_LOCOMOTION = {
+  /** Stride frequency per m/s of horizontal speed (Hz per m/s). */
+  STRIDE_HZ_PER_SPEED: 0.42,
+  /**
+   * Hip swing amplitude at the reference speed (radians).
+   *
+   * Kept modest: in first person the camera rides at the eyes and a large
+   * forward swing throws the thigh across the lower half of the lens. This
+   * value also sets the stride length (see LEG_LENGTH), so it is the single
+   * knob controlling both how far the leg reaches and how fast it cycles.
+   */
+  HIP_SWING_RAD: 0.46,
+  /**
+   * Hip pivot to sole distance (m), measured on body_standard.glb. Used to
+   * convert hip swing into real ground distance so stride cadence matches
+   * travel speed and the feet do not slide.
+   */
+  LEG_LENGTH: 0.655,
+  /** Knee bend amplitude (radians) — always flexes, never hyperextends. */
+  KNEE_BEND_RAD: 0.85,
+  /** Arm counter-swing amplitude when not gripping a weapon (radians). */
+  ARM_SWING_RAD: 0.5,
+  /** Reference speed the amplitudes are authored against (m/s). */
+  SPEED_REF: 8.0,
+  /** Pose blend rate toward crouch/slide/air targets (1/s). */
+  POSE_RATE: 10,
+  /** Crouch: pelvis drop and hip/knee pre-bend. */
+  CROUCH: { PELVIS_DROP: 0.3, HIP_BEND: 0.75, KNEE_BEND: 1.2 },
+  /** Slide: the trailing-leg tuck. */
+  SLIDE: { PELVIS_DROP: 0.55, HIP_BEND: 1.15, KNEE_BEND: 1.7, LEAN_BACK: 0.35 },
+  /** Airborne: legs tuck slightly, arms float. */
+  AIR: { HIP_BEND: 0.35, KNEE_BEND: 0.6 },
+} as const;
+
+/** Two-bone foot IK: aligns the feet to uneven ground (§4 sync matrix). */
+export const FOOT_IK = {
+  /** Probe start height above the rest sole, and total probe length (m). */
+  PROBE_UP: 0.55,
+  PROBE_DOWN: 0.95,
+  /** Maximum the pelvis drops so the lower foot can reach its surface (m). */
+  MAX_PELVIS_DROP: 0.35,
+  /** Rate (1/s) the IK offsets ease toward their solved targets. */
+  BLEND_RATE: 12,
+  /** Only correct offsets larger than this (avoids micro-jitter on flats). */
+  DEADZONE: 0.01,
+} as const;
+
+/**
+ * Vaulting / Mantling (§2). Trigger geometry is probed with real raycasts;
+ * the traversal itself is a Bezier capsule path with physics suspended.
+ */
+export const VAULT = {
+  /** Forward probe distance from the capsule centre (m). */
+  PROBE_FORWARD: 0.95,
+  // --- reach envelope, expressed as FRACTIONS OF PLAYER.STAND_HEIGHT -------
+  // Deliberately not absolute heights: the climb limit must follow the
+  // character's stature, so swapping in a taller or shorter character keeps
+  // the rule "you can climb what you could physically reach" intact with no
+  // retuning. VaultSystem multiplies these by PLAYER.STAND_HEIGHT at runtime.
+  /** Below this (≈ knee) it is just a step, not a traversal. */
+  MIN_LEDGE_FRACTION: 0.28,
+  /** Up to roughly waist height is a running VAULT-over. */
+  VAULT_MAX_FRACTION: 0.81,
+  /**
+   * Above the vault band and up to this is a MANTLE (pull-up). 1.15 ≈ full
+   * overhead reach for human proportions (shoulder height + arm length):
+   * the highest lip the character could actually grab. Anything taller is
+   * correctly rejected, which is what stops the player scaling any wall.
+   */
+  MANTLE_MAX_FRACTION: 1.15,
+  /** Extra downward search margin above the reach limit (m). */
+  HEIGHT_SEARCH_MARGIN: 0.4,
+  /** A mantle may be started from a near standstill; a vault may not. */
+  ALLOW_STANDING_MANTLE: true,
+  /** Minimum approach speed for a mantle (m/s) — allows walking into it. */
+  MIN_MANTLE_SPEED: 0.2,
+  /** A mantle ends standing ON the ledge, this far past the lip (m). */
+  MANTLE_LANDING_INSET: 0.42,
+  /** Extra duration at max mantle height, as a multiple of DURATION. */
+  MANTLE_DURATION_SCALE: 1.1,
+
+  /** @deprecated Superseded by the stature fractions above. */
+  MAX_LEDGE_HEIGHT: 1.45,
+  /** @deprecated Superseded by the stature fractions above. */
+  MIN_LEDGE_HEIGHT: 0.5,
+  /** Minimum forward speed required to initiate (m/s). */
+  MIN_SPEED: 1.6,
+  /** Depth of clear landing space required beyond the ledge lip (m). */
+  LANDING_CLEARANCE: 0.55,
+  /** Total traversal duration (s) — the "logical state timer" (§4). */
+  DURATION: 0.62,
+  /** Bezier apex clearance above the ledge (m). */
+  APEX_CLEARANCE: 0.28,
+  /** Cooldown before another vault may start (s). */
+  COOLDOWN: 0.35,
+  /** Hand-plant IK: the hand rides the ledge lip over this progress window. */
+  HAND_PLANT_WINDOW: { start: 0.05, end: 0.62 },
+  /** Exit velocity retained along the travel direction (fraction of entry). */
+  EXIT_SPEED_FACTOR: 0.85,
+} as const;
+
+/**
+ * Cross-perspective sync (§4 "Preventing Cross-Perspective Desync").
+ * Gameplay owns a hard logical duration; every visual asset is time-scaled
+ * to it via PlaybackRate = clipLength / logicalDuration.
+ */
+export const PERSPECTIVE_SYNC = {
+  /** Below this rate difference, leave the mixer alone (avoids churn). */
+  RATE_EPSILON: 0.001,
+  /** Clamp so a wildly-mismatched clip can't play at a silly speed. */
+  MIN_RATE: 0.25,
+  MAX_RATE: 4.0,
+} as const;
+
+/**
+ * Third-person weapon carry pose. Rotations applied to the BODY rig's arms so
+ * the character visibly holds its weapon prop with both hands. Authored to
+ * match the first-person viewmodel's hold, so the two perspectives agree.
+ */
+export const TPS_CARRY = {
+  RIGHT_UPPER: { x: -1.15, y: -0.30, z: 0.10 },
+  RIGHT_ELBOW: { x: -0.95, y: 0.0, z: 0.0 },
+  LEFT_UPPER: { x: -1.30, y: 0.55, z: 0.0 },
+  LEFT_ELBOW: { x: -1.25, y: 0.0, z: 0.0 },
+  /** Weapon grip offset in the right-wrist frame (metres). */
+  GRIP_LOCAL: { x: 0.0, y: -0.07, z: 0.02 },
+} as const;
+
+/**
+ * Procedural weapon shake — the "carrying weight" feel.
+ *
+ * Static sprint poses alone read as a mannequin holding a prop. These drive a
+ * stride-synced figure-8 on the hands (sin on pitch, cos at half frequency on
+ * yaw) plus a decaying kick per shot. All amplitudes are in radians and are
+ * scaled by `speed / SPEED_REFERENCE`, so motion tapers off smoothly rather
+ * than popping between discrete locomotion states.
+ */
+export const WEAPON_SHAKE = {
+  /** Speed (m/s) at which locomotion shake reaches full amplitude. */
+  SPEED_REFERENCE: 8.1,
+  WALK: {
+    FREQUENCY_HZ: 1.6, PITCH_RAD: 0.018, YAW_RAD: 0.012, ROLL_RAD: 0.010,
+    ELBOW_SCALE: 0.6, WRIST_SCALE: 0.5,
+  },
+  SPRINT: {
+    FREQUENCY_HZ: 2.5, PITCH_RAD: 0.055, YAW_RAD: 0.038, ROLL_RAD: 0.030,
+    ELBOW_SCALE: 0.8, WRIST_SCALE: 0.7,
+  },
+  /** Gun raised and close to the chest: faster cadence, punchier jolt. */
+  TAC_SPRINT: {
+    FREQUENCY_HZ: 3.1, PITCH_RAD: 0.080, YAW_RAD: 0.052, ROLL_RAD: 0.045,
+    ELBOW_SCALE: 1.0, WRIST_SCALE: 0.9,
+  },
+  /** Per-shot hand kick: a fast oscillation under a quadratic ease-out. */
+  FIRE_DECAY_SECONDS: 0.18,
+  FIRE_FREQUENCY_HZ: 14,
+  FIRE_PITCH_RAD: 0.055,
+  FIRE_YAW_RAD: 0.022,
+  FIRE_WRIST_RAD: 0.070,
 } as const;

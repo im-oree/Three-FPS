@@ -102,7 +102,10 @@ export class PlayerMovement {
   /** Document 2.5 §4.3: promotion (double-tap or dedicated bind), validated. */
   requestTacticalSprint(): boolean {
     if (!this.state.isGrounded) return false;
-    const forwardInput = -this.lastMoveLocal.y; // +y forward in moveLocal
+    // moveLocal is +y FORWARD (see PlayerController.moveLocal). This used to
+    // negate it, so holding W produced forwardInput = -1, which never cleared
+    // MIN_FORWARD_INPUT — the second half of why tac sprint never engaged.
+    const forwardInput = this.lastMoveLocal.y;
     if (forwardInput < TAC_SPRINT.MIN_FORWARD_INPUT) return false;
     if (!this.isTacticalSprinting) {
       this.isTacticalSprinting = true;
@@ -140,10 +143,14 @@ export class PlayerMovement {
 
   // --- tactical sprint lifecycle (Document 2.5 §4.3) --------------------------
   private updateTacticalSprint(dt: number, intent: MovementIntent): void {
-    if (!this.isTacticalSprinting) return;
+    // Promotion is evaluated FIRST. It used to sit behind the
+    // `if (!this.isTacticalSprinting) return` guard below, which meant a
+    // request could only ever be honoured while tac-sprint was ALREADY
+    // running — so it could never start at all.
     if (intent.tacSprintRequested) this.requestTacticalSprint();
+    if (!this.isTacticalSprinting) return;
     // Exit conditions (§4.3): release, input angle, stamina, obstacle stall.
-    const forwardInput = -this.lastMoveLocal.y;
+    const forwardInput = this.lastMoveLocal.y;
     const sprintReleased = !intent.sprintActive;
     const inputTooWide = forwardInput < TAC_SPRINT.MIN_FORWARD_INPUT;
     if (sprintReleased || inputTooWide) {

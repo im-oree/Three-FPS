@@ -20,7 +20,7 @@ import WeaponManager from './weapons/WeaponManager';
 import HandsRig from './weapons/HandsRig';
 import { CasingPhysics } from './weapons/CasingPhysics';
 import { DroppedMagSystem } from './weapons/DroppedMagSystem';
-import { MAG } from './utils/Constants';
+import { MAG, TPS_CARRY } from './utils/Constants';
 import { getProfile } from './weapons/WeaponProfile';
 import { OrientationGizmos } from './debug/OrientationGizmos';
 import { animationEngine } from './animation-engine/OperatorAnimEngine';
@@ -40,6 +40,9 @@ import { SWAY } from './utils/Constants';
 import AnimationStateMachine from './animation/AnimationStateMachine';
 import AnimationBlender from './animation/AnimationBlender';
 import AnimationLayerCompositor from './animation/AnimationLayerCompositor';
+import ThirdPersonBody from './character/ThirdPersonBody';
+import PerspectiveController from './player/PerspectiveController';
+import PerspectiveSync from './animation/PerspectiveSync';
 import type { ResolvedAnimationDescriptor, AnimationTarget } from './animation/AnimationBlender';
 
 const canvas = document.getElementById('game-canvas') as HTMLCanvasElement | null;
@@ -124,6 +127,89 @@ engine.registerUpdatable(orientationGizmos);
 void handsRig.load().then(() => {
   viewmodel.setArmRig(handsRig); // may re-run the equip attach (race guard)
   handsRig.attach(viewmodel);
+});
+
+// ---------------------------------------------------------------------------
+// FPS/TPS Unified Character Controller (Architectural Specification)
+//
+// ONE logical entity, TWO visual representations. The viewmodel stack above is
+// the 1PS half; the body below is the 3PS half. Both are driven by the SAME
+// simulation state (PlayerController) and the SAME resolved animation
+// descriptors — never by two parallel sources of truth, which is what makes
+// the perspectives structurally incapable of desyncing.
+// ---------------------------------------------------------------------------
+const thirdPersonBody = new ThirdPersonBody(engine.assetLoader);
+const perspective = new PerspectiveController(
+  engine.sceneManager.getCamera(),
+  engine.inputManager,
+  thirdPersonBody,
+);
+const perspectiveSync = new PerspectiveSync();
+
+void thirdPersonBody.load(arena.scene).then(() => {
+  // --- HYBRID VIEWMODEL + BODY (what shipping FPS games actually do) -------
+  // First person uses dedicated, camera-relative viewmodel arms: real
+  // shoulder-length arms seen from inside the head are enormous, clip the
+  // lens and read terribly. The character body still renders in first person
+  // MINUS its head and arms, so looking down shows your own torso and legs.
+  // Third person shows the body's own arms holding its own weapon copy.
+  // Both are driven by the SAME simulation + animation state, so they stay
+  // in lockstep — see thirdPersonBody.setWeaponProp below.
+  thirdPersonBody.setArmsExternallyDriven(false);
+
+  // Keep the body's weapon prop in lockstep with the equipped weapon.
+  const syncWeaponProp = async (): Promise<void> => {
+    const def = weaponManager.activeWeapon.def;
+    if (def.melee || !def.modelPath) {
+      thirdPersonBody.setWeaponProp(null, TPS_CARRY.GRIP_LOCAL);
+      return;
+    }
+    const prop = await engine.assetLoader.loadModel(def.modelPath);
+    thirdPersonBody.setWeaponProp(prop, TPS_CARRY.GRIP_LOCAL);
+  };
+  eventBus.on('weapon:viewmodelEquipped', () => { void syncWeaponProp(); });
+  void syncWeaponProp();
+
+  // §4 foot IK traces against the REAL collision world (Rapier statics).
+  thirdPersonBody.setGroundProbe((origin, maxDistance) => {
+    const down = new THREE.Vector3(0, -1, 0);
+    const hit = physics.castRayStatic(origin, down, maxDistance);
+    return hit ? { point: hit.point, normal: hit.normal } : null;
+  });
+  thirdPersonBody.setPerspective(perspective.current);
+});
+
+// §1 spring arm: the boom collapses against real geometry so the 3PS camera
+// never clips through a wall.
+perspective.setBoomProbe((origin, direction, maxDistance) => {
+  const hit = physics.castRayStatic(origin, direction.clone().normalize(), maxDistance);
+  return hit ? hit.toi : null;
+});
+
+// The world pass now shows/hides the body purely by layer mask (§1).
+engine.setWorldPassMaskProvider(() => perspective.worldPassMask);
+
+// §4 cross-perspective desync prevention: gameplay's HARD logical durations
+// are registered once per weapon; both perspectives' clips are time-scaled to
+// them, so the magazine seats on the same frame inside and outside.
+for (const entry of weaponManager.inventory) {
+  const def = entry.def;
+  perspectiveSync.durations.registerWeapon(def.id, {
+    reload_tactical: def.reloadTacticalDuration,
+    reload_empty: def.reloadEmptyDuration,
+    ads_in: def.adsInDuration,
+    ads_out: def.adsOutDuration,
+  });
+}
+eventBus.on('weapon:reloadStart', (payload) => {
+  const { weaponId, isTactical } = payload as { weaponId: string; isTactical?: boolean };
+  const action = isTactical === false ? 'reload_empty' : 'reload_tactical';
+  const duration = perspectiveSync.durations.resolve(weaponId, action);
+  if (duration === undefined) return;
+  perspectiveSync.begin(`${weaponId}:${action}`, duration);
+  // The 1PS viewmodel clip is scaled to the same logical clock the 3PS body
+  // animation would be — identical beats, differently-authored assets.
+  perspectiveSync.attach(`${weaponId}:${action}`, viewmodel.activeAction);
 });
 
 // --- Document A §8.6: pooled shell casings vs REAL level geometry ----------
@@ -249,7 +335,13 @@ ballistics.setMuzzleProvider(() =>
 const drawCalls = { world: 0, viewmodel: 0 };
 engine.setPostRenderHook((renderer) => {
   drawCalls.world = renderer.info.render.calls;
-  viewmodel.renderPass(renderer, engine.sceneManager.getScene());
+  // FPS/TPS Spec §1 "Hide 1PS Arms": in third person the viewmodel pass is
+  // skipped entirely — cheaper than hiding the meshes, and it also drops the
+  // masked 3PS head meshes (which live on the viewmodel layer in 1PS) from
+  // ever being drawn.
+  if (perspective.viewmodelVisible) {
+    viewmodel.renderPass(renderer, engine.sceneManager.getScene());
+  }
   drawCalls.viewmodel = renderer.info.render.calls;
 });
 
@@ -289,6 +381,26 @@ engine.registerUpdatable({
     playerController.camera.setAdsWeight(viewmodel.adsWeight); // Doc C §6.4
     // §5: the one-shot arbiter tracks the viewmodel's LIVE clip state.
     animationEngine.syncOneShot(viewmodel.isOneShotRunning ? viewmodel.activeOneShotName : null);
+
+    // --- UNIFIED CHARACTER: body BEFORE the animation engine ---------------
+    // Strict order, and the reason the arms used to hang limp: this rig
+    // restores its rest pose and writes the root/spine transform, so it must
+    // finish before the engine's spring + IK layers pose the arms on top.
+    // Driven from the SAME authoritative sim the camera reads, so aim pitch,
+    // speed and stance can never diverge between perspectives.
+    perspectiveSync.update(dt);
+    thirdPersonBody.update(dt, {
+      position: playerController.getPosition(),
+      aimYaw: playerController.getYaw(),
+      aimPitch: playerController.getPitch(),
+      speed: playerController.getHorizontalSpeed(),
+      localVelocity,
+      isGrounded: playerController.isGrounded(),
+      capsuleHeight: playerController.getCapsuleHeight(),
+      movementState: playerController.currentState,
+      traversalActive: playerController.isVaulting(),
+    });
+
     animationEngine.update(dt);
     // Document A §8.6: eject a casing per shot (from Socket_Ejection, +X).
     if (ejectionPending > 0) {
@@ -301,6 +413,10 @@ engine.registerUpdatable({
         casingPhysics.spawn(ejectOrigin, ejectDir);
       }
     }
+    // Runs AFTER PlayerCamera wrote the eye transform (PlayerController is an
+    // earlier updatable): it consumes that as the 1PS end of the S-curve.
+    perspective.update(dt);
+
     meleeCombo.update(dt);
     meleeHit.update(dt);
     casingPhysics.update(dt);
@@ -375,6 +491,11 @@ interface OperatorTestHook {
   colliderFactory: ColliderFactory;
   meleeHit: MeleeHitDetection;
   fidgets: IdleFidgetController;
+  // FPS/TPS Spec acceptance seams.
+  thirdPersonBody: ThirdPersonBody;
+  perspective: PerspectiveController;
+  perspectiveSync: PerspectiveSync;
+  physics: PhysicsWorld;
   drawCalls: () => { world: number; viewmodel: number };
   // Document 2.5 §3.3 acceptance seams.
   descriptorLog: () => ResolvedAnimationDescriptor[];
@@ -397,6 +518,10 @@ interface OperatorTestHook {
   sway,
   recoilSystem,
   handsRig,
+  thirdPersonBody,
+  perspective,
+  perspectiveSync,
+  physics,
   casingPhysics,
   playerCollider,
   colliderFactory,
@@ -410,6 +535,7 @@ interface OperatorTestHook {
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.droppedMags = droppedMags;
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.animationEngine = animationEngine;
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.getProfile = getProfile;
+(window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.input = engine.inputManager;
 // ---------------------------------------------------------------------------
 // End TEMPORARY block.
 // ---------------------------------------------------------------------------

@@ -53,8 +53,13 @@ export interface PlayClipOptions {
  *  arm rig applies them pre-bake so skin and bones agree — see HandsRig). */
 export interface ArmRigCommand {
   active: boolean;
-  right: { solution: IKSolution } | null;
-  left: { solution: IKSolution } | null;
+  /**
+   * `additive` means a baked clip owns this chain: the IK solution positions
+   * the arm on the weapon, and the clip's authored rotation is layered ON TOP
+   * as a delta rather than replacing it.
+   */
+  right: { solution: IKSolution; additive: boolean } | null;
+  left: { solution: IKSolution; additive: boolean } | null;
   /** Blended IK weight (equip/unequip ease, Constants.IK.GLOBAL_WEIGHT). */
   weight: number;
   /** Camera-space coarse target for the arm rig's placement servo (midpoint). */
@@ -209,6 +214,15 @@ export class WeaponViewmodel {
     return this._adsWeight;
   }
 
+  /**
+   * FPS/TPS Spec §4: the currently-playing 1PS action, so PerspectiveSync can
+   * time-scale it to gameplay's hard logical duration (PlaybackRate =
+   * clipLength / logicalDuration) exactly as it scales the 3PS counterpart.
+   */
+  get activeAction(): THREE.AnimationAction | null {
+    return this.currentAction;
+  }
+
   /** TEST seam: the last composed rig pose (layers 3+5+6+7 output, §6.1). */
   get lastComposedPose(): ComposedPose | null {
     return this.lastComposed;
@@ -218,6 +232,11 @@ export class WeaponViewmodel {
   getFollowLagRad(): number {
     if (!this.rigRoot.parent) return 0;
     return this.followQuat.angleTo(this.rigRoot.parent.getWorldQuaternion(_qCamera));
+  }
+
+  /** The live weapon instance in the scene (unified-character re-layering). */
+  get attachedWeaponRoot(): THREE.Object3D | null {
+    return this.attached;
   }
 
   /** The muzzle socket node itself (muzzle flash parenting). */
@@ -309,6 +328,10 @@ export class WeaponViewmodel {
         THREE.MathUtils.degToRad(profile.hipRestRotationEuler[2]),
       );
     }
+    // The first-person weapon always belongs to the VIEWMODEL layer: it is the
+    // camera-relative hero mesh, drawn in the depth-cleared pass so it can
+    // never clip into world geometry. The body's third-person weapon is a
+    // separate prop (ThirdPersonBody.setWeaponProp) on the BODY_ARMS layer.
     ensureViewmodelLayers(this.attached);
 
     // ONE shared mixer on the rig root (Document A §7.2): it drives BOTH the
@@ -372,14 +395,38 @@ export class WeaponViewmodel {
     return null;
   }
 
+  /** Map a logical clip name onto the equipped weapon's asset id. */
+  private resolveClipName(clipName: string): string {
+    const clips = this.attachedDef?.clips;
+    if (!clips) return clipName;
+    switch (clipName) {
+      case 'reload_tactical': return clips.reloadTactical ?? clipName;
+      case 'reload_empty': return clips.reloadEmpty ?? clipName;
+      case 'switch_out': return clips.switchOut ?? clipName;
+      case 'switch_in': return clips.switchIn ?? clipName;
+      case 'inspect': return clips.inspect ?? clipName;
+      default: return clipName;
+    }
+  }
+
   /** The single entry point AnimationStateMachine uses (Document A §7.3). */
   playClip(clipName: string, options: PlayClipOptions = {}): THREE.AnimationAction | null {
     if (!this.mixer) return null;
     // BAKED joint-keyframe clips first (Document A §7.2): reloads, switches,
     // punches. Durations equal the definitions' (data-integrity pair).
-    const bakedClip = this.attachedDef && this.cache.get(this.attachedDef.id)?.baked.get(clipName);
-    const clip = bakedClip ? bakedClip.clip : this.clips.find((c) => c.name === clipName);
+    // The state machine speaks in LOGICAL clip names ('reload_tactical'); the
+    // weapon definition maps those to its own asset ids ('rifle_reload_
+    // tactical'). Resolving here — rather than making every caller know the
+    // weapon prefix — is why a reload request from the ASM silently resolved
+    // to nothing and no reload animation ever played.
+    const resolvedName = this.resolveClipName(clipName);
+    const store = this.attachedDef ? this.cache.get(this.attachedDef.id) : null;
+    const bakedClip = store?.baked.get(resolvedName) ?? store?.baked.get(clipName);
+    const clip = bakedClip
+      ? bakedClip.clip
+      : this.clips.find((c) => c.name === resolvedName) ?? this.clips.find((c) => c.name === clipName);
     if (!clip) return null;
+    clipName = resolvedName;
     this.currentOneShotName = loopIsOnce(options.loop) ? clipName : null;
     const { loop = THREE.LoopRepeat, crossfadeDuration = 0.15, clampWhenFinished = true } = options;
     const next = this.mixer.clipAction(clip);
@@ -558,13 +605,17 @@ export class WeaponViewmodel {
     const rightTargetPos = _anchorWorld.clone()
       .sub(this.gripMount.clone().applyQuaternion(_qDesiredWeapon));
     const rightTargetQuat = _qDesiredWeapon.clone();
-    if (!rightOwned) {
-      const rightSolution = solveJointIK(chainR, rightTargetPos, this._poleHintWorld(camera), rightTargetQuat);
-      if (rightSolution) this.armCommand.right = { solution: rightSolution };
-    }
+    // IK is ALWAYS solved, even while a baked clip owns the joint. Previously
+    // ownership skipped the solve entirely, so the arm fell back to its rest
+    // pose for the whole clip — which is exactly why reload and inspect looked
+    // like the gun "sank" and the hands disappeared. The clip is now applied
+    // as an ADDITIVE offset on top of the IK pose (see HandsRig.applyArmCommand),
+    // so the weapon stays in the hands throughout the action.
+    const rightSolution = solveJointIK(chainR, rightTargetPos, this._poleHintWorld(camera), rightTargetQuat);
+    if (rightSolution) this.armCommand.right = { solution: rightSolution, additive: rightOwned };
 
     // --- OFF-HAND (§5.2, grip-style data) -----------------------------------
-    if (chainL && this.attachedProfile && !leftOwned) {
+    if (chainL && this.attachedProfile) {
       let leftTargetPos: THREE.Vector3;
       let leftTargetQuat: THREE.Quaternion;
       if (this.attachedProfile.gripStyle === 'twoHanded') {
@@ -589,7 +640,7 @@ export class WeaponViewmodel {
         leftTargetQuat = _qDesiredWeapon.clone();
       }
       const leftSolution = solveJointIK(chainL, leftTargetPos, this._poleHintWorld(camera), leftTargetQuat);
-      if (leftSolution) this.armCommand.left = { solution: leftSolution };
+      if (leftSolution) this.armCommand.left = { solution: leftSolution, additive: leftOwned };
     }
 
     // Coarse servo target (reported for rig-level consumers).

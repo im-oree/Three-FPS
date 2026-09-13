@@ -29,6 +29,8 @@ export class Engine {
 
   private readonly updatables: Updatable[] = [];
   private postRenderHook: ((renderer: WebGLRenderer) => void) | null = null;
+  /** FPS/TPS Spec §1: supplies the world pass's layer mask (perspective). */
+  private worldPassMaskProvider: (() => number) | null = null;
   private rafHandle: number | null = null;
   private running = false;
 
@@ -45,10 +47,14 @@ export class Engine {
     for (const updatable of this.updatables) updatable.update(dt);
 
     // Document 2.5 §3.2 (implemented exactly): ONE camera, TWO passes.
-    // Pass 1 (world): camera masked to layer 0.
+    // Pass 1 (world): camera masked to layer 0 — PLUS the third-person body
+    // layer whenever the FPS/TPS perspective controller says the body should
+    // be visible (worldPassMaskProvider). One camera still, one world pass:
+    // the perspective toggle is pure mask arithmetic.
     const camera = this.sceneManager.getCamera();
     const prevMask = camera.layers.mask;
-    camera.layers.set(0);
+    if (this.worldPassMaskProvider) camera.layers.mask = this.worldPassMaskProvider();
+    else camera.layers.set(0);
     this.renderer.getRenderer().render(this.sceneManager.getScene(), camera);
     camera.layers.mask = prevMask;
 
@@ -91,6 +97,11 @@ export class Engine {
   /** Document 3: second render pass seam (WeaponViewmodel.renderPass). */
   setPostRenderHook(hook: ((renderer: WebGLRenderer) => void) | null): void {
     this.postRenderHook = hook;
+  }
+
+  /** FPS/TPS Spec §1: PerspectiveController drives the world-pass mask. */
+  setWorldPassMaskProvider(provider: (() => number) | null): void {
+    this.worldPassMaskProvider = provider;
   }
 
   registerUpdatable(obj: Updatable): void {
