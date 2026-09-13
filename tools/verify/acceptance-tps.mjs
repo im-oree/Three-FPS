@@ -112,13 +112,24 @@ const toggle = await page.evaluate(async () => {
       viewmodelVisible: O.perspective.viewmodelVisible,
     };
   };
+  // Wait on the BLEND ITSELF, not a fixed sleep. The perspective transition is
+  // a non-linear S-curve whose duration depends on frame pacing, so a flat
+  // 700 ms sometimes sampled mid-blend and spuriously failed 2f.
+  const settle = async (want) => {
+    for (let i = 0; i < 240; i += 1) {
+      await new Promise((r) => requestAnimationFrame(r));
+      const b = O.perspective.blendWeight;
+      if (want === 'THIRD' ? b >= 0.999 : b <= 0.001) return true;
+    }
+    return false;
+  };
   O.perspective.setPerspective('FIRST');
-  await sleep(700);
+  const firstSettled = await settle('FIRST');
   const first = snap();
   O.perspective.setPerspective('THIRD');
-  await sleep(700);
+  const thirdSettled = await settle('THIRD');
   const third = snap();
-  return { first, third };
+  return { first, third, firstSettled, thirdSettled };
 });
 const BODY_BIT = 1 << 2;   // LAYER.CHARACTER
 const HEAD_BIT = 1 << 3;   // LAYER.HEAD
@@ -564,6 +575,78 @@ check('6m. firing while stationary does not move the player at all',
 check('6n. releasing a movement key reaches EXACTLY zero speed, and quickly',
   stationary.stopFrames <= 12,
   `velocity hit exact zero after ${stationary.stopFrames} frames`);
+
+// === 6.7 Fists mode: unarmed hands must actually be visible and usable =====
+// Regressions this covers: (a) switchTo() committed switching=true before the
+// state authority approved, so a rejection wedged the manager and fists became
+// unreachable; (b) the guard pose was gated on isADSActive, so unarmed arms
+// hung at rest far below the lens; (c) currentOneShotName was never released
+// when a weapon had no baked clips, pinning ownership to 'both' and
+// suppressing the whole procedural arm layer; (d) melee combo clips were never
+// loaded for the fists slot, so punching played no animation.
+const fists = await page.evaluate(async () => {
+  const O = window.__OPERATOR__;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  O.perspective.setPerspective('FIRST');
+  O.playerController.debugTeleport(0, 0, 25);
+  O.playerController.debugSetOrientation(0, 0);
+  await sleep(700);
+  const slot = O.weaponManager.inventory.findIndex((w) => w.def.id === 'fists');
+  O.weaponManager.switchTo(slot);
+  await sleep(2000);
+
+  const cam = O.engine.sceneManager.getCamera();
+  cam.updateMatrixWorld(true);
+  const v = new cam.position.constructor();
+  const ch = O.handsRig.chainsForTest;
+  const ndc = (j) => {
+    j.getWorldPosition(v);
+    const p = v.clone().project(cam);
+    return { x: p.x, y: p.y, z: p.z };
+  };
+  const handR = ndc(ch.R.wristPivot);
+  const handL = ndc(ch.L.wristPivot);
+  let visibleArmMeshes = 0;
+  O.viewmodel.getRigRoot().traverse((o) => {
+    if (!o.isMesh) return;
+    let vis = o.visible;
+    let p = o.parent;
+    while (p) { if (!p.visible) vis = false; p = p.parent; }
+    if (vis) visibleArmMeshes += 1;
+  });
+
+  // Punch and capture which clip actually runs.
+  const clips = new Set();
+  window.dispatchEvent(new MouseEvent('mousedown', { button: 0 }));
+  for (let i = 0; i < 70; i += 1) {
+    await new Promise((r) => requestAnimationFrame(r));
+    const n = O.viewmodel.activeOneShotName;
+    if (n) clips.add(n);
+  }
+  window.dispatchEvent(new MouseEvent('mouseup', { button: 0 }));
+  await sleep(700);
+
+  // Switching back must fully release arm ownership.
+  O.weaponManager.switchTo(0);
+  await sleep(2000);
+  return {
+    weaponId: O.weaponManager.activeWeapon.def.id,
+    handR, handL, visibleArmMeshes,
+    guardWeight: O.handsRig.guardWeight,
+    punchClips: [...clips],
+    ownershipAfter: O.viewmodel.activeOneShotOwnership,
+  };
+});
+const inFrame = (h) => Math.abs(h.x) < 0.95 && Math.abs(h.y) < 0.95 && h.z > 0 && h.z < 1;
+check('6o. fists mode shows BOTH hands on screen (unarmed guard is always up)',
+  inFrame(fists.handR) && inFrame(fists.handL) && fists.visibleArmMeshes >= 8,
+  `handR (${fists.handR.x.toFixed(2)}, ${fists.handR.y.toFixed(2)}), handL (${fists.handL.x.toFixed(2)}, ${fists.handL.y.toFixed(2)}), ${fists.visibleArmMeshes} arm meshes`);
+check('6p. punching in fists mode plays a real melee combo clip',
+  fists.punchClips.some((c) => c.startsWith('melee_punch')),
+  `clips seen: ${fists.punchClips.join(', ') || 'NONE'}`);
+check('6q. switching away from fists releases arm ownership (no zombie clip)',
+  fists.weaponId === 'rifle' && fists.ownershipAfter === 'none',
+  `back to ${fists.weaponId}, ownership=${fists.ownershipAfter}`);
 
 // === 7. Cross-perspective sync ==============================================
 const sync = await page.evaluate(async () => {

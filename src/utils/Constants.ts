@@ -610,11 +610,37 @@ export const RIG_POSES = {
  * springs when ADS is held with fists — reuses the ADS weight path, never
  * touches the camera FOV stack.
  */
+/**
+ * Unarmed guard stance (Document B §3).
+ *
+ * MEASURED, NOT GUESSED. The previous values (shoulder ~-0.55 rad) left the
+ * fists hanging at NDC y = -12, i.e. metres below the bottom of the screen —
+ * which is why fists mode looked like it had no hands at all. These angles
+ * come from an in-engine sweep projecting the wrist into NDC and selecting for
+ * hands sitting just below centre frame (~x +/-0.30, y -0.30), shoulder-width
+ * apart, the way a boxer's guard actually reads in first person:
+ *
+ *   shoulderX ~85 deg (1.48 rad)  raises the upper arm to chest height
+ *   shoulderZ ~15 deg             abducts outward (right +Z, left -Z)
+ *   elbowX    ~70-90 deg          folds the forearm up in front of the face
+ *
+ * Sign convention per COORDINATE_CONVENTIONS.md: a joint's local -Y runs down
+ * the limb, so POSITIVE X rotation swings the segment forward and up.
+ */
 export const FISTS_GUARD = {
-  SHOULDER_R: { x: -0.55, y: -0.35, z: -0.15 },
-  ELBOW_R: { x: -1.5, y: 0, z: 0 },
-  SHOULDER_L: { x: -0.45, y: 0.3, z: 0.15 },
-  ELBOW_L: { x: -1.35, y: 0, z: 0 },
+  // Slightly higher shoulder + deeper elbow fold than the raw sweep optimum,
+  // and the wrists rolled inward, so the fists sit at cheek height angled
+  // toward the centre line like a real boxing guard rather than two forearms
+  // held out flat.
+  SHOULDER_R: { x: 1.62, y: 0.20, z: 0.30 },
+  ELBOW_R: { x: 1.62, y: 0, z: -0.18 },
+  SHOULDER_L: { x: 1.62, y: -0.20, z: -0.30 },
+  ELBOW_L: { x: 1.62, y: 0, z: 0.18 },
+  /** Inward wrist roll so the knuckles face forward, not outward. */
+  WRIST_R: { x: 0.10, y: 0.22, z: -0.30 },
+  WRIST_L: { x: 0.10, y: -0.22, z: 0.30 },
+  /** Extra fold applied on top while ADS/blocking — a tighter, closer guard. */
+  ADS_ELBOW_BONUS: 0.22,
   BLEND_RATE: 10,
 } as const;
 

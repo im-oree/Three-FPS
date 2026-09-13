@@ -398,9 +398,12 @@ export class HandsRig {
     if (this.guardWeight > 0.001) {
       const w = this.guardWeight;
       this.springShoulderR.addTarget(FISTS_GUARD.SHOULDER_R.x * w, FISTS_GUARD.SHOULDER_R.y * w, FISTS_GUARD.SHOULDER_R.z * w);
-      this.springElbowR.addTarget(FISTS_GUARD.ELBOW_R.x * w, 0, 0);
+      this.springElbowR.addTarget(FISTS_GUARD.ELBOW_R.x * w, 0, FISTS_GUARD.ELBOW_R.z * w);
       this.springShoulderL.addTarget(FISTS_GUARD.SHOULDER_L.x * w, FISTS_GUARD.SHOULDER_L.y * w, FISTS_GUARD.SHOULDER_L.z * w);
-      this.springElbowL.addTarget(FISTS_GUARD.ELBOW_L.x * w, 0, 0);
+      this.springElbowL.addTarget(FISTS_GUARD.ELBOW_L.x * w, 0, FISTS_GUARD.ELBOW_L.z * w);
+      // Roll the wrists inward so the knuckles face the target.
+      this.springWristR.addTarget(FISTS_GUARD.WRIST_R.x * w, FISTS_GUARD.WRIST_R.y * w, FISTS_GUARD.WRIST_R.z * w);
+      this.springWristL.addTarget(FISTS_GUARD.WRIST_L.x * w, FISTS_GUARD.WRIST_L.y * w, FISTS_GUARD.WRIST_L.z * w);
     }
     if (this.isFists(loc) && ownership === 'none') {
       const swing = RIG_POSES.FISTS_SWING;

@@ -289,7 +289,11 @@ animationEngine.registerLayer({
       isGrounded: playerController.isGrounded(),
       adsWeight: viewmodel.adsWeight,
     });
-    handsRig.setGuard(weaponManager.activeWeapon.def.melee === true && weaponManager.isADSActive);
+    // FISTS MODE: unarmed hands are ALWAYS up in a guard. Previously the guard
+    // pose was gated on isADSActive, so with no weapon equipped the arms hung
+    // at their rest pose far below the lens and fists mode looked like it had
+    // no hands at all. ADS now only TIGHTENS the guard, it does not create it.
+    handsRig.setGuard(weaponManager.activeWeapon.def.melee === true);
   },
   contribute: () => undefined,
 });

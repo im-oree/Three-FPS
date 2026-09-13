@@ -380,13 +380,17 @@ export class WeaponManager {
     const to = this.inventory[index];
     
     
+    // Ask the authority FIRST. Committing switching=true before the request
+    // meant a rejection left the manager permanently stuck mid-switch: every
+    // later switchTo() bailed on `this.switching`, so the weapon could never
+    // be changed again (fists became unreachable).
+    if (!characterState.request({
+      channel: 'weaponAction', to: WeaponAction.SWITCHING, source: 'WeaponManager.switchTo',
+    })) return;
     this.switching = true;
     this.switchTarget = index;
     this.switchElapsed = 0;
     this.switchEquipDone = false;
-    if (!characterState.request({
-      channel: 'weaponAction', to: WeaponAction.SWITCHING, source: 'WeaponManager.switchTo',
-    })) return;
     eventBus.emit('weapon:switchStart', {
       fromWeaponId: from.def.id,
       toWeaponId: to.def.id,
