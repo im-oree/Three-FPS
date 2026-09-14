@@ -31,6 +31,14 @@ export class AudioManager {
   private listener: THREE.AudioListener | null = null;
   private context: AudioContext | null = null;
   private masterGain: GainNode | null = null;
+  /**
+   * Document F §6.2: a low-pass in the master path, animated down on a
+   * concussion and back up as hearing recovers. Inserted ONCE into the chain
+   * rather than being created per effect.
+   */
+  private muffleFilter: BiquadFilterNode | null = null;
+  private muffleTimer = 0;
+  private muffleTotal = 0;
   private sfxGain: GainNode | null = null;
   private uiGain: GainNode | null = null;
   private musicGain: GainNode | null = null;
@@ -69,7 +77,12 @@ export class AudioManager {
     this.sfxGain.connect(this.masterGain);
     this.uiGain.connect(this.masterGain);
     this.musicGain.connect(this.masterGain);
-    this.masterGain.connect(this.listener.getInput());
+    // master -> muffle -> listener, so every bus is affected together.
+    this.muffleFilter = ctx.createBiquadFilter();
+    this.muffleFilter.type = 'lowpass';
+    this.muffleFilter.frequency.value = 20000; // transparent when not muffled
+    this.masterGain.connect(this.muffleFilter);
+    this.muffleFilter.connect(this.listener.getInput());
 
     this.volumes = {
       master: this.num('audio.master', 0.8),
@@ -252,6 +265,33 @@ export class AudioManager {
 
   get ambiencePlaying(): boolean {
     return Boolean(this.ambient?.isPlaying);
+  }
+
+  /**
+   * Duck hearing for `seconds`, recovering smoothly. `strength` 0..1 sets how
+   * deep the initial cut is.
+   */
+  applyMuffle(seconds: number, strength: number): void {
+    if (!this.muffleFilter || seconds <= 0) return;
+    this.muffleTimer = Math.max(this.muffleTimer, seconds);
+    this.muffleTotal = Math.max(this.muffleTotal, seconds);
+    const cut = 20000 - (20000 - 380) * Math.min(1, strength);
+    this.muffleFilter.frequency.value = Math.max(380, cut);
+  }
+
+  get muffleSecondsRemaining(): number { return this.muffleTimer; }
+  get muffleCutoffHz(): number { return this.muffleFilter?.frequency.value ?? 20000; }
+
+  /** Advance the hearing-recovery ramp. */
+  update(dt: number): void {
+    if (!this.muffleFilter || this.muffleTimer <= 0) return;
+    this.muffleTimer = Math.max(0, this.muffleTimer - dt);
+    const t = this.muffleTotal > 0 ? 1 - this.muffleTimer / this.muffleTotal : 1;
+    // Exponential recovery: hearing returns fast at first, then settles.
+    const current = this.muffleFilter.frequency.value;
+    const target = 380 + (20000 - 380) * Math.pow(t, 0.55);
+    this.muffleFilter.frequency.value = Math.max(current, target);
+    if (this.muffleTimer <= 0) this.muffleFilter.frequency.value = 20000;
   }
 
   /** Stop every voice (level unload, quit to menu). */

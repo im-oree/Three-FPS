@@ -6,6 +6,8 @@
  * fourth killstreak appears automatically because the HUD renders whatever
  * the manager reports.
  */
+import eventBus from '../../core/EventBus';
+import { GameState } from '../../state/GameStateManager';
 import { div } from '../dom';
 import type { KillstreakManager, SlotSnapshot } from '../../killstreaks/KillstreakManager';
 
@@ -24,6 +26,13 @@ export class KillstreakHUD {
   private readonly slots: SlotElements[] = [];
 
   constructor(private readonly manager: KillstreakManager) {
+    // IN-MATCH UI ONLY. Like HUDManager, this is a persistent element that
+    // gates itself on the PLAYING state — it must never sit on top of the
+    // main menu, the loadout screen or a pause overlay.
+    eventBus.on('game:stateChanged', (payload) => {
+      const current = (payload as { current: string }).current;
+      this.element.classList.toggle('hud--active', current === GameState.PLAYING);
+    });
     for (let i = 0; i < 3; i += 1) {
       const root = div('ks-slot');
       const key = div('ks-slot__key', SLOT_KEYS[i]);

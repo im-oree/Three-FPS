@@ -220,6 +220,17 @@ const scope = await page.evaluate(`(async () => {
   await equip('sniper');
   const baseFov = O.playerController.camera.threeCamera.fov;
   await adsIn();
+  // FOV LERPS toward its target, so wait for it to actually settle rather
+  // than sampling mid-blend. Without this the reading drifts run to run.
+  {
+    let last = -1;
+    for (let i = 0; i < 120; i += 1) {
+      await new Promise((r) => requestAnimationFrame(r));
+      const f = O.playerController.camera.threeCamera.fov;
+      if (Math.abs(f - last) < 0.01) break;
+      last = f;
+    }
+  }
   const at4x = {
     fov: O.playerController.camera.threeCamera.fov,
     mag: O.scopeSystem.currentMagnification,

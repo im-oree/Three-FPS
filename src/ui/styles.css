@@ -323,10 +323,14 @@ input[type='checkbox'] { pointer-events: auto; width: 17px; height: 17px; accent
 
 /* ---------- killstreak HUD (Document H §3) -------------------------------- */
 
+/* Hidden by default; .hud--active is applied only during PLAYING, exactly
+   like .hud. A HUD element must never paint over a menu. */
 .hud__killstreaks {
   position: absolute; left: 34px; top: 34px;
-  display: flex; flex-direction: column; gap: 8px;
+  display: none; flex-direction: column; gap: 8px;
+  pointer-events: none;
 }
+.hud__killstreaks.hud--active { display: flex; }
 .ks-slot {
   position: relative;
   width: 128px; padding: 7px 10px 9px;
@@ -374,3 +378,61 @@ input[type='checkbox'] { pointer-events: auto; width: 17px; height: 17px; accent
   0%, 100% { border-color: var(--ui-accent); }
   50% { border-color: rgba(240, 160, 75, 0.35); }
 }
+
+/* ---------- equipment HUD + disorient overlays (Document F §7) ------------ */
+
+.hud__equipment {
+  position: absolute; right: 34px; bottom: 118px;
+  display: none; flex-direction: column; align-items: flex-end; gap: 3px;
+  pointer-events: none;
+}
+.hud__equipment.hud--active { display: flex; }
+.hud__equipment--empty { opacity: 0.4; }
+.eq__row { display: flex; align-items: baseline; gap: 8px; }
+.eq__label {
+  font-size: 13px; font-weight: 700; letter-spacing: 0.16em;
+}
+.eq__count { font: 700 17px/1 var(--ui-mono); color: var(--ui-text); }
+.eq__key {
+  font: 600 10px/1 var(--ui-mono); color: var(--ui-dim);
+  border: 1px solid var(--ui-line); padding: 2px 5px;
+}
+.eq__cook {
+  width: 74px; height: 3px; margin-top: 3px; opacity: 0;
+  background: rgba(255, 255, 255, 0.14); transition: opacity 0.1s;
+}
+.eq__cook-fill {
+  height: 100%; width: 100%; transform: scaleX(0);
+  transform-origin: left center; background: var(--ui-accent);
+}
+
+/* Three independent layers — they stack by ordinary CSS compositing, so
+   being flashed inside your own smoke needs no combination code. */
+.hud__disorient { position: absolute; inset: 0; display: none; pointer-events: none; }
+.hud__disorient.hud--active { display: block; }
+.overlay-flash {
+  position: absolute; inset: 0; background: #ffffff; opacity: 0;
+  pointer-events: none;
+}
+.overlay-concussion {
+  position: absolute; inset: 0; opacity: 0; pointer-events: none;
+  background: rgba(190, 205, 225, 0.10);
+  transition: opacity 0.25s linear;
+}
+.overlay-smoke {
+  position: absolute; inset: 0; opacity: 0; pointer-events: none;
+  background: radial-gradient(ellipse at center,
+    rgba(198, 200, 205, 0.55) 0%, rgba(186, 190, 196, 0.88) 100%);
+  transition: opacity 0.3s linear;
+}
+
+/* ---------- minimap + compass (Document I §3.2) --------------------------- */
+
+.hud__minimap {
+  position: absolute; right: 34px; top: 34px;
+  display: none; flex-direction: column; gap: 4px;
+  pointer-events: none;
+}
+.hud__minimap.hud--active { display: flex; }
+.hud__minimap canvas { display: block; }
+.hud__compass { border: 1px solid var(--ui-line); }

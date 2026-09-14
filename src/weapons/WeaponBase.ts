@@ -7,6 +7,7 @@
  * WeaponManager owns one WeaponBase per equipped slot.
  */
 import characterState, { WeaponAction } from '../character/CharacterStateSystem';
+import statusEffects from '../player/ActiveStatusEffects';
 import { SPREAD } from '../utils/Constants';
 import { clamp, lerp } from '../utils/MathUtils';
 import type { PlayerStateValue } from '../player/PlayerState';
@@ -197,6 +198,9 @@ export class WeaponBase {
         break;
     }
     if (isJumping && !isADS) degrees = Math.max(degrees, this.def.hipfireSpreadJumpingDeg);
+    // Document F §6.3: being flashed genuinely widens your cone — you cannot
+    // aim while blinded. Additive degrees, from the same generic effect list.
+    degrees += statusEffects.additive('spreadPenalty');
     return degrees;
   }
 

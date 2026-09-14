@@ -93,6 +93,15 @@ export const DEFAULT_KEY_BINDINGS = {
    * Killstreak slots (Document H §1.3). Digits 1-7 are weapon slots, so these
    * sit on the left-hand cluster where they can be hit without leaving WASD.
    */
+  /**
+   * Throwables (Document F §3), Call-of-Duty convention: ONE key per slot
+   * rather than a cycle, so muscle memory maps a key to a specific device.
+   *   G = tactical (smoke / stun / flash — whichever the loadout equips)
+   *   Q = lethal   (reserved; a frag grenade drops in here identically)
+   * Hold to cook, release to throw.
+   */
+  throwTactical: 'KeyG',
+  throwLethal: 'KeyQ',
   killstreakSlot1: 'KeyZ',
   killstreakSlot2: 'KeyX',
   killstreakSlot3: 'KeyB',
@@ -1186,4 +1195,56 @@ export const HELICOPTER = {
   MINIGUN_FIRE_RATE_RPM: 1800,
   MINIGUN_DAMAGE: 9,
   HEALTH: 500,
+} as const;
+
+/** Throwables (Document F). Shared across all three tactical devices. */
+export const THROWABLE = {
+  /** Launch speed multiplier applied to the profile's throwForce. */
+  THROW_SPEED_SCALE: 1.0,
+  /** Upward bias on the throw so a flat look still arcs sensibly. */
+  THROW_UP_BIAS: 0.22,
+  /** Spawn clear of the player's own capsule, as with rockets. */
+  SPAWN_OFFSET: 0.9,
+  /** Release happens this far through the throw animation. */
+  RELEASE_AT_PROGRESS: 0.7,
+  THROW_CLIP_SECONDS: 0.55,
+  /** Restitution/damping for bouncing devices. */
+  BOUNCE_RESTITUTION: 0.38,
+  LINEAR_DAMPING: 0.22,
+  ANGULAR_DAMPING: 0.4,
+  /** Below this impact speed we stop playing bounce sounds. */
+  MIN_BOUNCE_SPEED: 1.6,
+} as const;
+
+/** Smoke volume behaviour (Document F §6.1). */
+export const SMOKE = {
+  PUFF_COUNT: 14,
+  GROW_SECONDS: 1.5,
+  LINGER_SECONDS: 15,
+  DISPERSE_SECONDS: 4,
+  /** Vision overlay ramps in across the volume boundary, never snaps. */
+  VISION_FADE_MARGIN: 2.5,
+} as const;
+
+/** Concussion / flash effect tuning (Document F §6.2/§6.3). */
+export const DISORIENT = {
+  /** Low-pass cutoff at full effect, and the clean value to return to. */
+  MUFFLE_CUTOFF_HZ: 380,
+  NORMAL_CUTOFF_HZ: 20000,
+  /** A flashbang behind cover still registers faintly. */
+  OCCLUDED_STRENGTH: 0.12,
+  /** Below this the effect is not worth applying at all. */
+  MIN_STRENGTH: 0.05,
+  /** Flash blind duration scales with strength, within this band. */
+  FLASH_MIN_SECONDS: 0.6,
+  FLASH_MAX_SECONDS: 4.5,
+  /** Extra weapon spread while flashed, in degrees at full strength. */
+  FLASH_SPREAD_PENALTY_DEG: 9,
+} as const;
+
+/** Minimap / radar HUD (Document I §3.2). */
+export const MINIMAP = {
+  /** World metres from the player to the edge of the dish. */
+  RADIUS_METERS: 60,
+  PIXEL_SIZE: 172,
 } as const;

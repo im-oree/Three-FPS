@@ -57,7 +57,11 @@ validate whatever comes back with `npm run validate:weapons`.
 | Debug overlay | `F3` |
 | Axis gizmos | `F4` |
 | Pause | `Esc` |
+| **Throw tactical** (hold to cook, release to throw) | `G` |
+| Throw lethal *(reserved)* | `Q` |
+| **Killstreaks** | `Z` UAV · `X` Airstrike · `B` Helicopter |
 | Debug damage (test the HUD) | `F6` |
+| Vehicle showcase (placeholder) | `F7` |
 
 ### Weapon slots
 
@@ -312,7 +316,11 @@ This is critical and must not be misunderstood:
 | Cycle Weapon | Mouse Wheel |
 | Interact (future doors/pickups) | `E` |
 | Pause | `Esc` |
+| **Throw tactical** (hold to cook, release to throw) | `G` |
+| Throw lethal *(reserved)* | `Q` |
+| **Killstreaks** | `Z` UAV · `X` Airstrike · `B` Helicopter |
 | Debug damage (test the HUD) | `F6` |
+| Vehicle showcase (placeholder) | `F7` |
 | Debug Overlay | `F3` |
 
 **Movement Parameters (centralized in `Constants.js`, all tunable):**

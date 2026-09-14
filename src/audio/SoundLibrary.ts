@@ -50,6 +50,23 @@ export const SOUND_MANIFEST = {
   impact_spark: 'impacts/impact_spark.wav',
   explosion: 'impacts/explosion.wav',
 
+  // --- Throwables (Document F §8) ------------------------------------------
+  grenade_pin_pull: 'equipment/grenade_pin_pull.wav',
+  grenade_throw_whoosh: 'equipment/grenade_throw_whoosh.wav',
+  grenade_bounce_metal: 'equipment/grenade_bounce_metal.wav',
+  smoke_hiss_loop: 'equipment/smoke_hiss_loop.wav',
+  stun_detonate: 'equipment/stun_detonate.wav',
+  flash_detonate: 'equipment/flash_detonate.wav',
+  concussion_ring: 'equipment/concussion_ring.wav',
+  flashbang_ring: 'equipment/flashbang_ring.wav',
+
+  // --- Killstreaks (Document H/I) ------------------------------------------
+  killstreak_uav_activate: 'killstreaks/killstreak_uav_activate.wav',
+  killstreak_uav_loop: 'killstreaks/killstreak_uav_loop.wav',
+  killstreak_airstrike_activate: 'killstreaks/killstreak_airstrike_activate.wav',
+  killstreak_heli_activate: 'killstreaks/killstreak_heli_activate.wav',
+  killstreak_heli_loop: 'killstreaks/killstreak_heli_loop.wav',
+
   // --- UI bus --------------------------------------------------------------
   ui_hover: 'ui/ui_hover.wav',
   ui_click: 'ui/ui_click.wav',

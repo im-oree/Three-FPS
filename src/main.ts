@@ -23,6 +23,15 @@ import AttackHelicopterKillstreakController from './killstreaks/controllers/Atta
 import groundTargeting from './killstreaks/GroundTargetingMode';
 import radarContacts from './world/RadarContactRegistry';
 import KillstreakHUD from './ui/hud/KillstreakHUD';
+import equipmentManager from './equipment/EquipmentManager';
+import throwableEffects from './equipment/ThrowableEffects';
+import statusEffects from './player/ActiveStatusEffects';
+import smokeVolume from './vfx/SmokeVolume';
+import visionObstructions from './world/VisionObstructionRegistry';
+import EquipmentHUD from './ui/hud/EquipmentHUD';
+import DisorientOverlays from './ui/hud/DisorientOverlays';
+import Minimap from './ui/hud/Minimap';
+import { getThrowable } from './equipment/definitions';
 import scopeSystem from './weapons/ScopeSystem';
 import scopeOverlay from './ui/ScopeOverlay';
 import explosionDamage from './weapons/ExplosionDamageResolver';
@@ -42,7 +51,7 @@ import SettingsMenu from './ui/menus/SettingsMenu';
 import LoadoutMenu from './ui/menus/LoadoutMenu';
 import PauseMenu from './ui/menus/PauseMenu';
 import GameOverScreen from './ui/menus/GameOverScreen';
-import { setUIAudio } from './ui/dom';
+import { setUIAudio, prettyKey } from './ui/dom';
 import { LEVELS, getLevel } from './environment/LevelDefinition';
 import settingsStore from './core/SettingsStore';
 import loadoutManager from './customization/LoadoutManager';
@@ -403,6 +412,84 @@ bindShakeTriggers({
   getListenerPosition: () => playerController.getPosition(),
 });
 
+// --- Document F: throwables ------------------------------------------------
+const eyeOf = (): THREE.Vector3 =>
+  playerController.camera.threeCamera.getWorldPosition(new THREE.Vector3());
+const forwardOf = (): THREE.Vector3 =>
+  playerController.camera.threeCamera.getWorldDirection(new THREE.Vector3());
+
+equipmentManager.attach({
+  scene: levelLoader.scene,
+  assetLoader: engine.assetLoader,
+  physics,
+  getEyePosition: eyeOf,
+  getForward: forwardOf,
+});
+equipmentManager.setTactical(
+  settingsStore.get<string>('loadout.tactical', 'flashbang'),
+);
+throwableEffects.attach({ physics, getEyePosition: eyeOf, getForward: forwardOf });
+throwableEffects.start();
+void smokeVolume.load(engine.assetLoader, levelLoader.scene);
+
+const equipmentHUD = new EquipmentHUD(equipmentManager);
+const disorientOverlays = new DisorientOverlays();
+const minimap = new Minimap(radarContacts, {
+  getPlayerX: () => playerController.getPosition().x,
+  getPlayerZ: () => playerController.getPosition().z,
+  getYaw: () => playerController.camera.threeCamera.rotation.y,
+});
+
+// Throw input: HOLD to cook, RELEASE to throw (Document F §3).
+window.addEventListener('keydown', (e) => {
+  if (!gameStateManager.is(GameState.PLAYING) || e.repeat) return;
+  if (e.code === engine.inputManager.getBindings().throwTactical) {
+    equipmentManager.beginCook();
+  }
+});
+window.addEventListener('keyup', (e) => {
+  if (e.code === engine.inputManager.getBindings().throwTactical) {
+    equipmentManager.release();
+  }
+});
+
+// Throwable audio, bound in one place like every other sound.
+eventBus.on('equipment:cookStart', () => {
+  audioManager.playSound2D('equipment/grenade_pin_pull.wav', { volume: 0.7, key: 'pin' });
+});
+eventBus.on('equipment:thrown', () => {
+  audioManager.playSound2D('equipment/grenade_throw_whoosh.wav', { volume: 0.6, key: 'whoosh' });
+});
+eventBus.on('equipment:bounce', (payload) => {
+  const p = (payload as { point: { x: number; y: number; z: number } }).point;
+  audioManager.playSound3D('equipment/grenade_bounce_metal.wav',
+    new THREE.Vector3(p.x, p.y, p.z), { volume: 0.5, refDistance: 6, key: 'bounce' });
+});
+eventBus.on('equipment:detonated', (payload) => {
+  const p = payload as { id: string; point: { x: number; y: number; z: number } };
+  const profile = getThrowable(p.id);
+  if (!profile) return;
+  const path = profile.id === 'smoke_grenade'
+    ? 'equipment/smoke_hiss_loop.wav'
+    : `equipment/${profile.soundKeys.detonate}.wav`;
+  audioManager.playSound3D(path, new THREE.Vector3(p.point.x, p.point.y, p.point.z),
+    { volume: 0.9, refDistance: 14, key: profile.soundKeys.detonate });
+});
+// Hearing damage + ear ring.
+eventBus.on('effect:audioMuffle', (payload) => {
+  const p = payload as { seconds: number; strength: number; ringTone: string | null };
+  audioManager.applyMuffle(p.seconds, p.strength);
+  if (p.ringTone) {
+    audioManager.playSound2D(`equipment/${p.ringTone}.wav`,
+      { volume: 0.5 * p.strength, key: p.ringTone });
+  }
+});
+// A nearby detonation gives positional awareness even with no damage dealt.
+eventBus.on('equipment:detonated', (payload) => {
+  const p = (payload as { point: { x: number; y: number; z: number } }).point;
+  eventBus.emit('player:damaged', { amount: 0, sourceWorldPosition: p });
+});
+
 // --- Document H: killstreak framework --------------------------------------
 // The manager holds NO per-streak logic; this map is the entire extension
 // point. Killstreak #4 = one controller + one definition + one line here.
@@ -633,6 +720,14 @@ engine.registerUpdatable({
     vehicleShowcase.update(dt);
     killstreakManager.update(dt);
     killstreakHUD.update();
+    statusEffects.update(dt);
+    equipmentManager.update(dt);
+    smokeVolume.update(dt);
+    audioManager.update(dt);
+    equipmentHUD.update();
+    disorientOverlays.setSmokeAmount(smokeVolume.occlusionAt(eyeOf()));
+    disorientOverlays.update();
+    minimap.update(dt);
     if (groundTargeting.isActive) {
       const eye = playerController.camera.threeCamera.getWorldPosition(new THREE.Vector3());
       const fwd = playerController.camera.threeCamera.getWorldDirection(new THREE.Vector3());
@@ -780,6 +875,12 @@ ui.register('pause', pauseMenu, GameState.PAUSED);
 ui.register('gameOver', gameOverScreen, GameState.GAME_OVER);
 ui.registerPersistent(hud.element);
 ui.registerPersistent(killstreakHUD.element);
+ui.registerPersistent(equipmentHUD.element);
+ui.registerPersistent(minimap.element);
+ui.registerPersistent(disorientOverlays.element);
+equipmentHUD.setKeyLabel(
+  prettyKey(engine.inputManager.getBindings().throwTactical),
+);
 ui.start();
 
 // Settings reached from the main menu returns to the main menu.
@@ -880,6 +981,14 @@ interface OperatorTestHook {
   killstreakHUD: KillstreakHUD;
   radarContacts: typeof radarContacts;
   groundTargeting: typeof groundTargeting;
+  equipmentManager: typeof equipmentManager;
+  throwableEffects: typeof throwableEffects;
+  statusEffects: typeof statusEffects;
+  smokeVolume: typeof smokeVolume;
+  visionObstructions: typeof visionObstructions;
+  equipmentHUD: EquipmentHUD;
+  disorientOverlays: DisorientOverlays;
+  minimap: Minimap;
   scopeOverlay: typeof scopeOverlay;
   gameStateManager: typeof gameStateManager;
   eventBus: typeof eventBus;
@@ -926,6 +1035,14 @@ interface OperatorTestHook {
   killstreakHUD,
   radarContacts,
   groundTargeting,
+  equipmentManager,
+  throwableEffects,
+  statusEffects,
+  smokeVolume,
+  visionObstructions,
+  equipmentHUD,
+  disorientOverlays,
+  minimap,
   gameStateManager,
   eventBus,
   playerController,

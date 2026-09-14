@@ -17,6 +17,9 @@ import loadoutManager, {
   PRIMARY_CHOICES, SECONDARY_CHOICES, type Loadout,
 } from '../../customization/LoadoutManager';
 import { SKINS } from '../../customization/SkinManager';
+import settingsStore from '../../core/SettingsStore';
+import equipmentManager from '../../equipment/EquipmentManager';
+import { ALL_THROWABLES } from '../../equipment/definitions';
 import { button, div, el, uiSound } from '../dom';
 import type SkinManager from '../../customization/SkinManager';
 import type { AssetLoader } from '../../core/AssetLoader';
@@ -140,6 +143,7 @@ export class LoadoutMenu implements Screen {
     }
     host.appendChild(list);
 
+    if (slot === 'secondary') this.buildTacticalRow(host);
     host.appendChild(div('section-heading', 'Finish'));
     const row = div('skin-row');
     for (const skin of SKINS) {
@@ -157,6 +161,26 @@ export class LoadoutMenu implements Screen {
         void this.loadPreview();
       });
       row.appendChild(swatch);
+    }
+    host.appendChild(row);
+  }
+
+  /**
+   * Document F §3: tactical equipment reuses the existing selection-card
+   * pattern — one more row, zero new UI architecture.
+   */
+  private buildTacticalRow(host: HTMLElement): void {
+    host.appendChild(div('section-heading', 'Tactical'));
+    const current = settingsStore.get<string>('loadout.tactical', 'flashbang');
+    const row = div('btn-row');
+    for (const t of ALL_THROWABLES) {
+      const b = button(t.iconLabel, 'btn btn--small', () => {
+        settingsStore.set('loadout.tactical', t.id);
+        equipmentManager.setTactical(t.id);
+        this.rebuild();
+      });
+      if (t.id === current) b.classList.add('btn--active');
+      row.appendChild(b);
     }
     host.appendChild(row);
   }

@@ -317,6 +317,43 @@ w('ui/ui_kill_marker.wav', reload([[0.0, blip({ hz: 2400, secs: 0.05 })],
   [0.05, blip({ hz: 3200, secs: 0.09 })]], 0.16));
 w('ui/ui_damage.wav', impact({ cutoff: 700, bodyHz: 70, tick: 0.3, secs: 0.26 }));
 
+// Throwables (Document F §8) -------------------------------------------------
+w('equipment/grenade_pin_pull.wav', reload([[0.0, click({ hz: 3100, secs: 0.04, noiseAmt: 0.3 })],
+  [0.05, clack({ hz: 880, secs: 0.09, bright: 0.6 })]], 0.20));
+w('equipment/grenade_throw_whoosh.wav', normalize(render(0.34, (t) => {
+  // Filtered noise swelling then falling: air moving past a thrown object.
+  const env = Math.sin(Math.PI * Math.min(1, t / 0.34)) ** 1.6;
+  return noise() * env * 0.6;
+}), 0.45));
+w('equipment/grenade_bounce_metal.wav', clack({ hz: 1150, secs: 0.09, bright: 0.75 }));
+w('equipment/smoke_hiss_loop.wav', ambience({ secs: 4, base: 120, noiseLevel: 0.85,
+  cutoff: 5200, partials: [1, 2.3] }));
+w('equipment/stun_detonate.wav', gunshot({ secs: 0.55, bodyHz: 95, crack: 0.95, tail: 0.7 }));
+w('equipment/flash_detonate.wav', gunshot({ secs: 0.65, bodyHz: 78, crack: 1.0, tail: 0.85 }));
+// Ear ring: a pure decaying tone, deliberately NOT noisy.
+w('equipment/concussion_ring.wav', normalize(render(3.0, (t) => {
+  const env = Math.exp(-t * 0.55);
+  return (Math.sin(2 * Math.PI * 2400 * t) * 0.7
+    + Math.sin(2 * Math.PI * 3550 * t) * 0.3) * env;
+}), 0.32));
+w('equipment/flashbang_ring.wav', normalize(render(4.0, (t) => {
+  const env = Math.exp(-t * 0.42);
+  return (Math.sin(2 * Math.PI * 3100 * t) * 0.75
+    + Math.sin(2 * Math.PI * 4650 * t) * 0.25) * env;
+}), 0.36));
+
+// Killstreaks (Document H/I) --------------------------------------------------
+w('killstreaks/killstreak_uav_activate.wav', reload([[0.0, blip({ hz: 720, secs: 0.10 })],
+  [0.10, blip({ hz: 1080, secs: 0.10 })], [0.20, blip({ hz: 1440, secs: 0.16 })]], 0.42));
+w('killstreaks/killstreak_uav_loop.wav', ambience({ secs: 6, base: 78, noiseLevel: 0.16,
+  cutoff: 900, partials: [1, 2.02, 3.05] }));
+w('killstreaks/killstreak_airstrike_activate.wav',
+  reload([[0.0, blip({ hz: 520, secs: 0.14 })], [0.14, blip({ hz: 390, secs: 0.22 })]], 0.42));
+w('killstreaks/killstreak_heli_activate.wav',
+  reload([[0.0, blip({ hz: 640, secs: 0.12 })], [0.12, blip({ hz: 860, secs: 0.20 })]], 0.38));
+w('killstreaks/killstreak_heli_loop.wav', ambience({ secs: 6, base: 34, noiseLevel: 0.30,
+  cutoff: 620, partials: [1, 1.98, 4.02] }));
+
 // Ambience: one loop per level ----------------------------------------------
 w('ambient/ambient_warehouse.wav', ambience({ secs: 8, base: 48, noiseLevel: 0.20, cutoff: 520 }));
 w('ambient/ambient_facility.wav', ambience({ secs: 8, base: 62, noiseLevel: 0.26, cutoff: 900,

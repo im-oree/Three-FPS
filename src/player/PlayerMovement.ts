@@ -10,6 +10,7 @@
  */
 import * as THREE from 'three';
 import eventBus from '../core/EventBus';
+import statusEffects from './ActiveStatusEffects';
 import characterState, { Locomotion } from '../character/CharacterStateSystem';
 import { JUMP, MOVEMENT, PLAYER, SLIDE, TAC_SPRINT } from '../utils/Constants';
 import { clamp, easeOutQuad, lerp } from '../utils/MathUtils';
@@ -290,8 +291,11 @@ export class PlayerMovement {
         base = MOVEMENT.WALK_SPEED;
         break;
     }
-    // ADS slows movement by the equipped weapon's multiplier (Document 3).
-    return base * intent.adsSpeedMultiplier;
+    // ADS slows movement by the equipped weapon's multiplier (Document 3),
+    // and ActiveStatusEffects contributes any debuff on top (Document F §6.2).
+    // Reading a generic multiplier here means a stun grenade, a future EMP or
+    // any other slow needs ZERO further movement code.
+    return base * intent.adsSpeedMultiplier * statusEffects.multiplier('moveSlow');
   }
 
   // --- gravity / jump (§6.4) ---------------------------------------------------

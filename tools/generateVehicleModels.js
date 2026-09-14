@@ -31,9 +31,14 @@ import fs from 'node:fs';
 import { buildHelicopterPattern } from './builders/HelicopterBuilder.js';
 import { buildUAVPattern } from './builders/UAVBuilder.js';
 import { buildMissilePattern } from './builders/MissileBuilder.js';
+import {
+  buildSmokeGrenadePattern, buildStunGrenadePattern, buildFlashbangPattern,
+} from './builders/GrenadeBuilder.js';
 
 const OUT_DIR = 'assets/models/vehicles';
+const EQUIP_DIR = 'assets/models/equipment';
 fs.mkdirSync(OUT_DIR, { recursive: true });
+fs.mkdirSync(EQUIP_DIR, { recursive: true });
 
 /** Nodes each vehicle MUST expose for the runtime to drive it. */
 const CONTRACTS = {
@@ -49,12 +54,23 @@ const CONTRACTS = {
     'Root_Missile', 'Bone_SeekHead', 'Socket_Exhaust',
     'Socket_Detonation', 'Socket_NoseCam', 'Fin_0', 'Fin_1', 'Fin_2', 'Fin_3',
   ],
+  smoke_grenade: ['Root_Throwable', 'Socket_Fuse'],
+  stun_grenade: ['Root_Throwable', 'Socket_Fuse'],
+  flashbang: ['Root_Throwable', 'Socket_Fuse'],
 };
+
+/** Which directory each id belongs in. */
+const DIR_FOR = (id) => (
+  ['smoke_grenade', 'stun_grenade', 'flashbang'].includes(id) ? EQUIP_DIR : OUT_DIR
+);
 
 const vehicles = [
   ['attack_helicopter', () => buildHelicopterPattern().root],
   ['uav_drone', () => buildUAVPattern().root],
   ['guided_missile', () => buildMissilePattern().root],
+  ['smoke_grenade', () => buildSmokeGrenadePattern()],
+  ['stun_grenade', () => buildStunGrenadePattern()],
+  ['flashbang', () => buildFlashbangPattern()],
 ];
 
 let failed = false;
@@ -80,7 +96,7 @@ for (const [id, build] of vehicles) {
 
   const exporter = new GLTFExporter();
   exporter.parse(root, (gltf) => {
-    const path = `${OUT_DIR}/${id}.glb`;
+    const path = `${DIR_FOR(id)}/${id}.glb`;
     fs.writeFileSync(path, Buffer.from(gltf));
     console.log(
       `[generateVehicleModels] ${path} — ${meshes} parts, `
