@@ -1,0 +1,191 @@
+/**
+ * LevelDefinition.ts — Document 4/5: a level is DATA.
+ *
+ * Every level is described as boxes with surface tags, spawn points, light
+ * settings and an ambience key. LevelLoader turns one of these into real
+ * meshes + Rapier colliders and can tear it all down again, so adding a level
+ * is authoring a definition, never writing loader code.
+ *
+ * Surface tags feed both footstep audio and impact effects, so any tag used
+ * here must have matching entries in SoundLibrary.
+ */
+
+export interface LevelBox {
+  /** Min corner. */
+  min: readonly [number, number, number];
+  /** Max corner. */
+  max: readonly [number, number, number];
+  /** Footstep/impact surface tag. */
+  surface: string;
+  /** Base colour; the loader derives a material from it. */
+  color: number;
+  /** Optional label, purely for debugging/readability. */
+  name?: string;
+}
+
+export interface LevelDefinition {
+  readonly id: string;
+  readonly displayName: string;
+  readonly description: string;
+  /** Loop played for the whole match (SoundLibrary key). */
+  readonly ambientSoundKey: string;
+  /** Scene background/fog colour. */
+  readonly skyColor: number;
+  readonly fogDensity: number;
+  readonly hemiIntensity: number;
+  readonly sunIntensity: number;
+  /** Where the player starts, and which way they face (radians). */
+  readonly spawn: readonly [number, number, number];
+  readonly spawnYaw: number;
+  /** Ground plane extent (metres, half-size) and its surface tag. */
+  readonly groundHalfSize: number;
+  readonly groundSurface: string;
+  readonly groundColor: number;
+  readonly boxes: readonly LevelBox[];
+  /** Training-dummy positions. */
+  readonly dummies: readonly (readonly [number, number, number])[];
+}
+
+/** A rectangular room: four walls, open top, built from eight numbers. */
+function room(
+  x0: number, z0: number, x1: number, z1: number,
+  height: number, thickness: number, surface: string, color: number,
+): LevelBox[] {
+  return [
+    { min: [x0, 0, z0 - thickness], max: [x1, height, z0], surface, color, name: 'wall_n' },
+    { min: [x0, 0, z1], max: [x1, height, z1 + thickness], surface, color, name: 'wall_s' },
+    { min: [x0 - thickness, 0, z0], max: [x0, height, z1], surface, color, name: 'wall_w' },
+    { min: [x1, 0, z0], max: [x1 + thickness, height, z1], surface, color, name: 'wall_e' },
+  ];
+}
+
+/** A staircase climbing +x, for testing step-offset handling. */
+function stairs(
+  x: number, z: number, steps: number, rise: number, run: number,
+  width: number, surface: string, color: number,
+): LevelBox[] {
+  const out: LevelBox[] = [];
+  for (let i = 0; i < steps; i += 1) {
+    out.push({
+      min: [x + i * run, 0, z],
+      max: [x + (i + 1) * run, (i + 1) * rise, z + width],
+      surface, color, name: `step_${i}`,
+    });
+  }
+  return out;
+}
+
+// --- WAREHOUSE: crates, catwalk supports, mantle-height stacks --------------
+const WAREHOUSE: LevelDefinition = {
+  id: 'warehouse',
+  displayName: 'Warehouse',
+  description: 'Tight crate corridors and stacked cover. Close-quarters.',
+  ambientSoundKey: 'ambient_warehouse',
+  skyColor: 0x2a3240,
+  fogDensity: 0.008,
+  hemiIntensity: 1.45,
+  sunIntensity: 2.2,
+  spawn: [0, 0, 22],
+  spawnYaw: 0,
+  groundHalfSize: 34,
+  groundSurface: 'concrete',
+  groundColor: 0x7d776e,
+  boxes: [
+    ...room(-30, -30, 30, 30, 8, 1, 'metal', 0x5a6068),
+    // Crate rows, deliberately at vault (0.9) and mantle (1.8) heights.
+    { min: [-14, 0, -6], max: [-11, 0.9, -3], surface: 'wood', color: 0x6b4a2a, name: 'crate_low_a' },
+    { min: [-8, 0, -6], max: [-5, 1.4, -3], surface: 'wood', color: 0x6b4a2a, name: 'crate_mid_a' },
+    { min: [-2, 0, -6], max: [1, 1.8, -3], surface: 'wood', color: 0x6b4a2a, name: 'crate_tall_a' },
+    { min: [5, 0, -6], max: [8, 2.4, -3], surface: 'wood', color: 0x5c3f24, name: 'crate_high_a' },
+    { min: [-14, 0, 6], max: [-9, 1.1, 10], surface: 'wood', color: 0x6b4a2a, name: 'crate_low_b' },
+    { min: [8, 0, 6], max: [13, 2.0, 11], surface: 'wood', color: 0x5c3f24, name: 'crate_high_b' },
+    // Steel shelving columns.
+    { min: [16, 0, -14], max: [17, 6, -13], surface: 'metal', color: 0x3a3f47, name: 'column_a' },
+    { min: [16, 0, 4], max: [17, 6, 5], surface: 'metal', color: 0x3a3f47, name: 'column_b' },
+    { min: [-18, 0, -14], max: [-17, 6, -13], surface: 'metal', color: 0x3a3f47, name: 'column_c' },
+    ...stairs(20, -4, 8, 0.25, 0.55, 4, 'metal', 0x44484f),
+    { min: [24.4, 0, -4], max: [29, 2.0, 0], surface: 'metal', color: 0x4a4f57, name: 'platform' },
+  ],
+  dummies: [[20, 0, 18], [-20, 0, 0], [4, 0, -22]],
+};
+
+// --- FACILITY: clean corridors, low tunnels, long sightlines ---------------
+const FACILITY: LevelDefinition = {
+  id: 'facility',
+  displayName: 'Facility',
+  description: 'Clean corridors, crouch tunnels and long sightlines.',
+  ambientSoundKey: 'ambient_facility',
+  skyColor: 0x28303a,
+  fogDensity: 0.011,
+  hemiIntensity: 1.6,
+  sunIntensity: 1.9,
+  spawn: [0, 0, 24],
+  spawnYaw: 0,
+  groundHalfSize: 30,
+  groundSurface: 'metal',
+  groundColor: 0x7f858d,
+  boxes: [
+    ...room(-26, -26, 26, 26, 6, 1, 'metal', 0x555d67),
+    // Central spine wall with two doorways.
+    { min: [-1, 0, -18], max: [1, 4, -6], surface: 'metal', color: 0x353b43, name: 'spine_a' },
+    { min: [-1, 0, 2], max: [1, 4, 14], surface: 'metal', color: 0x353b43, name: 'spine_b' },
+    // Crouch tunnel: a slab you must go under.
+    { min: [-7, 1.15, 6], max: [7, 4.0, 11], surface: 'metal', color: 0x3f4650, name: 'tunnel_roof' },
+    { min: [-7, 0, 6], max: [-6, 1.15, 11], surface: 'metal', color: 0x3f4650, name: 'tunnel_w' },
+    { min: [6, 0, 6], max: [7, 1.15, 11], surface: 'metal', color: 0x3f4650, name: 'tunnel_e' },
+    // Waist-high cover pods.
+    { min: [-16, 0, -4], max: [-13, 1.0, -1], surface: 'metal', color: 0x474d55, name: 'pod_a' },
+    { min: [13, 0, -4], max: [16, 1.0, -1], surface: 'metal', color: 0x474d55, name: 'pod_b' },
+    { min: [-16, 0, 14], max: [-13, 1.8, 17], surface: 'metal', color: 0x424850, name: 'pod_c' },
+    { min: [13, 0, 14], max: [16, 1.8, 17], surface: 'metal', color: 0x424850, name: 'pod_d' },
+    ...stairs(-24, -22, 7, 0.28, 0.6, 5, 'metal', 0x4b5158),
+    { min: [-19.8, 0, -22], max: [-14, 1.96, -17], surface: 'metal', color: 0x4b5158, name: 'balcony' },
+  ],
+  dummies: [[-18, 0, -8], [18, 0, -12], [0, 0, -24]],
+};
+
+// --- TRAINING RANGE: open, flat, a distance ladder -------------------------
+const TRAINING_RANGE: LevelDefinition = {
+  id: 'training_range',
+  displayName: 'Training Range',
+  description: 'Open ground, a target ladder and every traversal height.',
+  ambientSoundKey: 'ambient_range',
+  skyColor: 0x36404f,
+  fogDensity: 0.004,
+  hemiIntensity: 1.7,
+  sunIntensity: 2.4,
+  spawn: [0, 0, 25],
+  spawnYaw: 0,
+  groundHalfSize: 40,
+  groundSurface: 'dirt',
+  groundColor: 0x8a8071,
+  boxes: [
+    ...room(-34, -34, 34, 34, 7, 1, 'concrete', 0x6b7280),
+    // Traversal gallery: every height the vault/mantle solver cares about.
+    { min: [-22, 0, -22], max: [-19, 0.9, -19], surface: 'concrete', color: 0x6a6558, name: 'ledge_0_9' },
+    { min: [-17, 0, -22], max: [-14, 1.4, -19], surface: 'concrete', color: 0x6a6558, name: 'ledge_1_4' },
+    { min: [-12, 0, -22], max: [-9, 1.8, -19], surface: 'concrete', color: 0x6a6558, name: 'ledge_1_8' },
+    { min: [-7, 0, -22], max: [-4, 2.0, -19], surface: 'concrete', color: 0x6a6558, name: 'ledge_2_0' },
+    { min: [-2, 0, -22], max: [1, 2.6, -19], surface: 'concrete', color: 0x55505f, name: 'ledge_2_6' },
+    // Shooting bays.
+    { min: [-12, 0, 18], max: [-11, 1.1, 24], surface: 'wood', color: 0x6b4a2a, name: 'bay_a' },
+    { min: [-4, 0, 18], max: [-3, 1.1, 24], surface: 'wood', color: 0x6b4a2a, name: 'bay_b' },
+    { min: [4, 0, 18], max: [5, 1.1, 24], surface: 'wood', color: 0x6b4a2a, name: 'bay_c' },
+    { min: [12, 0, 18], max: [13, 1.1, 24], surface: 'wood', color: 0x6b4a2a, name: 'bay_d' },
+    // A gravel mound, for surface-tag variety underfoot.
+    { min: [18, 0, -6], max: [26, 0.6, 2], surface: 'gravel', color: 0x6d6a60, name: 'mound' },
+    ...stairs(20, 8, 6, 0.3, 0.6, 4, 'wood', 0x6b4a2a),
+  ],
+  // The classic 5 m / 25 m / 50 m distance ladder from the firing line.
+  dummies: [[0, 0, 20], [0, 0, 0], [0, 0, -25], [8, 0, -10], [-8, 0, -10]],
+};
+
+export const LEVELS: readonly LevelDefinition[] = [
+  WAREHOUSE, FACILITY, TRAINING_RANGE,
+];
+
+export function getLevel(id: string): LevelDefinition {
+  return LEVELS.find((l) => l.id === id) ?? LEVELS[0];
+}
+
+export default LEVELS;

@@ -80,6 +80,12 @@ export class PlayerCamera {
   // Document C §6 / D §6.5: scope breath sway. Like recoil it is ADDITIVE
   // ONLY — it must never touch the stored sim aim, or it would compound with
   // mouse input and fight the player.
+  /**
+   * Document 5 §7.4: the user-chosen base FOV. Seeded from SettingsStore so a
+   * saved preference applies at boot, and settable live from the menu — the
+   * FOV modifier stack resolves against THIS rather than the constant.
+   */
+  private baseFov: number = settingsStore.get<number>('baseFOV', CAMERA.DEFAULT_FOV);
   private scopeSwayPitch = 0;
   private scopeSwayYaw = 0;
   private clockNow = 0;
@@ -113,6 +119,15 @@ export class PlayerCamera {
    * Distinct from shake() — recoil punches the true aim and springs back to
    * center after firing stops; shake() is nondirectional tremor for impacts.
    */
+  /** Live FOV preference from the Settings menu. */
+  setBaseFOV(fov: number): void {
+    this.baseFov = fov;
+  }
+
+  getBaseFOV(): number {
+    return this.baseFov;
+  }
+
   /** ScopeSystem pushes its per-frame drift here (additive, never sim). */
   setScopeSway(yaw: number, pitch: number): void {
     this.scopeSwayYaw = yaw;
@@ -286,7 +301,7 @@ export class PlayerCamera {
     this.camera.rotation.set(camPitch, camYaw, this.slideTiltRad + shakeRoll, 'YXZ');
 
     // 3) FOV: highest-priority active modifier wins; smooth blend, never snap.
-    let target: number = CAMERA.DEFAULT_FOV;
+    let target: number = this.baseFov;
     let speed: number = CAMERA_FEEL.SPRINT_FOV_LERP_SPEED;
     let bestPriority = -1;
     for (const modifier of this.fovModifiers.values()) {

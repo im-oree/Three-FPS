@@ -146,6 +146,17 @@ export class PlayerCharacterController {
     return best;
   }
 
+  /**
+   * What surface is directly under the player (Document 4/5: footstep and
+   * landing audio). Returns the ColliderFactory surface tag of whatever the
+   * downward ray hits, or null when airborne.
+   */
+  groundSurfaceAt(origin: THREE.Vector3, maxDistance = 2.2): string | null {
+    const hit = this.physics.castRayStatic(origin, new THREE.Vector3(0, -1, 0), maxDistance);
+    if (!hit) return null;
+    return this.factory.surfaceOf(hit.collider.handle);
+  }
+
   /** Upward capsule-footprint probe (headroom for stand-up checks). */
   raycastUp(origin: THREE.Vector3, distance: number): CollisionHit | null {
     const up = new THREE.Vector3(0, 1, 0);

@@ -43,6 +43,8 @@ export class PlayerController {
 
   private readonly headBob = new HeadBob();
   private readonly footstep = new FootstepSystem();
+  /** Document 5: main injects the ground-surface provider for audio. */
+  get footstepSystem(): FootstepSystem { return this.footstep; }
   private readonly collider: PlayerCharacterController;
   private readonly canvas: HTMLCanvasElement;
 

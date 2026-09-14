@@ -23,6 +23,7 @@ import type { InputManager } from '../core/InputManager';
 import settingsStore from '../core/SettingsStore';
 import type { PlayerCamera } from '../player/PlayerCamera';
 import { PlayerState, type PlayerStateValue } from '../player/PlayerState';
+import loadoutManager from '../customization/LoadoutManager';
 import { ANIMATION, BOOT_LOADOUT, CAMERA, CAMERA_FEEL, SETTINGS_KEYS, WEAPON } from '../utils/Constants';
 import { getProfile } from './WeaponProfile';
 import ballistics from './BallisticsSystem';
@@ -64,7 +65,12 @@ export class WeaponManager {
     new WeaponBase(RocketLauncher),
     new WeaponBase(Fists),
   ];
-  private loadout: string[] = [...BOOT_LOADOUT];
+  /**
+   * Document 5 §7.3: the equipped set comes from the player's saved LOADOUT,
+   * not a hardcoded pairing. BOOT_LOADOUT remains the fallback for a first
+   * run with nothing stored.
+   */
+  private loadout: string[] = [...loadoutManager.bootOrder];
   activeIndex = 0;
   private readonly fireMode = new FireModeSystem();
   private readonly reload = new ReloadSystem();
@@ -91,7 +97,14 @@ export class WeaponManager {
   private clock = 0;
 
   constructor(private readonly deps: WeaponManagerDeps) {
+    if (this.loadout.length === 0) this.loadout = [...BOOT_LOADOUT];
     this.activeIndex = this.inventoryIndex(this.loadout[0]);
+    // Re-read the loadout whenever the player changes it in the menu, so the
+    // next match starts with what they actually picked.
+    eventBus.on('loadout:changed', () => {
+      this.loadout = [...loadoutManager.bootOrder];
+      this.activeIndex = this.inventoryIndex(this.loadout[0]);
+    });
     // §8: starting tac sprint mid-reload cancels it (no completion event).
     eventBus.on('player:tacSprintStart', () => {
       if (this.reload.isReloading) this.reload.cancel();

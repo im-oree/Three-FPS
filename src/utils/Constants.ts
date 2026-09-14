@@ -1030,3 +1030,25 @@ export const SCOPE = {
   /** ADS weight beyond which the scope tunnel engages and the rig hides. */
   ENGAGE_AT_ADS_WEIGHT: 0.86,
 } as const;
+
+/** Player health (Document 5 §8.1) — the minimal damageable-player concept. */
+export const HEALTH = {
+  MAX: 100,
+  /** Seconds without taking damage before regeneration begins. */
+  REGEN_DELAY_SECONDS: 4,
+  REGEN_PER_SECOND: 12,
+  /** Fraction below which the low-health vignette engages. */
+  LOW_THRESHOLD: 0.3,
+  /** Debug damage applied by the F6 test bind. */
+  DEBUG_DAMAGE: 22,
+} as const;
+
+/** HUD timings (Document 5 §8). */
+export const HUD = {
+  HIT_MARKER_SECONDS: 0.18,
+  KILL_MARKER_SECONDS: 0.34,
+  DAMAGE_INDICATOR_SECONDS: 1.1,
+  /** Crosshair gap in px at zero spread, and px-per-degree of real spread. */
+  CROSSHAIR_BASE_GAP: 4,
+  CROSSHAIR_PX_PER_DEGREE: 7,
+} as const;

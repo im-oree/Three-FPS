@@ -4,6 +4,7 @@
  * Prints PASS/FAIL per box; exits non-zero on any FAIL.
  */
 import { launchBrowser } from './browser.mjs';
+import { enterMatch } from './enterMatch.mjs';
 import { readFileSync, existsSync } from 'node:fs';
 
 const URL = process.argv[2] ?? 'http://localhost:5173';
@@ -20,6 +21,8 @@ const pageErrors = [];
 page.on('pageerror', (e) => pageErrors.push(String(e)));
 await page.goto(URL, { waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => Boolean(window.__OPERATOR__), { timeout: 60000 });
+// Document 5 boots to a main menu; drive the real UI into a match first.
+await enterMatch(page);
 await sleep(2500);
 
 // --- box 1: F4 in-game AxesHelper gizmo on sockets + joints ------------------

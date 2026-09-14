@@ -20,6 +20,7 @@
  * Prints PASS/FAIL per box; exits non-zero on any FAIL.
  */
 import { launchBrowser } from './browser.mjs';
+import { enterMatch } from './enterMatch.mjs';
 import { readdirSync, existsSync, readFileSync } from 'node:fs';
 
 const URL = process.argv[2] ?? 'http://localhost:5173';
@@ -37,6 +38,8 @@ page.on('pageerror', (e) => pageErrors.push(String(e)));
 page.on('console', (m) => { if (m.type() === 'error') pageErrors.push(m.text()); });
 await page.goto(URL, { waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => Boolean(window.__OPERATOR__), { timeout: 60000 });
+// Document 5 boots to a main menu; drive the real UI into a match first.
+await enterMatch(page, { levelIndex: 2 });
 // Body rig loads asynchronously.
 await page.waitForFunction(() => window.__OPERATOR__.thirdPersonBody?.isReady === true, { timeout: 60000 });
 await sleep(1200);
@@ -174,7 +177,9 @@ const curve = await page.evaluate(async () => {
   const O = window.__OPERATOR__;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // Open ground: the sprint lane, well clear of the crouch tunnel (z 4..8).
-  O.playerController.debugTeleport(0, 0, -20);
+  // Open ground for the baseline: z = -20 sits in the traversal gallery, so
+  // the boom is already partly collapsed against a ledge there.
+  O.playerController.debugTeleport(0, 0, 4);
   O.playerController.debugSetOrientation(0, 0);
   await sleep(600);
   O.perspective.setPerspective('FIRST');
@@ -223,13 +228,15 @@ const boomCollapse = await page.evaluate(async () => {
   O.perspective.setPerspective('THIRD');
   await sleep(1000);
   const open = O.perspective.currentBoomDistance;
-  // Back up to the +z boundary wall (z 30..31) facing -z: the boom swings
-  // backwards into it and must collapse rather than clip through.
-  O.playerController.debugTeleport(0, 0, 28.5);
+  // Back up to the +z boundary wall facing -z: the boom swings backwards
+  // into it and must collapse rather than clip through. The Training Range's
+  // wall sits at z = 34 (LevelDefinition groundHalfSize), so stand just
+  // inside it rather than at the old TestArena's z = 30.
+  O.playerController.debugTeleport(0, 0, 32.4);
   O.playerController.debugSetOrientation(0, 0);
   await sleep(1000);
   const nearWall = O.perspective.currentBoomDistance;
-  O.playerController.debugTeleport(0, 0, -20);
+  O.playerController.debugTeleport(0, 0, 4);
   await sleep(1200);
   return { open, nearWall, restored: O.perspective.currentBoomDistance };
 });
@@ -593,7 +600,13 @@ const fists = await page.evaluate(async () => {
   await sleep(700);
   const slot = O.weaponManager.inventory.findIndex((w) => w.def.id === 'fists');
   O.weaponManager.switchTo(slot);
-  await sleep(2000);
+  // Wait for the swap to COMPLETE rather than sleeping a fixed 2 s: switch
+  // durations differ per weapon and the boot loadout is user-chosen now.
+  for (let i = 0; i < 400; i += 1) {
+    await new Promise((r) => requestAnimationFrame(r));
+    if (!O.weaponManager.switching && O.weaponManager.activeWeapon.def.id === 'fists') break;
+  }
+  await sleep(900);
 
   const cam = O.engine.sceneManager.getCamera();
   cam.updateMatrixWorld(true);
@@ -627,8 +640,13 @@ const fists = await page.evaluate(async () => {
   await sleep(700);
 
   // Switching back must fully release arm ownership.
-  O.weaponManager.switchTo(0);
-  await sleep(2000);
+  const rifleSlot = O.weaponManager.inventory.findIndex((w) => w.def.id === 'rifle');
+  O.weaponManager.switchTo(rifleSlot);
+  for (let i = 0; i < 400; i += 1) {
+    await new Promise((r) => requestAnimationFrame(r));
+    if (!O.weaponManager.switching && O.weaponManager.activeWeapon.def.id === 'rifle') break;
+  }
+  await sleep(900);
   return {
     weaponId: O.weaponManager.activeWeapon.def.id,
     handR, handL, visibleArmMeshes,
@@ -798,8 +816,21 @@ const stability = await page.evaluate(async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // Hammer the toggle mid-blend — a half-applied perspective must not throw.
   for (let i = 0; i < 6; i += 1) { O.perspective.toggle(); await sleep(90); }
+  // Wait on the blend ITSELF rather than a flat sleep: the S-curve's duration
+  // depends on frame pacing, so a fixed wait sampled mid-transition.
+  for (let i = 0; i < 300; i += 1) {
+    await new Promise((r) => requestAnimationFrame(r));
+    const b = O.perspective.blendWeight;
+    if (b <= 0.001 || b >= 0.999) break;
+  }
+  // Settle back to first person, again waiting on the blend rather than a
+  // fixed sleep — setPerspective starts a FRESH transition.
   O.perspective.setPerspective('FIRST');
-  await sleep(900);
+  for (let i = 0; i < 300; i += 1) {
+    await new Promise((r) => requestAnimationFrame(r));
+    if (O.perspective.blendWeight <= 0.001) break;
+  }
+  await sleep(200);
   return { perspective: O.perspective.current, blend: O.perspective.blendWeight };
 });
 check('9a. rapid mid-blend toggling settles cleanly',

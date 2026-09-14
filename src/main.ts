@@ -16,7 +16,28 @@ import scopeSystem from './weapons/ScopeSystem';
 import scopeOverlay from './ui/ScopeOverlay';
 import explosionDamage from './weapons/ExplosionDamageResolver';
 import { TraversalPrompt } from './ui/TraversalPrompt';
-import TestArena from './environment/TestArena';
+import LevelLoader from './environment/LevelLoader';
+import AudioManager from './audio/AudioManager';
+import bindGameAudio from './audio/GameAudioBindings';
+import { allAudioPaths } from './audio/SoundLibrary';
+import SkinManager from './customization/SkinManager';
+import PlayerHealth from './player/PlayerHealth';
+import matchStats from './state/MatchStatsTracker';
+import UIManager from './ui/UIManager';
+import HUDManager from './ui/hud/HUDManager';
+import MainMenu from './ui/menus/MainMenu';
+import LoadingScreen from './ui/menus/LoadingScreen';
+import SettingsMenu from './ui/menus/SettingsMenu';
+import LoadoutMenu from './ui/menus/LoadoutMenu';
+import PauseMenu from './ui/menus/PauseMenu';
+import GameOverScreen from './ui/menus/GameOverScreen';
+import { setUIAudio } from './ui/dom';
+import { LEVELS, getLevel } from './environment/LevelDefinition';
+import settingsStore from './core/SettingsStore';
+import loadoutManager from './customization/LoadoutManager';
+import { HEALTH } from './utils/Constants';
+import './ui/styles.css';
+
 
 import PlayerController from './player/PlayerController';
 import { resolveNextState } from './player/PlayerState';
@@ -62,12 +83,13 @@ const engine = new Engine(canvas);
 const physics = await PhysicsWorld.create();
 const colliderFactory = new ColliderFactory(physics);
 
-// TEMPORARY — Document 2 test arena (deleted in Document 4). Its constructor
-// registers all static geometry + the three training dummies as hittables.
-const arena = new TestArena();
-engine.sceneManager.setScene(arena.scene);
-// Level collision → Rapier static colliders (Document C §4.2 ColliderFactory).
-for (const box of arena.colliders) colliderFactory.addStaticBox(box, 'generic');
+// Document 4/5: real LevelLoader. The scene is created empty here and filled
+// by load(levelId) when the player picks a deployment from the main menu.
+// Geometry, colliders, surface tags and dummies are all owned by the loader,
+// so unloading leaves no residue behind for the next match.
+const levelLoader = new LevelLoader(colliderFactory);
+const arena = levelLoader; // legacy alias: same `.scene`/`.update(dt)` surface
+engine.sceneManager.setScene(levelLoader.scene);
 
 // Hittable registry → Rapier colliders, then swap the hitscan query backend.
 ballistics.attachPhysics(physics, colliderFactory);
@@ -516,11 +538,191 @@ viewmodel.setPoseInputProvider(() => ({
 
 void weaponManager.equipInitial();
 
+// ===========================================================================
+// DOCUMENT 5 — UI, HUD, AUDIO AND THE MATCH LIFECYCLE
+// ===========================================================================
+
+const audioManager = new AudioManager(engine.assetLoader, settingsStore);
+audioManager.attach(engine.sceneManager.getCamera(), levelLoader.scene);
+setUIAudio(audioManager);
+
+const skinManager = new SkinManager(engine.assetLoader);
+// Preload skins at boot, not only at match load: the Loadout screen is
+// reachable straight from the main menu and needs them immediately.
+void skinManager.preload();
+const playerHealth = new PlayerHealth();
+
+/** What the player is standing on — drives footstep and landing audio. */
+const groundSurface = (): string => {
+  const p = playerController.getPosition();
+  return playerCollider.groundSurfaceAt(
+    new THREE.Vector3(p.x, p.y + 0.4, p.z),
+  ) ?? 'concrete';
+};
+playerController.footstepSystem.setSurfaceProvider(groundSurface);
+
+bindGameAudio({
+  audio: audioManager,
+  weaponManager,
+  getPlayerPosition: () => playerController.getPosition(),
+  getGroundSurface: groundSurface,
+});
+
+matchStats.start();
+
+// --- HUD -------------------------------------------------------------------
+const hud = new HUDManager({
+  audio: audioManager,
+  getSpreadDegrees: () => {
+    const weapon = weaponManager.activeWeapon;
+    return weapon.getCurrentSpreadAngle(
+      playerController.getState(),
+      weaponManager.isADSActive,
+      !playerController.isGrounded,
+    );
+  },
+  getCameraYaw: () => playerController.camera.threeCamera.rotation.y,
+  getPlayerPosition: () => playerController.getPosition(),
+});
+// The HUD ticks even while paused so a hit marker cannot freeze mid-flash.
+engine.registerAlwaysUpdatable(hud);
+
+// --- screens ---------------------------------------------------------------
+const ui = new UIManager();
+let activeLevelId = LEVELS[0].id;
+
+/** Start (or restart) a match on a level: load it, then show the click gate. */
+const beginLoad = async (levelId: string): Promise<void> => {
+  activeLevelId = levelId;
+  loadingScreen.setLevelName(getLevel(levelId).displayName);
+  gameStateManager.setState(GameState.LOADING);
+  // Audio first so nothing pops in on the first shot (§7.2/§9.2).
+  await audioManager.preload(allAudioPaths());
+  await skinManager.preload();
+  await levelLoader.load(levelId);
+};
+
+/** The click gate: pointer lock and AudioContext both need a real gesture. */
+const enterMatch = (): void => {
+  const level = getLevel(activeLevelId);
+  playerController.debugTeleport(level.spawn[0], level.spawn[1], level.spawn[2]);
+  playerController.debugSetOrientation(level.spawnYaw, 0);
+  playerHealth.reset();
+  matchStats.reset();
+  void audioManager.resume();
+  engine.inputManager.requestPointerLock(canvas);
+  gameStateManager.setState(GameState.PLAYING);
+};
+
+const mainMenu = new MainMenu((levelId) => { void beginLoad(levelId); });
+const loadingScreen = new LoadingScreen(enterMatch);
+const settingsMenu = new SettingsMenu(
+  engine.inputManager,
+  audioManager,
+  (fov) => playerController.camera.setBaseFOV(fov),
+);
+const loadoutMenu = new LoadoutMenu(engine.assetLoader, skinManager);
+
+const quitToMenu = (): void => {
+  levelLoader.unloadCurrentLevel();
+  audioManager.stopAll();
+  document.exitPointerLock?.();
+  gameStateManager.setState(GameState.MAIN_MENU);
+};
+
+const endMatch = (reason: string): void => {
+  gameOverScreen.setReason(reason);
+  document.exitPointerLock?.();
+  gameStateManager.setState(GameState.GAME_OVER);
+};
+
+const pauseMenu = new PauseMenu({
+  onResume: () => {
+    engine.inputManager.requestPointerLock(canvas);
+    gameStateManager.setState(GameState.PLAYING);
+  },
+  onOpenSettings: () => {
+    settingsMenu.setReturnTarget('pause');
+    eventBus.emit('ui:overlay', { name: 'settings', open: true });
+  },
+  onQuitToMenu: quitToMenu,
+  onEndMatch: () => endMatch('Match Ended'),
+});
+
+const gameOverScreen = new GameOverScreen({
+  onRetry: () => { void beginLoad(activeLevelId); },
+  onMainMenu: quitToMenu,
+});
+
+ui.register('mainMenu', mainMenu, GameState.MAIN_MENU);
+ui.register('loadout', loadoutMenu, GameState.LOADOUT);
+ui.register('settings', settingsMenu, GameState.SETTINGS);
+ui.register('loading', loadingScreen, GameState.LOADING);
+ui.register('pause', pauseMenu, GameState.PAUSED);
+ui.register('gameOver', gameOverScreen, GameState.GAME_OVER);
+ui.registerPersistent(hud.element);
+ui.start();
+
+// Settings reached from the main menu returns to the main menu.
+eventBus.on('game:stateChanged', (p) => {
+  if ((p as { current: string }).current === GameState.SETTINGS) {
+    settingsMenu.setReturnTarget('menu');
+  }
+});
+
+// --- pause / resume --------------------------------------------------------
+window.addEventListener('keydown', (e) => {
+  if (e.code !== engine.inputManager.getBindings().pause) return;
+  const state = gameStateManager.getState();
+  if (state === GameState.PLAYING) {
+    document.exitPointerLock?.();
+    gameStateManager.setState(GameState.PAUSED);
+  } else if (state === GameState.PAUSED && ui.openOverlays.length === 0) {
+    engine.inputManager.requestPointerLock(canvas);
+    gameStateManager.setState(GameState.PLAYING);
+  }
+});
+
+// Losing pointer lock unexpectedly (alt-tab, browser Escape) must pause, or
+// the player keeps taking damage behind a window they cannot see.
+eventBus.on('input:pointerlock:lost', () => {
+  if (gameStateManager.getState() === GameState.PLAYING) {
+    gameStateManager.setState(GameState.PAUSED);
+  }
+});
+
+// --- player damage ---------------------------------------------------------
+engine.registerUpdatable({ update: (dt: number) => playerHealth.update(dt) });
+
+// The rocket launcher's own blast is a real, working damage path (Document D
+// §7.1 made the shooter a legitimate target), so health is reachable in
+// normal play, not only via the debug bind below.
+eventBus.on('player:damaged', () => { /* HUD binds this itself */ });
+explosionDamage.setPlayerTarget(
+  () => playerController.getPosition().clone(),
+  (amount) => playerHealth.takeDamage(amount, undefined),
+);
+
+eventBus.on('player:died', () => endMatch('You Died'));
+
+// Debug damage bind (F6): a guaranteed trigger path for the HUD's health,
+// vignette and damage-direction widgets, per §8.1's requirement that at least
+// one demonstrable path exists.
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'F6' || !gameStateManager.is(GameState.PLAYING)) return;
+  const p = playerController.getPosition();
+  const angle = Math.random() * Math.PI * 2;
+  playerHealth.takeDamage(HEALTH.DEBUG_DAMAGE, new THREE.Vector3(
+    p.x + Math.sin(angle) * 6, p.y, p.z + Math.cos(angle) * 6,
+  ));
+});
+
 engine.start();
 
-// Document 1 boots straight into PLAYING (no menus exist yet).
-// Document 5 changes this initial state to MAIN_MENU.
-gameStateManager.setState(GameState.PLAYING);
+// Document 5: the game now boots to a real main menu rather than straight
+// into gameplay. LevelLoader.load() is still what actually starts a match —
+// it just has real UI in front of it now.
+gameStateManager.setState(GameState.MAIN_MENU);
 
 // ---------------------------------------------------------------------------
 engine.debug.addLine('stamina', () => `STA   ${playerController.getStaminaValue().toFixed(2)}`);
@@ -562,7 +764,8 @@ interface OperatorTestHook {
   weaponManager: WeaponManager;
   viewmodel: WeaponViewmodel;
   ballistics: typeof ballistics;
-  arena: TestArena;
+  arena: LevelLoader;
+  levelLoader: LevelLoader;
   animationStateMachine: AnimationStateMachine;
   blender: AnimationBlender;
   compositor: AnimationLayerCompositor;
@@ -599,6 +802,7 @@ interface OperatorTestHook {
   viewmodel,
   ballistics,
   arena,
+  levelLoader,
   animationStateMachine,
   blender,
   compositor,
@@ -623,6 +827,11 @@ interface OperatorTestHook {
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.animationEngine = animationEngine;
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.getProfile = getProfile;
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.input = engine.inputManager;
+// Document 5 surfaces, for the acceptance harness.
+Object.assign((window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__, {
+  audioManager, hud, ui, matchStats, playerHealth, loadoutManager, skinManager,
+  settingsStore, levelLoader, mainMenu, loadingScreen, settingsMenu, loadoutMenu,
+});
 // ---------------------------------------------------------------------------
 // End TEMPORARY block.
 // ---------------------------------------------------------------------------
