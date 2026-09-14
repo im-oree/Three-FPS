@@ -15,6 +15,7 @@ import projectileSystem from './weapons/ProjectileSystem';
 import cameraShake from './camera/CameraShakeController';
 import bindShakeTriggers from './camera/ShakeTriggers';
 import explosionEffect, { EXPLOSION_PRESETS } from './vfx/ExplosionEffect';
+import vehicleShowcase from './vfx/VehicleShowcase';
 import scopeSystem from './weapons/ScopeSystem';
 import scopeOverlay from './ui/ScopeOverlay';
 import explosionDamage from './weapons/ExplosionDamageResolver';
@@ -395,6 +396,15 @@ bindShakeTriggers({
   getListenerPosition: () => playerController.getPosition(),
 });
 
+// --- PLACEHOLDER vehicle showcase (F7) — see the new models in motion ------
+// Scaffolding until Document H's KillstreakManager owns vehicle spawning.
+void vehicleShowcase.load(engine.assetLoader, levelLoader.scene);
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'F7' || !gameStateManager.is(GameState.PLAYING)) return;
+  if (vehicleShowcase.isActive) vehicleShowcase.hide();
+  else vehicleShowcase.show(playerController.getPosition().clone());
+});
+
 // --- Document G: the ONE shared explosion system ---------------------------
 void explosionEffect.load(engine.assetLoader, levelLoader.scene, physics);
 // Visuals are driven off the same event as damage and shake, but know nothing
@@ -547,6 +557,7 @@ engine.registerUpdatable({
     // Document D §2.2: advance in-flight rockets (swept collision + detonation).
     projectileSystem.update(dt);
     explosionEffect.update(dt);
+    vehicleShowcase.update(dt);
     fidgets.update(dt, viewmodel.currentWeaponId ?? '', playerController.getHorizontalSpeed() > 0.5, viewmodel.isOneShotRunning);
     muzzleFlash.update(dt);
     impactEffect.update(dt);
@@ -783,6 +794,7 @@ interface OperatorTestHook {
   scopeSystem: typeof scopeSystem;
   cameraShake: typeof cameraShake;
   explosionEffect: typeof explosionEffect;
+  vehicleShowcase: typeof vehicleShowcase;
   scopeOverlay: typeof scopeOverlay;
   gameStateManager: typeof gameStateManager;
   eventBus: typeof eventBus;
@@ -824,6 +836,7 @@ interface OperatorTestHook {
   scopeOverlay,
   cameraShake,
   explosionEffect,
+  vehicleShowcase,
   gameStateManager,
   eventBus,
   playerController,

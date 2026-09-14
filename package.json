@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "OPERATOR — a Call of Duty-style 3D first-person shooter built on Three.js + Vite (Document 1: foundation & core engine).",
+  "description": "OPERATOR \u2014 a Call of Duty-style 3D first-person shooter built on Three.js + Vite (Document 1: foundation & core engine).",
   "scripts": {
     "dev": "vite",
     "build": "vite build && node tools/copyAssets.mjs",
@@ -22,7 +22,9 @@
     "generate:audio": "node tools/generateAudio.mjs",
     "verify:acceptance:doc5": "node tools/verify/acceptance-doc5.mjs",
     "generate:skins": "node tools/generateSkinTextures.js",
-    "validate:weapons": "node tools/validateWeaponModel.js --all"
+    "validate:weapons": "node tools/validateWeaponModel.js --all",
+    "generate:vehicles": "node tools/generateVehicleModels.js",
+    "generate:explosionfx": "node tools/generateExplosionTextures.js"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.20.0",
