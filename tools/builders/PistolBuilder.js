@@ -18,10 +18,10 @@ export function buildPistolPattern() {
   const root = new THREE.Group();
   root.name = 'Root_Weapon';
 
-  const slideColor  = 0x26262a;
-  const frameColor  = 0x333430;
-  const metalColor  = 0x1c1c1c;
-  const detailColor = 0x0f0f0f; // dark accents: sights, texture, small hardware
+  const slideColor  = 0x55555e;
+  const frameColor  = 0x5b5d55;
+  const metalColor  = 0x505050;
+  const detailColor = 0x484848; // dark accents: sights, texture, small hardware
 
   // ---------------------------------------------------------------------
   // SLIDE — group replaces the single box, keeps name/transform

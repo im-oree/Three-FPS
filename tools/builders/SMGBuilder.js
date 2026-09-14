@@ -25,10 +25,10 @@ export function buildSMGPattern() {
   const root = new THREE.Group();
   root.name = 'Root_Weapon';
 
-  const receiverColor = 0x24262a;
-  const metalColor    = 0x18191c;
-  const polymerColor  = 0x1f1f22;
-  const detailColor   = 0x0d0d0f;
+  const receiverColor = 0x51555e;
+  const metalColor    = 0x4b4e57;
+  const polymerColor  = 0x515159;
+  const detailColor   = 0x464651;
 
   // ---------------------------------------------------------------------
   // RECEIVER
@@ -201,7 +201,7 @@ export function buildSMGPattern() {
   opticGlass.position.set(0, 0.053, -0.088);
   opticGlass.rotation.set(0, 0, 0);
 
-  opticGlass.add(box([0.026, 0.026, 0.004], 0x101418, [0, 0, 0], [0, 0, 0], 'OpticGlass_Lens'));
+  opticGlass.add(box([0.026, 0.026, 0.004], 0x3e4d5c, [0, 0, 0], [0, 0, 0], 'OpticGlass_Lens'));
   opticGlass.add(box([0.028, 0.028, 0.002], detailColor, [0, 0, 0.003], [0, 0, 0], 'OpticGlass_Bezel'));
   root.add(opticGlass);
 

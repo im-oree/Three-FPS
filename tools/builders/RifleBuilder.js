@@ -18,10 +18,10 @@ export function buildRiflePattern() {
   const root = new THREE.Group();
   root.name = 'Root_Weapon';
 
-  const receiverColor = 0x2b2b28;
-  const woodColor     = 0x5b3a21;
-  const metalColor    = 0x1c1c1c;
-  const detailColor   = 0x111111; // slightly darker accents (pins, screws, springs)
+  const receiverColor = 0x585852;
+  const woodColor     = 0x8c5933;
+  const metalColor    = 0x505050;
+  const detailColor   = 0x494949; // slightly darker accents (pins, screws, springs)
 
   // ---------------------------------------------------------------------
   // RECEIVER — group replaces the single body box, keeps name/transform
@@ -52,18 +52,26 @@ export function buildRiflePattern() {
   // (local +Y = toward receiver/breech, local -Y = toward muzzle)
   // ---------------------------------------------------------------------
   const barrel = new THREE.Group();
+  // BARREL ASSEMBLY.
+  //
+  // The group itself is NOT rotated. An earlier version rotated it X+90 so the
+  // cylinders would stand along the barrel, but every child offset then got
+  // rotated with it: a muzzle cap authored at local z -0.30 ended up at world
+  // +Y 0.30, floating in the air above the gun. Keep the group axis-aligned
+  // with the weapon (-Z forward) and rotate only the CYLINDERS, which is all
+  // that actually needs it.
   barrel.name = 'Barrel';
   barrel.position.set(0, 0.01, -0.55);
-  barrel.rotation.set(Math.PI / 2, 0, 0);
 
-  barrel.add(cyl(0.012, 0.5, metalColor, [0, 0, 0], [0, 0, 0], 8, 'Barrel_MainTube'));
+  const ROT_Z = [Math.PI / 2, 0, 0]; // stand a cylinder along the Z axis
+  barrel.add(cyl(0.012, 0.5, metalColor, [0, 0, 0], ROT_Z, 8, 'Barrel_MainTube'));
   barrel.add(box([0.03, 0.03, 0.02], metalColor, [0, 0, 0.235], [0, 0, 0], 'Barrel_Trunnion'));
   barrel.add(box([0.026, 0.026, 0.03], metalColor, [0, 0.012, -0.10], [0, 0, 0], 'Barrel_GasBlock'));
-  barrel.add(cyl(0.006, 0.16, metalColor, [0, 0.022, 0.05], [0, 0, 0], 6, 'Barrel_GasTube'));
+  barrel.add(cyl(0.006, 0.16, metalColor, [0, 0.022, 0.05], ROT_Z, 6, 'Barrel_GasTube'));
   barrel.add(box([0.02, 0.03, 0.02], metalColor, [0, 0.02, -0.20], [0, 0, 0], 'Barrel_FrontSightBase'));
-  barrel.add(cyl(0.003, 0.035, detailColor, [0, 0.005, -0.225], [Math.PI / 2, 0, 0], 6, 'Barrel_FrontSightPost'));
-  barrel.add(cyl(0.015, 0.05, metalColor, [0, 0, -0.275], [0, 0, 0], 8, 'Barrel_MuzzleBrake'));
-  barrel.add(cyl(0.017, 0.01, detailColor, [0, 0, -0.30], [0, 0, 0], 8, 'Barrel_MuzzleCap'));
+  barrel.add(cyl(0.003, 0.035, detailColor, [0, 0.03, -0.225], [0, 0, 0], 6, 'Barrel_FrontSightPost'));
+  barrel.add(cyl(0.015, 0.05, metalColor, [0, 0, -0.275], ROT_Z, 8, 'Barrel_MuzzleBrake'));
+  barrel.add(cyl(0.017, 0.01, detailColor, [0, 0, -0.30], ROT_Z, 8, 'Barrel_MuzzleCap'));
   root.add(barrel);
 
   // ---------------------------------------------------------------------

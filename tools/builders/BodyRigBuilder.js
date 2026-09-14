@@ -52,25 +52,25 @@ export const BODY_JOINTS = {
 
 export const BODY_PALETTE = {
   skin:     ARM_PALETTE.skin,
-  fatigues: 0x3a3f26,
-  vest:     0x2c2f22,
-  helmet:   0x24261c,
-  boots:    0x16171a,
+  fatigues: 0x5c643c,
+  vest:     0x565c42,
+  helmet:   0x535740,
+  boots:    0x4a4d57,
 };
 
 // ---------------------------------------------------------------------------
 // Detail palette — extra tones for gear, not exposed as runtime parameters
 // ---------------------------------------------------------------------------
 const D = {
-  gear:      0x1e2016, // dark MOLLE webbing / straps
-  pouch:     0x30341f, // individual pouches
-  radio:     0x141510, // radio/electronics
-  kneePad:   0x22241a, // knee/shin guard
-  laces:     0x0e0e0c, // boot laces
-  metal:     0x1a1a18, // buckles, snaps, bolt heads
-  nvg:       0x111210, // NVG mount arm
+  gear:      0x4f543a, // dark MOLLE webbing / straps
+  pouch:     0x585f39, // individual pouches
+  radio:     0x4a4d3b, // radio/electronics
+  kneePad:   0x51563e, // knee/shin guard
+  laces:     0x48483e, // boot laces
+  metal:     0x4f4f49, // buckles, snaps, bolt heads
+  nvg:       0x474b43, // NVG mount arm
   skin:      ARM_PALETTE.skin,
-  balaclava: 0x20221a,
+  balaclava: 0x505541,
 };
 
 // ---------------------------------------------------------------------------

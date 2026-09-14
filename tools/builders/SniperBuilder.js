@@ -23,11 +23,11 @@ export function buildSniperPattern() {
   const root = new THREE.Group();
   root.name = 'Root_Weapon';
 
-  const receiverColor = 0x2b2b2e;
-  const metalColor    = 0x161618;
-  const stockColor    = 0x33383a;
-  const detailColor   = 0x0d0d0f;
-  const lensColor     = 0x1a3a4a; // faint blue lens tint
+  const receiverColor = 0x57575d;
+  const metalColor    = 0x4c4c53;
+  const stockColor    = 0x565f62;
+  const detailColor   = 0x464651;
+  const lensColor     = 0x2e6682; // faint blue lens tint
 
   // ---------------------------------------------------------------------
   // RECEIVER
@@ -164,13 +164,13 @@ export function buildSniperPattern() {
   scopeTube.position.set(0, 0.078, -0.14);
   scopeTube.rotation.set(Math.PI / 2, 0, 0);
 
-  scopeTube.add(cyl(0.020, 0.30, 0x0c0c0e, [0, 0, 0], [0, 0, 0], 10, 'ScopeTube_MainBody'));
-  scopeTube.add(cyl(0.026, 0.04, 0x0c0c0e, [0, 0.01, 0], [0, 0, 0], 10, 'ScopeTube_TurretHousing'));
+  scopeTube.add(cyl(0.020, 0.30, 0x454551, [0, 0, 0], [0, 0, 0], 10, 'ScopeTube_MainBody'));
+  scopeTube.add(cyl(0.026, 0.04, 0x454551, [0, 0.01, 0], [0, 0, 0], 10, 'ScopeTube_TurretHousing'));
   scopeTube.add(cyl(0.011, 0.02, metalColor, [0.026, 0.01, 0], [0, 0, Math.PI / 2], 8, 'ScopeTube_ElevationTurret'));
   scopeTube.add(cyl(0.008, 0.006, detailColor, [0.037, 0.01, 0], [0, 0, Math.PI / 2], 8, 'ScopeTube_ElevationCap'));
   scopeTube.add(cyl(0.011, 0.02, metalColor, [0, 0.01, 0.026], [Math.PI / 2, 0, 0], 8, 'ScopeTube_WindageTurret'));
   scopeTube.add(cyl(0.008, 0.006, detailColor, [0, 0.01, 0.037], [Math.PI / 2, 0, 0], 8, 'ScopeTube_WindageCap'));
-  scopeTube.add(cyl(0.023, 0.03, 0x0c0c0e, [0, -0.10, 0], [0, 0, 0], 10, 'ScopeTube_ParallaxRing'));
+  scopeTube.add(cyl(0.023, 0.03, 0x454551, [0, -0.10, 0], [0, 0, 0], 10, 'ScopeTube_ParallaxRing'));
   scopeTube.add(cyl(0.022, 0.02, detailColor, [0, 0.11, 0], [0, 0, 0], 10, 'ScopeTube_MagRing'));
   root.add(scopeTube);
 
@@ -182,7 +182,7 @@ export function buildSniperPattern() {
   scopeObjective.position.set(0, 0.078, -0.30);
   scopeObjective.rotation.set(Math.PI / 2, 0, 0);
 
-  scopeObjective.add(cyl(0.028, 0.05, 0x0c0c0e, [0, 0, 0], [0, 0, 0], 10, 'ScopeObjective_Bell'));
+  scopeObjective.add(cyl(0.028, 0.05, 0x454551, [0, 0, 0], [0, 0, 0], 10, 'ScopeObjective_Bell'));
   scopeObjective.add(cyl(0.024, 0.004, lensColor, [0, -0.023, 0], [0, 0, 0], 10, 'ScopeObjective_Lens'));
   scopeObjective.add(cyl(0.029, 0.006, detailColor, [0, 0.02, 0], [0, 0, 0], 10, 'ScopeObjective_SunshadeRing'));
   root.add(scopeObjective);
@@ -196,11 +196,11 @@ export function buildSniperPattern() {
   scopeEyepiece.rotation.set(Math.PI / 2, 0, 0);
 
   // Main bell — identical size/position to the original mesh (do not alter).
-  scopeEyepiece.add(cyl(0.025, 0.05, 0x0c0c0e, [0, 0, 0], [0, 0, 0], 10, 'ScopeEyepiece_Bell'));
+  scopeEyepiece.add(cyl(0.025, 0.05, 0x454551, [0, 0, 0], [0, 0, 0], 10, 'ScopeEyepiece_Bell'));
   // Detail rings nested INSIDE the bell's envelope (never exceed ±0.025 length).
   scopeEyepiece.add(cyl(0.023, 0.006, lensColor, [0, -0.020, 0], [0, 0, 0], 10, 'ScopeEyepiece_Lens'));
   scopeEyepiece.add(cyl(0.026, 0.008, detailColor, [0, 0.018, 0], [0, 0, 0], 10, 'ScopeEyepiece_DiopterRing'));
-  scopeEyepiece.add(cyl(0.024, 0.006, 0x1a1a1a, [0, 0.023, 0], [0, 0, 0], 10, 'ScopeEyepiece_EyecupRim'));
+  scopeEyepiece.add(cyl(0.024, 0.006, 0x4f4f4f, [0, 0.023, 0], [0, 0, 0], 10, 'ScopeEyepiece_EyecupRim'));
   root.add(scopeEyepiece);
 
   // ---------------------------------------------------------------------

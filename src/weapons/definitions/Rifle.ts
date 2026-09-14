@@ -22,6 +22,12 @@ export const Rifle: WeaponDefinition = {
     inspect: 'inspect',
   },
 
+  /** Procedural part nodes (Document A 8.7). The models have carried
+   *  these nodes all along; without declaring them here
+   *  WeaponPartAnimator bound nothing and the magazine never hid
+   *  during a reload, nor did the charging handle rack. */
+  parts: { chargingHandle: 'Bone_ChargingHandle', magazine: 'Bone_Magazine' },
+
   damageNear: 35,
   damageFar: 20,
   damageFalloffStartDistance: 10,

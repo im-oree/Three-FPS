@@ -57,10 +57,16 @@ function write(name, shade) {
 }
 
 // Standard: gunmetal with horizontal machining grain.
+//
+// NOTE ON BRIGHTNESS: the renderer outputs sRGB, so three.js converts these
+// 8-bit values to LINEAR light on load. A value of 46 becomes ~0.027 linear —
+// effectively black, which is why the weapons previously rendered as flat
+// silhouettes no matter how much light was thrown at them. Gunmetal needs to
+// sit near mid-grey in 8-bit terms to read as dark metal once lit.
 write('weapon_skin_standard.png', (x, y) => {
-  const grain = Math.sin(y * 1.7) * 3 + hash(x, y, 1) * 10;
-  const v = 46 + grain;
-  return [v, v + 2, v + 6];
+  const grain = Math.sin(y * 1.7) * 5 + hash(x, y, 1) * 16;
+  const v = 124 + grain;
+  return [v, v + 3, v + 9];
 });
 
 // Desert: tan camo blocks, low contrast.
@@ -75,7 +81,7 @@ write('weapon_skin_desert.png', (x, y) => {
 // Urban: grey/black digital camo, higher contrast.
 write('weapon_skin_urban.png', (x, y) => {
   const base = camo(x, y, 7, [
-    [78, 82, 88], [44, 47, 52], [110, 115, 122], [28, 30, 34],
+    [132, 138, 146], [92, 97, 104], [166, 172, 180], [70, 74, 80],
   ], 5);
   const n = hash(x, y, 23) * 10 - 5;
   return [base[0] + n, base[1] + n, base[2] + n];

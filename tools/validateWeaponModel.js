@@ -311,6 +311,50 @@ function validate(file, weaponId) {
     }
   }
 
+  // --- detached / floating geometry ----------------------------------------
+  // A weapon is a thin object running down -Z. Any mesh whose world centre
+  // sits far off that axis is almost always a child added to a ROTATED parent
+  // group: the parent's rotation is applied to the child's offset too, so a
+  // muzzle cap authored at local z -0.30 under an X+90 group lands at world
+  // +Y 0.30, floating in mid air. This caught exactly that in the rifle.
+  if (bounds) {
+    const centres = [];
+    const walkCentres = (entry) => {
+      if (entry.node.mesh === undefined) return;
+      const mesh = json.meshes?.[entry.node.mesh];
+      for (const prim of mesh?.primitives ?? []) {
+        const a = json.accessors?.[prim.attributes?.POSITION];
+        if (!a?.min) continue;
+        const c = [(a.min[0] + a.max[0]) / 2, (a.min[1] + a.max[1]) / 2, (a.min[2] + a.max[2]) / 2];
+        const w = rotate(entry.world, c);
+        const t = translation(entry.world);
+        centres.push({ name: entry.name || '(unnamed)', p: [w[0] + t[0], w[1] + t[1], w[2] + t[2]] });
+      }
+    };
+    for (const entry of flat) walkCentres(entry);
+    // ABSOLUTE limits, not derived from the bounding box: the strays inflate
+    // the very box you would scale against, so a box-relative threshold
+    // silently grows to accommodate them and the check never fires.
+    //
+    // The limits are ASYMMETRIC. Plenty of real parts hang well BELOW the
+    // bore — magazines, grips, bipods — so downward travel is generous. Very
+    // little sits far ABOVE it (a scope is the tallest thing on any of these),
+    // and nothing sits far off the centreline. Those two directions are where
+    // the rotated-parent bug actually throws geometry.
+    const LATERAL = 0.12;
+    const ABOVE = 0.20;
+    const BELOW = 0.40;
+    const strays = centres.filter((c) =>
+      Math.abs(c.p[0]) > LATERAL || c.p[1] > ABOVE || c.p[1] < -BELOW);
+    if (strays.length) {
+      const names = [...new Set(strays.map((s) => s.name))].slice(0, 5);
+      fail(`${strays.length} mesh(es) float away from the weapon body`,
+        `${names.join(', ')} — child of a rotated parent group?`);
+    } else {
+      ok('no detached/floating geometry');
+    }
+  }
+
   // --- animated parts -------------------------------------------------------
   for (const name of spec.parts) {
     const entry = byName.get(name);

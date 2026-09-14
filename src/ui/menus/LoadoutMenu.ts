@@ -81,12 +81,19 @@ export class LoadoutMenu implements Screen {
 
     this.previewCamera.position.set(0, 0.08, 0.95);
     this.previewCamera.lookAt(0, 0, 0);
-    this.previewScene.add(new THREE.HemisphereLight(0xbcc6d4, 0x20242a, 1.5));
-    const key = new THREE.DirectionalLight(0xffffff, 2.0);
+    // Product-shot lighting. The weapons are near-black gunmetal, so a dim
+    // setup renders them as a silhouette you cannot actually evaluate. Fill
+    // generously, then key/rim for form.
+    this.previewScene.add(new THREE.AmbientLight(0xffffff, 1.6));
+    this.previewScene.add(new THREE.HemisphereLight(0xcfd8e6, 0x3a4048, 2.2));
+    const key = new THREE.DirectionalLight(0xffffff, 3.2);
     key.position.set(1.5, 2, 1.8);
     this.previewScene.add(key);
-    const rim = new THREE.DirectionalLight(0x88aaff, 1.1);
-    rim.position.set(-2, 0.5, -1.5);
+    const fill = new THREE.DirectionalLight(0xffffff, 1.4);
+    fill.position.set(-1.8, 0.4, 1.2);
+    this.previewScene.add(fill);
+    const rim = new THREE.DirectionalLight(0x9fc4ff, 2.0);
+    rim.position.set(-2, 0.8, -1.8);
     this.previewScene.add(rim);
     this.previewScene.add(this.turntable);
   }
@@ -161,7 +168,7 @@ export class LoadoutMenu implements Screen {
       this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
       this.renderer.setSize(360, 360, false);
-      this.renderer.setClearColor(0x0e1115, 1);
+      this.renderer.setClearColor(0x20242b, 1);
       this.previewHost.appendChild(this.renderer.domElement);
     }
     void this.loadPreview();
@@ -201,11 +208,20 @@ export class LoadoutMenu implements Screen {
     const centre = new THREE.Vector3();
     box.getSize(size);
     box.getCenter(centre);
-    const longest = Math.max(size.x, size.y, size.z) || 1;
     model.position.sub(centre);
     const holder = new THREE.Group();
     holder.add(model);
-    holder.scale.setScalar(0.62 / longest);
+
+    // FRAMING. Scale on the DIAGONAL of the bounding box, not the longest
+    // single axis: the turntable spins the model, so at 45 degrees a long
+    // weapon presents its diagonal to the camera. Scaling by the longest axis
+    // alone let a compact weapon like the pistol over-scale and clip out of
+    // frame as it rotated. The diagonal is the true worst case.
+    const diagonal = Math.hypot(size.x, size.y, size.z) || 1;
+    holder.scale.setScalar(0.78 / diagonal);
+    // A slight downward tilt shows the top rail and the side profile at once
+    // rather than a flat broadside.
+    holder.rotation.x = 0.16;
     this.turntable.add(holder);
   }
 

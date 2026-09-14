@@ -22,16 +22,16 @@ export function buildRocketLauncherPattern() {
   const root = new THREE.Group();
   root.name = 'Root_Weapon';
 
-  const tubeColor = 0x3a4632;
-  const metalColor = 0x1a1a1c;
-  const gripColor = 0x202022;
+  const tubeColor = 0x56684a;
+  const metalColor = 0x4e4e54;
+  const gripColor = 0x525257;
 
   // Main launch tube, running down -Z.
   root.add(cyl(0.050, 0.95, tubeColor, [0, 0, -0.10], [Math.PI / 2, 0, 0], 12, 'Tube'));
   // Front muzzle ring.
   root.add(cyl(0.056, 0.05, metalColor, [0, 0, -0.55], [Math.PI / 2, 0, 0], 12, 'MuzzleRing'));
   // Rear back-blast venturi — deliberately at +Z, the opposite end.
-  root.add(cyl(0.060, 0.11, 0x202024, [0, 0, 0.43], [Math.PI / 2, 0, 0], 12, 'RearVent'));
+  root.add(cyl(0.060, 0.11, 0x51515c, [0, 0, 0.43], [Math.PI / 2, 0, 0], 12, 'RearVent'));
 
   root.add(box([0.016, 0.034, 0.16], metalColor, [0, 0.062, -0.24], [0, 0, 0], 'SightRail'));
   root.add(box([0.026, 0.030, 0.05], metalColor, [0, 0.086, -0.22], [0, 0, 0], 'SightBody'));
@@ -41,7 +41,7 @@ export function buildRocketLauncherPattern() {
   // Shoulder pad the tube actually rests on.
   root.add(box([0.070, 0.030, 0.12], gripColor, [0, 0.048, 0.33], [0, 0, 0], 'ShoulderPad'));
   // Loaded warhead, visible at the muzzle when the launcher is charged.
-  root.add(cyl(0.044, 0.10, 0x6b5330, [0, 0, -0.52], [Math.PI / 2, 0, 0], 10, 'Bone_Magazine'));
+  root.add(cyl(0.044, 0.10, 0x85673c, [0, 0, -0.52], [Math.PI / 2, 0, 0], 10, 'Bone_Magazine'));
 
   root.add(socket('Socket_Grip', [0, -0.080, 0.13]));
   root.add(socket('Socket_GripSecondary', [0, -0.078, -0.34]));
@@ -65,9 +65,9 @@ export function buildRocketLauncherPattern() {
 export function buildRocketProjectilePattern() {
   const root = new THREE.Group();
   root.name = 'Root_Projectile';
-  root.add(cyl(0.030, 0.20, 0x6b5330, [0, 0, 0], [Math.PI / 2, 0, 0], 8, 'Warhead'));
-  root.add(cyl(0.014, 0.10, 0x30302f, [0, 0, 0.14], [Math.PI / 2, 0, 0], 8, 'Motor'));
-  root.add(box([0.004, 0.045, 0.05], 0x30302f, [0, 0, 0.17], [0, 0, 0], 'FinV'));
-  root.add(box([0.045, 0.004, 0.05], 0x30302f, [0, 0, 0.17], [0, 0, 0], 'FinH'));
+  root.add(cyl(0.030, 0.20, 0x85673c, [0, 0, 0], [Math.PI / 2, 0, 0], 8, 'Warhead'));
+  root.add(cyl(0.014, 0.10, 0x5a5a58, [0, 0, 0.14], [Math.PI / 2, 0, 0], 8, 'Motor'));
+  root.add(box([0.004, 0.045, 0.05], 0x5a5a58, [0, 0, 0.17], [0, 0, 0], 'FinV'));
+  root.add(box([0.045, 0.004, 0.05], 0x5a5a58, [0, 0, 0.17], [0, 0, 0], 'FinH'));
   return root;
 }

@@ -15,9 +15,9 @@ export const DIMS = {
 
 export const PALETTE = {
   skin: 0xd8a878,
-  sleeve: 0x33361f,
-  glove: 0x2a2a2e,
-  gloveSleeve: 0x1c1e14,
+  sleeve: 0x5b6037,
+  glove: 0x57575f,
+  gloveSleeve: 0x4e5338,
 };
 
 function makeSegment(size, color) {
