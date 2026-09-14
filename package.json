@@ -24,7 +24,8 @@
     "generate:skins": "node tools/generateSkinTextures.js",
     "validate:weapons": "node tools/validateWeaponModel.js --all",
     "generate:vehicles": "node tools/generateVehicleModels.js",
-    "generate:explosionfx": "node tools/generateExplosionTextures.js"
+    "generate:explosionfx": "node tools/generateExplosionTextures.js",
+    "generate:icons": "node tools/generateKillstreakIcons.js"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.20.0",

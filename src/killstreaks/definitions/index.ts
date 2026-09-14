@@ -33,7 +33,7 @@ export const AIRSTRIKE_DEFINITION: KillstreakDefinition = {
 
 export const HELICOPTER_DEFINITION: KillstreakDefinition = {
   id: 'attack_helicopter',
-  displayName: 'Attack Helicopter',
+  displayName: 'Attack Heli',
   killsRequired: 7,
   activationType: 'controlled',
   iconLabel: 'HELI',
