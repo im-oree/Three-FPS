@@ -12,6 +12,9 @@ import gameStateManager, { GameState } from './state/GameStateManager';
 import eventBus from './core/EventBus';
 import characterState from './character/CharacterStateSystem';
 import projectileSystem from './weapons/ProjectileSystem';
+import cameraShake from './camera/CameraShakeController';
+import bindShakeTriggers from './camera/ShakeTriggers';
+import explosionEffect, { EXPLOSION_PRESETS } from './vfx/ExplosionEffect';
 import scopeSystem from './weapons/ScopeSystem';
 import scopeOverlay from './ui/ScopeOverlay';
 import explosionDamage from './weapons/ExplosionDamageResolver';
@@ -387,6 +390,29 @@ explosionDamage.setPlayerTarget(
   (amount) => eventBus.emit('player:damaged', { amount, source: 'explosion' }),
 );
 
+// --- Document E §1.4: every camera-shake trauma source, bound in one place --
+bindShakeTriggers({
+  getListenerPosition: () => playerController.getPosition(),
+});
+
+// --- Document G: the ONE shared explosion system ---------------------------
+void explosionEffect.load(engine.assetLoader, levelLoader.scene, physics);
+// Visuals are driven off the same event as damage and shake, but know nothing
+// about either — that split is what lets a stun grenade reuse these visuals
+// with zero blast damage.
+eventBus.on('combat:explosion', (payload) => {
+  const p = payload as {
+    point?: { x: number; y: number; z: number };
+    presetId?: string;
+  };
+  if (!p.point) return;
+  const preset = EXPLOSION_PRESETS[p.presetId ?? 'rocketLauncher']
+    ?? EXPLOSION_PRESETS.rocketLauncher;
+  explosionEffect.spawn(
+    new THREE.Vector3(p.point.x, p.point.y, p.point.z), preset,
+  );
+});
+
 const impactEffect = new ImpactEffect(engine.assetLoader, arena.scene);
 const tracerEffect = new TracerEffect(engine.assetLoader, arena.scene);
 
@@ -520,6 +546,7 @@ engine.registerUpdatable({
     casingPhysics.update(dt);
     // Document D §2.2: advance in-flight rockets (swept collision + detonation).
     projectileSystem.update(dt);
+    explosionEffect.update(dt);
     fidgets.update(dt, viewmodel.currentWeaponId ?? '', playerController.getHorizontalSpeed() > 0.5, viewmodel.isOneShotRunning);
     muzzleFlash.update(dt);
     impactEffect.update(dt);
@@ -754,6 +781,8 @@ interface OperatorTestHook {
   characterState: typeof characterState;
   projectileSystem: typeof projectileSystem;
   scopeSystem: typeof scopeSystem;
+  cameraShake: typeof cameraShake;
+  explosionEffect: typeof explosionEffect;
   scopeOverlay: typeof scopeOverlay;
   gameStateManager: typeof gameStateManager;
   eventBus: typeof eventBus;
@@ -793,6 +822,8 @@ interface OperatorTestHook {
   projectileSystem,
   scopeSystem,
   scopeOverlay,
+  cameraShake,
+  explosionEffect,
   gameStateManager,
   eventBus,
   playerController,

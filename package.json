@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "OPERATOR \u2014 a Call of Duty-style 3D first-person shooter built on Three.js + Vite (Document 1: foundation & core engine).",
+  "description": "OPERATOR — a Call of Duty-style 3D first-person shooter built on Three.js + Vite (Document 1: foundation & core engine).",
   "scripts": {
     "dev": "vite",
     "build": "vite build && node tools/copyAssets.mjs",
@@ -26,6 +26,7 @@
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.20.0",
+    "simplex-noise": "^4.0.3",
     "three": "0.170.0"
   },
   "devDependencies": {

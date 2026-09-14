@@ -18,6 +18,7 @@
 import * as THREE from 'three';
 import eventBus from '../core/EventBus';
 import settingsStore from '../core/SettingsStore';
+import cameraShake from '../camera/CameraShakeController';
 import type { InputManager } from '../core/InputManager';
 import { CAMERA, CAMERA_FEEL, LANDING, MOUSE, PLAYER, RECOIL, SETTINGS_KEYS, WEAPON } from '../utils/Constants';
 import { clamp, degToRad, lerp } from '../utils/MathUtils';
@@ -274,6 +275,14 @@ export class PlayerCamera {
     let shakeX = 0;
     let shakeY = 0;
     let shakeRoll = 0;
+    // Document E §1: the trauma engine composes at the SAME additive seam as
+    // the legacy impulse shakes, head-bob, landing dip and recoil. One more
+    // contributor to the existing "sum everything, apply once" step — no new
+    // composition code.
+    cameraShake.update(dt);
+    shakeX += cameraShake.output.position.x;
+    shakeY += cameraShake.output.position.y;
+    shakeRoll += cameraShake.output.rotation.z;
     for (const s of this.shakes) {
       const remaining = 1 - s.elapsed / s.duration;
       const decay = Math.pow(remaining, CAMERA_FEEL.SHAKE_DECAY_EXPONENT);
@@ -294,10 +303,12 @@ export class PlayerCamera {
     this.clockNow += dt;
     const camPitch = sim.pitch
       + (recoilOn ? this.climbPitch + this.punchPitch + this.jitterPitch : 0)
-      + this.scopeSwayPitch;
+      + this.scopeSwayPitch
+      + cameraShake.output.rotation.x;
     const camYaw = sim.yaw
       + (recoilOn ? this.climbYaw + this.punchYaw + this.jitterYaw : 0)
-      + this.scopeSwayYaw;
+      + this.scopeSwayYaw
+      + cameraShake.output.rotation.y;
     this.camera.rotation.set(camPitch, camYaw, this.slideTiltRad + shakeRoll, 'YXZ');
 
     // 3) FOV: highest-priority active modifier wins; smooth blend, never snap.

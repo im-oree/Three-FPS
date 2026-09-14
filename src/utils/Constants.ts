@@ -1052,3 +1052,68 @@ export const HUD = {
   CROSSHAIR_BASE_GAP: 4,
   CROSSHAIR_PX_PER_DEGREE: 7,
 } as const;
+
+/**
+ * Camera shake trauma model (Document E §1). Separate from RECOIL, which is
+ * the deterministic learnable per-weapon pattern.
+ */
+export const CAMERA_SHAKE = {
+  /** Trauma units bled off per second — linear decay. */
+  DECAY_PER_SECOND: 1.4,
+  MAX_OFFSET_POS: 0.03,
+  MAX_OFFSET_ROT_DEG: 4.0,
+  /** How fast we walk through the noise field. Higher = busier shake. */
+  NOISE_FREQUENCY: 12,
+  /** Continuous exertion waver while sprinting (per second). */
+  SPRINT_TRAUMA_TRICKLE: 0.02,
+  TAC_SPRINT_TRAUMA_TRICKLE: 0.04,
+  /** One-shot pulses. */
+  SLIDE_ENTRY_TRAUMA: 0.08,
+  SLIDE_EXIT_TRAUMA: 0.04,
+  /** Supplementary per-shot tick for AUTOMATIC weapons only. */
+  AUTO_FIRE_SUPPLEMENTAL_TRAUMA: 0.015,
+  /** Landing: scaled by impact speed, clamped to this band. */
+  LANDING_TRAUMA_MIN: 0.05,
+  LANDING_TRAUMA_MAX: 0.15,
+  /** Damage: trauma per point of damage taken, clamped. */
+  DAMAGE_TRAUMA_PER_POINT: 0.004,
+  DAMAGE_TRAUMA_MAX: 0.35,
+  /** Explosions shake well beyond their damage radius. */
+  EXPLOSION_SHAKE_RADIUS_MULTIPLIER: 3.0,
+  EXPLOSION_BASE_TRAUMA: 0.9,
+} as const;
+
+/**
+ * Per-locomotion-state hand bob (Document E §2). Amplitudes are in radians of
+ * wrist/elbow spring target, phase-locked to the footstep cadence so the
+ * visual bob peak lands with the audible step.
+ */
+export const HAND_BOB = {
+  WALK_AMPLITUDE: 0.008,
+  SPRINT_AMPLITUDE: 0.018,
+  TAC_SPRINT_AMPLITUDE: 0.026,
+  CROUCH_AMPLITUDE: 0.004,
+  /** Airborne micro-drift, so arms are not frozen mid-jump. */
+  AIR_DRIFT_AMPLITUDE: 0.006,
+  AIR_DRIFT_FREQUENCY: 0.7,
+  /** Landing settle kick, scaled by impact speed. */
+  LANDING_KICK_MAX: 0.09,
+  /** Look-layer strength per state — a sprinter does not finely articulate. */
+  LOOK_STRENGTH_DEFAULT: 1.0,
+  LOOK_STRENGTH_SPRINT: 0.7,
+  LOOK_STRENGTH_TAC_SPRINT: 0.4,
+} as const;
+
+/** Shared explosion timings (Document G). One system, scaled by preset. */
+export const EXPLOSION_FX = {
+  /** Point-light flash: a few frames only. */
+  LIGHT_SECONDS: 0.09,
+  LIGHT_INTENSITY_SCALE: 14,
+  FIREBALL_SECONDS: 0.42,
+  SHOCKWAVE_SECONDS: 0.32,
+  SMOKE_SECONDS: 2.6,
+  DECAL_SECONDS: 14,
+  DEBRIS_LIFETIME: 4.5,
+  /** After this, an instance is recycled once its debris have expired. */
+  TOTAL_SECONDS: 2.8,
+} as const;
