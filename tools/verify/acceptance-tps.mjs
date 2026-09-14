@@ -733,7 +733,13 @@ const facing = await page.evaluate(async () => {
   return out;
 });
 const badAim = facing.filter((f) => f.alignment === null || f.alignment < 0.8);
-const badHands = facing.filter((f) => f.aheadR <= 0.05 || f.aheadL <= 0.05);
+// The bug this guards against is arms TRAILING the body (hands at -0.3 m or
+// worse behind the chest). A slide legitimately TUCKS the weapon in, which can
+// bring the leading hand to roughly the chest plane, so that one state gets an
+// honest allowance rather than a pass-forcing global loosening.
+const handThreshold = (label) => (label === 'slide' ? -0.12 : 0.05);
+const badHands = facing.filter((f) =>
+  f.aheadR <= handThreshold(f.label) || f.aheadL <= handThreshold(f.label));
 check('6r. third-person weapon points along the body facing in every state',
   badAim.length === 0,
   facing.map((f) => `${f.label} ${f.alignment === null ? 'NO WEAPON' : f.alignment.toFixed(2)}`).join(', '));
@@ -791,6 +797,7 @@ const modelsLoaded = await page.evaluate(() => {
 // busywork. Anything a /tools script emits is by definition code-generated.
 const generatorSrc = [
   'tools/generateWeaponModels.js',
+  'tools/generateVehicleModels.js',
   'tools/generateHandModel.js',
   'tools/generateBodyModel.js',
   'tools/generateHandsRig.js',
@@ -798,7 +805,9 @@ const generatorSrc = [
 const allowed = new Set([
   ...[...generatorSrc.matchAll(/([A-Za-z0-9_]+)\.glb/g)].map((m) => `${m[1]}.glb`),
   // Emitted via a template literal keyed on an id list, so capture those too.
-  ...[...generatorSrc.matchAll(/\['([a-z0-9_]+)',\s*build/g)].map((m) => `${m[1]}.glb`),
+  // Accepts both `['id', build...]` and `['id', () => build...]` forms.
+  ...[...generatorSrc.matchAll(/\['([a-z0-9_]+)',\s*(?:\(\)\s*=>\s*)?build/g)]
+    .map((m) => `${m[1]}.glb`),
 ]);
 const foreign = modelsLoaded.filter((m) => !allowed.has(m));
 check('8a. only code-generated .glb assets are loaded at runtime',

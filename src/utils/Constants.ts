@@ -89,6 +89,13 @@ export const DEFAULT_KEY_BINDINGS = {
   inspect: 'KeyF',
   // FPS/TPS Spec §1: 1PS <-> 3PS perspective toggle.
   togglePerspective: 'KeyP',
+  /**
+   * Killstreak slots (Document H §1.3). Digits 1-7 are weapon slots, so these
+   * sit on the left-hand cluster where they can be hit without leaving WASD.
+   */
+  killstreakSlot1: 'KeyZ',
+  killstreakSlot2: 'KeyX',
+  killstreakSlot3: 'KeyB',
   debugToggle: 'F3',
   debugGizmos: 'F4', // Document C §3.6 socket/joint orientation axes
   pause: 'Escape',
@@ -1116,4 +1123,67 @@ export const EXPLOSION_FX = {
   DEBRIS_LIFETIME: 4.5,
   /** After this, an instance is recycled once its debris have expired. */
   TOTAL_SECONDS: 2.8,
+} as const;
+
+/**
+ * Killstreak availability + cooldown (Document H).
+ *
+ * THE EARNING PROBLEM: there are no enemies yet, so a strict kills-required
+ * gate would make every killstreak permanently unreachable and untestable.
+ * The availability RULE is therefore swappable — see KILLSTREAK.EARN_MODE.
+ * Switching to 'kills' once AI exists is a one-line change and the rest of
+ * the framework (HUD states, cooldowns, activation) is unaffected.
+ */
+export const KILLSTREAK = {
+  /**
+   * 'open'  — always available, unlimited uses, cooldown still enforced.
+   *           The current mode: playable and testable with no enemies.
+   * 'kills' — the shipping rule: gated behind killsRequired, consumed on use.
+   */
+  EARN_MODE: 'open' as 'open' | 'kills',
+  /** Seconds after a streak ENDS before it can be called again. */
+  DEFAULT_COOLDOWN_SECONDS: 20,
+  /** Max simultaneously-active streaks (a UAV and a heli can coexist). */
+  MAX_CONCURRENT: 2,
+  /** Fired-and-forget streaks still block re-entry for this long. */
+  MIN_ACTIVATION_GAP: 0.4,
+} as const;
+
+/** UAV recon orbit + radar ping cadence (Document I §4). */
+export const UAV_KILLSTREAK = {
+  ORBIT_RADIUS: 40,
+  ORBIT_HEIGHT: 35,
+  ORBIT_SPEED: 0.15,
+  PING_INTERVAL: 1.0,
+  /**
+   * Short enough that contacts visibly refresh rather than lying about stale
+   * positions, but comfortably MORE than double the ping interval. At 1.2 s
+   * a single dropped frame let every contact lapse before the next sweep, so
+   * the radar flickered empty between pings.
+   */
+  CONTACT_TTL: 2.6,
+} as const;
+
+/** Airstrike bombing run (Document H §2.2). */
+export const AIRSTRIKE = {
+  INBOUND_DELAY: 2.2,
+  BOMB_COUNT: 4,
+  BOMB_INTERVAL: 0.35,
+  BOMB_SPACING: 11,
+  BLAST_RADIUS: 10,
+  BLAST_DAMAGE: 180,
+} as const;
+
+/** Attack helicopter patrol + engagement (Document I §5). */
+export const HELICOPTER = {
+  ENGAGE_ALTITUDE: 18,
+  PATROL_SPEED: 11,
+  PATROL_RADIUS: 34,
+  TURN_RATE: 1.4,
+  TARGET_SCAN_INTERVAL: 1.5,
+  ENGAGE_RANGE: 70,
+  ENGAGE_STANDOFF: 22,
+  MINIGUN_FIRE_RATE_RPM: 1800,
+  MINIGUN_DAMAGE: 9,
+  HEALTH: 500,
 } as const;

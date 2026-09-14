@@ -16,6 +16,13 @@ import cameraShake from './camera/CameraShakeController';
 import bindShakeTriggers from './camera/ShakeTriggers';
 import explosionEffect, { EXPLOSION_PRESETS } from './vfx/ExplosionEffect';
 import vehicleShowcase from './vfx/VehicleShowcase';
+import killstreakManager from './killstreaks/KillstreakManager';
+import UAVKillstreakController from './killstreaks/controllers/UAVKillstreakController';
+import AirstrikeKillstreakController from './killstreaks/controllers/AirstrikeKillstreakController';
+import AttackHelicopterKillstreakController from './killstreaks/controllers/AttackHelicopterKillstreakController';
+import groundTargeting from './killstreaks/GroundTargetingMode';
+import radarContacts from './world/RadarContactRegistry';
+import KillstreakHUD from './ui/hud/KillstreakHUD';
 import scopeSystem from './weapons/ScopeSystem';
 import scopeOverlay from './ui/ScopeOverlay';
 import explosionDamage from './weapons/ExplosionDamageResolver';
@@ -396,6 +403,72 @@ bindShakeTriggers({
   getListenerPosition: () => playerController.getPosition(),
 });
 
+// --- Document H: killstreak framework --------------------------------------
+// The manager holds NO per-streak logic; this map is the entire extension
+// point. Killstreak #4 = one controller + one definition + one line here.
+killstreakManager.registerController('UAVKillstreakController', () => new UAVKillstreakController());
+killstreakManager.registerController('AirstrikeKillstreakController', () => new AirstrikeKillstreakController());
+killstreakManager.registerController('AttackHelicopterKillstreakController', () => new AttackHelicopterKillstreakController());
+killstreakManager.attach({
+  scene: levelLoader.scene,
+  assetLoader: engine.assetLoader,
+  physics,
+  getPlayerPosition: () => playerController.getPosition(),
+  getCameraForward: () => {
+    const v = new THREE.Vector3();
+    playerController.camera.threeCamera.getWorldDirection(v);
+    return v;
+  },
+});
+killstreakManager.start();
+groundTargeting.attach(levelLoader.scene, physics);
+
+const killstreakHUD = new KillstreakHUD(killstreakManager);
+
+/**
+ * The airstrike is 'directional': it needs a designated ground point BEFORE
+ * activating. Pressing its key opens targeting; pressing fire confirms.
+ */
+let airstrikePendingSlot = -1;
+const beginAirstrikeTargeting = (slot: number): void => {
+  airstrikePendingSlot = slot;
+  groundTargeting.begin();
+};
+const confirmAirstrike = (): void => {
+  if (airstrikePendingSlot < 0) return;
+  if (groundTargeting.hasValidTarget) {
+    AirstrikeKillstreakController.pendingTarget = groundTargeting.targetPoint;
+    const forward = new THREE.Vector3();
+    playerController.camera.threeCamera.getWorldDirection(forward);
+    AirstrikeKillstreakController.pendingAxis = forward;
+    killstreakManager.activate(airstrikePendingSlot);
+  }
+  groundTargeting.end();
+  airstrikePendingSlot = -1;
+};
+
+const KILLSTREAK_BINDS = ['killstreakSlot1', 'killstreakSlot2', 'killstreakSlot3'];
+window.addEventListener('keydown', (e) => {
+  if (!gameStateManager.is(GameState.PLAYING)) return;
+  const bindings = engine.inputManager.getBindings();
+  // Escape cancels an open targeting mode before anything else sees it.
+  if (groundTargeting.isActive && e.code === bindings.pause) {
+    groundTargeting.end();
+    airstrikePendingSlot = -1;
+    return;
+  }
+  const slot = KILLSTREAK_BINDS.findIndex((action) => bindings[action] === e.code);
+  if (slot < 0) return;
+  const def = killstreakManager.slots[slot];
+  if (!def) return;
+  if (def.activationType === 'directional') beginAirstrikeTargeting(slot);
+  else killstreakManager.activate(slot);
+});
+// Confirm a designated strike with the fire button.
+window.addEventListener('mousedown', (e) => {
+  if (e.button === 0 && groundTargeting.isActive) confirmAirstrike();
+});
+
 // --- PLACEHOLDER vehicle showcase (F7) — see the new models in motion ------
 // Scaffolding until Document H's KillstreakManager owns vehicle spawning.
 void vehicleShowcase.load(engine.assetLoader, levelLoader.scene);
@@ -558,6 +631,13 @@ engine.registerUpdatable({
     projectileSystem.update(dt);
     explosionEffect.update(dt);
     vehicleShowcase.update(dt);
+    killstreakManager.update(dt);
+    killstreakHUD.update();
+    if (groundTargeting.isActive) {
+      const eye = playerController.camera.threeCamera.getWorldPosition(new THREE.Vector3());
+      const fwd = playerController.camera.threeCamera.getWorldDirection(new THREE.Vector3());
+      groundTargeting.update(eye, fwd);
+    }
     fidgets.update(dt, viewmodel.currentWeaponId ?? '', playerController.getHorizontalSpeed() > 0.5, viewmodel.isOneShotRunning);
     muzzleFlash.update(dt);
     impactEffect.update(dt);
@@ -699,6 +779,7 @@ ui.register('loading', loadingScreen, GameState.LOADING);
 ui.register('pause', pauseMenu, GameState.PAUSED);
 ui.register('gameOver', gameOverScreen, GameState.GAME_OVER);
 ui.registerPersistent(hud.element);
+ui.registerPersistent(killstreakHUD.element);
 ui.start();
 
 // Settings reached from the main menu returns to the main menu.
@@ -795,6 +876,10 @@ interface OperatorTestHook {
   cameraShake: typeof cameraShake;
   explosionEffect: typeof explosionEffect;
   vehicleShowcase: typeof vehicleShowcase;
+  killstreakManager: typeof killstreakManager;
+  killstreakHUD: KillstreakHUD;
+  radarContacts: typeof radarContacts;
+  groundTargeting: typeof groundTargeting;
   scopeOverlay: typeof scopeOverlay;
   gameStateManager: typeof gameStateManager;
   eventBus: typeof eventBus;
@@ -837,6 +922,10 @@ interface OperatorTestHook {
   cameraShake,
   explosionEffect,
   vehicleShowcase,
+  killstreakManager,
+  killstreakHUD,
+  radarContacts,
+  groundTargeting,
   gameStateManager,
   eventBus,
   playerController,
