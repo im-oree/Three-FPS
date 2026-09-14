@@ -20,7 +20,7 @@
 import * as THREE from 'three';
 import eventBus from '../core/EventBus';
 import { KILLSTREAK } from '../utils/Constants';
-import { ALL_KILLSTREAKS, getKillstreak } from './definitions';
+import { DEFAULT_KILLSTREAK_LOADOUT, getKillstreak } from './definitions';
 import type { KillstreakDefinition } from './definitions/types';
 import type {
   KillstreakContext, KillstreakControllerInterface,
@@ -65,7 +65,10 @@ export interface KillstreakManagerDeps {
 
 export class KillstreakManager {
   /** The three equipped streaks, in slot order. */
-  private loadout: KillstreakDefinition[] = [...ALL_KILLSTREAKS];
+  /** Three equipped of the four that exist. */
+  private loadout: KillstreakDefinition[] = DEFAULT_KILLSTREAK_LOADOUT
+    .map((id) => getKillstreak(id))
+    .filter(Boolean) as KillstreakDefinition[];
   private readonly factories = new Map<string, ControllerFactory>();
   private readonly active: ActiveEntry[] = [];
   /** id -> seconds of cooldown remaining. */
@@ -231,6 +234,20 @@ export class KillstreakManager {
         this.endStreak(entry.definition.id);
       }
     }
+  }
+
+  /**
+   * The live controller of a given class, or null. Lets main feed per-frame
+   * input to a streak that needs it (the missile) without the manager
+   * knowing anything about that streak specifically.
+   */
+  activeControllerOfType<T extends KillstreakControllerInterface>(
+    ctor: abstract new (...args: never[]) => T,
+  ): T | null {
+    for (const entry of this.active) {
+      if (entry.controller instanceof ctor) return entry.controller as T;
+    }
+    return null;
   }
 
   /** Test seam. */

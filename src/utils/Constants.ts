@@ -102,6 +102,10 @@ export const DEFAULT_KEY_BINDINGS = {
    */
   throwTactical: 'KeyG',
   throwLethal: 'KeyQ',
+  /** Raise/lower the killstreak command tablet (Document I §2). */
+  killstreakTablet: 'KeyT',
+  /** Boost while steering the guided missile. */
+  missileBoost: 'ShiftLeft',
   killstreakSlot1: 'KeyZ',
   killstreakSlot2: 'KeyX',
   killstreakSlot3: 'KeyB',
@@ -1247,4 +1251,71 @@ export const MINIMAP = {
   /** World metres from the player to the edge of the dish. */
   RADIUS_METERS: 60,
   PIXEL_SIZE: 172,
+} as const;
+
+/** Killstreak command tablet (Document I §2, Document J §5). */
+export const TABLET_UI = {
+  SCREEN_REFRESH_HZ: 12,
+  CONFIRM_HOLD_SECONDS: 0.7,
+  /** How fast the tablet swings into view. */
+  RAISE_RATE: 9,
+  /** How long the INBOUND flash holds before the tablet auto-lowers. */
+  ACTIVATING_HOLD_MS: 620,
+  /** Half-width of the designation map, in world metres. */
+  MAP_RADIUS_METERS: 70,
+  /** Where the cursor starts, ahead of the player. */
+  CURSOR_START_AHEAD: 18,
+  /** Cursor travel speed in metres per second of held input. */
+  CURSOR_SPEED: 26,
+  /** Half-width of the drawn map, in screen pixels, for mouse scaling. */
+  MAP_PIXELS: 105,
+  /**
+   * Mouse-to-cursor gain. At 1.0 a normal flick crossed the entire map in one
+   * motion, which made precise designation impossible; 0.28 means a decisive
+   * mouse movement travels about a third of the map.
+   */
+  CURSOR_GAIN: 0.28,
+} as const;
+
+/**
+ * Guided missile killstreak — Call of Duty Predator Missile behaviour.
+ *
+ * Researched against the real thing rather than invented:
+ *  - You do NOT navigate a menu. Activating opens the laptop automatically,
+ *    plays its animation, and hands you the missile camera.
+ *  - The camera starts HIGH and looking essentially straight DOWN; you steer
+ *    the nose toward a target as it falls.
+ *  - Boost (hold fire) makes it fall faster but markedly harder to steer —
+ *    that trade is the whole skill of the streak.
+ *  - Flight time is short: roughly five seconds of useful control.
+ */
+export const MISSILE = {
+  /** Descent speed, and the boosted speed. */
+  FORWARD_SPEED: 46,
+  BOOST_SPEED: 88,
+  STEER_SENSITIVITY: 0.0019,
+  /** Boost cuts steering authority hard, exactly as in CoD. */
+  BOOST_STEER_SCALE: 0.32,
+  /** Pitch clamps: the nose may level out but never fly back upward. */
+  MAX_PITCH_UP: 0.52,     // +30 deg — enough to flatten a dive, not to climb
+  MAX_PITCH_DOWN: -1.48,  // -85 deg — near vertical
+  /** Start looking almost straight down. */
+  START_PITCH: -1.30,     // -74 deg
+  TURN_RESPONSIVENESS: 4.2,
+  /** Launch height above the designated point. */
+  LAUNCH_ALTITUDE: 210,
+  /** Slight offset so the dive has a direction rather than being vertical. */
+  LAUNCH_STANDOFF: 46,
+  /** Roughly five seconds of control, per the real streak. */
+  FLIGHT_TIME_BUDGET: 9,
+  IMPACT_HOLD_SECONDS: 0.7,
+  /** Laptop raise, then the handoff. No player input in between. */
+  LAPTOP_RAISE_SECONDS: 0.75,
+  LAPTOP_HOLD_SECONDS: 0.55,
+  HANDOFF_SECONDS: 0.35,
+  BLAST_RADIUS: 12,
+  BLAST_DAMAGE: 220,
+  BOOST_TRAUMA: 0.10,
+  /** Enemies are boxed in red on the missile feed. */
+  TARGET_BOX_RANGE: 260,
 } as const;

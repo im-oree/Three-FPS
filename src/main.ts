@@ -32,6 +32,11 @@ import EquipmentHUD from './ui/hud/EquipmentHUD';
 import DisorientOverlays from './ui/hud/DisorientOverlays';
 import Minimap from './ui/hud/Minimap';
 import { getThrowable } from './equipment/definitions';
+import inputContexts from './core/InputContextStack';
+import killstreakTablet from './equipment/KillstreakTablet';
+import cinematicCamera from './camera/CinematicCameraController';
+import MissileKillstreakController from './killstreaks/controllers/MissileKillstreakController';
+import MissileHUD from './ui/hud/MissileHUD';
 import scopeSystem from './weapons/ScopeSystem';
 import scopeOverlay from './ui/ScopeOverlay';
 import explosionDamage from './weapons/ExplosionDamageResolver';
@@ -496,6 +501,7 @@ eventBus.on('equipment:detonated', (payload) => {
 killstreakManager.registerController('UAVKillstreakController', () => new UAVKillstreakController());
 killstreakManager.registerController('AirstrikeKillstreakController', () => new AirstrikeKillstreakController());
 killstreakManager.registerController('AttackHelicopterKillstreakController', () => new AttackHelicopterKillstreakController());
+killstreakManager.registerController('MissileKillstreakController', () => new MissileKillstreakController());
 killstreakManager.attach({
   scene: levelLoader.scene,
   assetLoader: engine.assetLoader,
@@ -511,18 +517,46 @@ killstreakManager.start();
 groundTargeting.attach(levelLoader.scene, physics);
 
 const killstreakHUD = new KillstreakHUD(killstreakManager);
+const missileHUD = new MissileHUD();
+cinematicCamera.attach(playerController.camera.threeCamera);
+
+// --- Document I §2: the killstreak command tablet --------------------------
+void killstreakTablet.attach({
+  assetLoader: engine.assetLoader,
+  killstreaks: killstreakManager,
+  physics,
+  getRigRoot: () => viewmodel.getRigRoot(),
+  getPlayerPosition: () => playerController.getPosition(),
+  getYaw: () => playerController.camera.threeCamera.rotation.y,
+  onActivate: (slot) => { killstreakManager.activate(slot); },
+  onDesignate: (slot, point) => {
+    const def = killstreakManager.slots[slot];
+    if (!def) return;
+    if (def.id === 'guided_missile') {
+      MissileKillstreakController.pendingTarget = point;
+    } else {
+      AirstrikeKillstreakController.pendingTarget = point;
+      const fwd = new THREE.Vector3();
+      playerController.camera.threeCamera.getWorldDirection(fwd);
+      AirstrikeKillstreakController.pendingAxis = fwd;
+    }
+    killstreakManager.activate(slot);
+  },
+});
+
 
 /**
  * The airstrike is 'directional': it needs a designated ground point BEFORE
  * activating. Pressing its key opens targeting; pressing fire confirms.
  */
 let airstrikePendingSlot = -1;
-const beginAirstrikeTargeting = (slot: number): void => {
-  airstrikePendingSlot = slot;
-  groundTargeting.begin();
-};
 const confirmAirstrike = (): void => {
   if (airstrikePendingSlot < 0) return;
+  // RESOLVE THE TARGET NOW, on the click, rather than trusting whatever the
+  // last frame's update() left behind. The update runs late in the frame, so
+  // a fast confirm could otherwise fire against a stale or never-computed
+  // point — which is exactly why the strike sometimes silently did nothing.
+  groundTargeting.update(eyeOf(), forwardOf());
   if (groundTargeting.hasValidTarget) {
     AirstrikeKillstreakController.pendingTarget = groundTargeting.targetPoint;
     const forward = new THREE.Vector3();
@@ -534,26 +568,49 @@ const confirmAirstrike = (): void => {
   airstrikePendingSlot = -1;
 };
 
+// --- Killstreak input -------------------------------------------------------
+// PRIMARY path is the tablet (Document I §2): raise it, cycle, hold to
+// confirm, designate on the map. The direct slot keys remain as a fast
+// alternative for streaks that need no target.
 const KILLSTREAK_BINDS = ['killstreakSlot1', 'killstreakSlot2', 'killstreakSlot3'];
 window.addEventListener('keydown', (e) => {
   if (!gameStateManager.is(GameState.PLAYING)) return;
   const bindings = engine.inputManager.getBindings();
-  // Escape cancels an open targeting mode before anything else sees it.
-  if (groundTargeting.isActive && e.code === bindings.pause) {
-    groundTargeting.end();
-    airstrikePendingSlot = -1;
+
+  // Escape backs out of whatever overlay owns input, innermost first.
+  if (e.code === bindings.pause) {
+    if (killstreakTablet.isRaised) { killstreakTablet.lower(); e.stopPropagation(); return; }
+    if (groundTargeting.isActive) {
+      groundTargeting.end();
+      airstrikePendingSlot = -1;
+      return;
+    }
+  }
+
+  if (e.code === bindings.killstreakTablet && !e.repeat) {
+    killstreakTablet.toggle();
     return;
   }
+
+  // Direct slot keys are ignored while the tablet owns input.
+  if (killstreakTablet.isRaised) return;
   const slot = KILLSTREAK_BINDS.findIndex((action) => bindings[action] === e.code);
   if (slot < 0) return;
   const def = killstreakManager.slots[slot];
   if (!def) return;
-  if (def.activationType === 'directional') beginAirstrikeTargeting(slot);
-  else killstreakManager.activate(slot);
+  if (def.activationType === 'directional') {
+    // Auto-opens the laptop straight onto the map. The player's only job is
+    // to move the cursor and click a point — no menu, no confirm hold.
+    killstreakTablet.openForDesignation(slot);
+  } else {
+    killstreakManager.activate(slot);
+  }
 });
-// Confirm a designated strike with the fire button.
+
 window.addEventListener('mousedown', (e) => {
-  if (e.button === 0 && groundTargeting.isActive) confirmAirstrike();
+  if (e.button !== 0) return;
+  if (killstreakTablet.isRaised) { killstreakTablet.primaryPressed(); return; }
+  if (groundTargeting.isActive) confirmAirstrike();
 });
 
 // --- PLACEHOLDER vehicle showcase (F7) — see the new models in motion ------
@@ -720,6 +777,54 @@ engine.registerUpdatable({
     vehicleShowcase.update(dt);
     killstreakManager.update(dt);
     killstreakHUD.update();
+
+    // --- tablet ------------------------------------------------------------
+    const fireHeld = engine.inputManager.isActionDown('fire');
+    killstreakTablet.update(dt, fireHeld);
+    if (killstreakTablet.isRaised) {
+      // The tablet is a POINTING device: the mouse drives the cursor. The
+      // camera's own guard means it is not consuming the delta right now.
+      const look = engine.inputManager.getMouseDelta();
+      if (look.x !== 0 || look.y !== 0) {
+        killstreakTablet.moveCursorByMouse(look.x, look.y);
+      }
+    }
+
+    // --- guided missile -----------------------------------------------------
+    cinematicCamera.update(dt);
+    const missileCtrl = killstreakManager.activeControllerOfType(
+      MissileKillstreakController,
+    );
+    if (missileCtrl) {
+      const flying = inputContexts.is('missileControl');
+      if (flying) {
+        missileCtrl.setSteering(
+          engine.inputManager.getMouseDelta(),
+          engine.inputManager.isActionDown('missileBoost'),
+        );
+      }
+      const st = missileCtrl.flightState;
+      const inMissileCam = st.phase === 'flying';
+      missileHUD.setVisible(inMissileCam);
+      missileHUD.update(st.fuel, st.pitch, st.altitude, st.heading, st.boosting);
+
+      // The camera is inside the missile's nose: the player's own arms, the
+      // combat HUD and the minimap have no business being on screen. Hide
+      // them for the whole cinematic AND the flight, restoring after.
+      const cinematicActive = cinematicCamera.isActive || inMissileCam
+        || st.phase === 'impact';
+      viewmodel.setHiddenByScope(scopeEngaged || cinematicActive);
+      hud.element.classList.toggle('hud--suppressed', cinematicActive);
+      killstreakHUD.element.classList.toggle('hud--suppressed', cinematicActive);
+      minimap.element.classList.toggle('hud--suppressed', cinematicActive);
+      equipmentHUD.element.classList.toggle('hud--suppressed', cinematicActive);
+    } else {
+      missileHUD.setVisible(false);
+      for (const el of [hud.element, killstreakHUD.element,
+        minimap.element, equipmentHUD.element]) {
+        el.classList.remove('hud--suppressed');
+      }
+    }
     statusEffects.update(dt);
     equipmentManager.update(dt);
     smokeVolume.update(dt);
@@ -878,6 +983,8 @@ ui.registerPersistent(killstreakHUD.element);
 ui.registerPersistent(equipmentHUD.element);
 ui.registerPersistent(minimap.element);
 ui.registerPersistent(disorientOverlays.element);
+ui.registerPersistent(missileHUD.element);
+ui.registerPersistent(missileHUD.barsElement);
 equipmentHUD.setKeyLabel(
   prettyKey(engine.inputManager.getBindings().throwTactical),
 );
@@ -981,6 +1088,10 @@ interface OperatorTestHook {
   killstreakHUD: KillstreakHUD;
   radarContacts: typeof radarContacts;
   groundTargeting: typeof groundTargeting;
+  killstreakTablet: typeof killstreakTablet;
+  cinematicCamera: typeof cinematicCamera;
+  inputContexts: typeof inputContexts;
+  missileHUD: MissileHUD;
   equipmentManager: typeof equipmentManager;
   throwableEffects: typeof throwableEffects;
   statusEffects: typeof statusEffects;
@@ -1035,6 +1146,10 @@ interface OperatorTestHook {
   killstreakHUD,
   radarContacts,
   groundTargeting,
+  killstreakTablet,
+  cinematicCamera,
+  inputContexts,
+  missileHUD,
   equipmentManager,
   throwableEffects,
   statusEffects,

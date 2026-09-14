@@ -474,3 +474,92 @@ input[type='checkbox'] { pointer-events: auto; width: 17px; height: 17px; accent
 .hud__minimap.hud--active { display: flex; }
 .hud__minimap canvas { display: block; }
 .hud__compass { border: 1px solid var(--ui-line); }
+
+/* ---------- missile cam + cinematic bars (Document I §6.4/§6.7) ----------- */
+
+.cinematic-bars { position: absolute; inset: 0; pointer-events: none; }
+.cinematic-bars__top, .cinematic-bars__bottom {
+  position: absolute; left: 0; right: 0; height: 11vh;
+  background: #000; transform: scaleY(0); transition: transform 0.45s ease;
+}
+.cinematic-bars__top { top: 0; transform-origin: top center; }
+.cinematic-bars__bottom { bottom: 0; transform-origin: bottom center; }
+.cinematic-bars--in .cinematic-bars__top,
+.cinematic-bars--in .cinematic-bars__bottom { transform: scaleY(1); }
+
+.hud__missile { position: absolute; inset: 0; display: none; pointer-events: none; }
+.hud__missile.hud--active { display: block; }
+
+/* Scanline wash — cheap, and it reads instantly as "camera feed". */
+.missile__scanlines {
+  position: absolute; inset: 0; opacity: 0.5;
+  background: repeating-linear-gradient(
+    to bottom, rgba(0,0,0,0) 0 2px, rgba(0,0,0,0.30) 2px 4px);
+}
+
+.missile__reticle {
+  position: absolute; left: 50%; top: 50%;
+  width: 180px; height: 180px; margin: -90px 0 0 -90px;
+}
+.missile__bracket {
+  position: absolute; width: 26px; height: 26px;
+  border-color: rgba(120, 255, 190, 0.9); border-style: solid; border-width: 0;
+}
+.missile__bracket--tl { left: 0; top: 0; border-left-width: 2px; border-top-width: 2px; }
+.missile__bracket--tr { right: 0; top: 0; border-right-width: 2px; border-top-width: 2px; }
+.missile__bracket--bl { left: 0; bottom: 0; border-left-width: 2px; border-bottom-width: 2px; }
+.missile__bracket--br { right: 0; bottom: 0; border-right-width: 2px; border-bottom-width: 2px; }
+
+.missile__horizon {
+  position: absolute; left: 12%; right: 12%; top: 50%; height: 1px;
+  background: rgba(120, 255, 190, 0.35);
+}
+
+.missile__fuel {
+  position: absolute; left: 50%; bottom: 16vh; transform: translateX(-50%);
+  width: 210px;
+}
+.missile__fuel-label {
+  font: 600 9px/1.6 var(--ui-mono); letter-spacing: 0.22em;
+  color: rgba(120, 255, 190, 0.75);
+}
+.missile__fuel-fill {
+  height: 3px; width: 100%; transform-origin: left center;
+  background: rgba(120, 255, 190, 0.9); transition: transform 0.1s linear;
+}
+.missile__fuel-fill--low { background: var(--ui-danger); animation: ks-ready 0.5s infinite; }
+
+.missile__status {
+  position: absolute; left: 50%; bottom: 13vh; transform: translateX(-50%);
+  font: 600 10px/1 var(--ui-mono); letter-spacing: 0.2em;
+  color: rgba(120, 255, 190, 0.8);
+}
+.missile__status--warn { color: var(--ui-danger); }
+
+/* Any HUD layer can be suppressed for a cinematic without losing its own
+   PLAYING-state gating — the two rules compose rather than fight. */
+.hud--suppressed { display: none !important; }
+
+/* Missile telemetry + control hint (CoD-style feed readouts). */
+.missile__telemetry {
+  position: absolute; left: 50%; top: 16vh; transform: translateX(-50%);
+  display: flex; gap: 26px;
+}
+.missile__tele { text-align: center; }
+.missile__tele-label {
+  font: 600 8px/1.4 var(--ui-mono); letter-spacing: 0.2em;
+  color: rgba(120, 255, 190, 0.55);
+}
+.missile__tele-value {
+  font: 700 15px/1 var(--ui-mono); color: rgba(150, 255, 205, 0.95);
+}
+.missile__hint {
+  position: absolute; left: 50%; bottom: 9vh; transform: translateX(-50%);
+  font: 600 9px/1 var(--ui-mono); letter-spacing: 0.18em;
+  color: rgba(120, 255, 190, 0.5);
+}
+/* Boost tints the whole feed — an unmissable "you have traded control" cue. */
+.hud__missile--boost .missile__scanlines {
+  background: repeating-linear-gradient(
+    to bottom, rgba(255,120,60,0.05) 0 2px, rgba(0,0,0,0.34) 2px 4px);
+}

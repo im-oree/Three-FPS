@@ -147,3 +147,46 @@ export function buildFlashbangPattern() {
 }
 
 export default buildStunGrenadePattern;
+
+/**
+ * Killstreak command tablet (Document I §2.2).
+ *
+ * The Screen is a SEPARATE mesh with its own material so a CanvasTexture can
+ * be swapped onto it at runtime without touching the body.
+ */
+export function buildTabletPattern() {
+  const root = new THREE.Group();
+  root.name = 'Root_Device';
+
+  const BODY = 0x3c4048;
+  const BEZEL = 0x2b2e34;
+  const RUBBER = 0x24262a;
+
+  // Chassis
+  root.add(box([0.225, 0.300, 0.016], BODY, 'Body', [0, 0, 0]));
+  // Raised bezel lip so the screen sits recessed
+  root.add(box([0.235, 0.310, 0.008], BEZEL, 'Bezel', [0, 0, -0.005]));
+  // Rubberised corner bumpers
+  for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+    root.add(box([0.030, 0.030, 0.022], RUBBER,
+      `Bumper_${sx > 0 ? 'R' : 'L'}${sy > 0 ? 'T' : 'B'}`,
+      [sx * 0.104, sy * 0.142, 0]));
+  }
+  // Hand strap across the back
+  root.add(box([0.190, 0.034, 0.006], RUBBER, 'Strap', [0, -0.02, -0.011]));
+  // Status LED
+  root.add(cyl(0.005, 0.005, 0.004, 6, 0x66ff99, 'StatusLED',
+    [0.092, 0.132, 0.009], [Math.PI / 2, 0, 0]));
+
+  // SCREEN — its own mesh/material, replaced at runtime with a CanvasTexture.
+  const screen = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.196, 0.256),
+    new THREE.MeshBasicMaterial({ color: 0x0c1210, toneMapped: false }),
+  );
+  screen.name = 'Screen';
+  screen.position.set(0, 0.008, 0.0085);
+  root.add(screen);
+
+  socket('Socket_Grip', [0, -0.115, 0], root);
+  return root;
+}

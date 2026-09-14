@@ -46,9 +46,32 @@ export const HELICOPTER_DEFINITION: KillstreakDefinition = {
   controllerClass: 'AttackHelicopterKillstreakController',
 };
 
+export const MISSILE_DEFINITION: KillstreakDefinition = {
+  id: 'guided_missile',
+  displayName: 'Guided Missile',
+  killsRequired: 9,
+  // Directional: the player designates a ground point on the tablet map
+  // before the cinematic launch begins.
+  activationType: 'directional',
+  iconLabel: 'MSL',
+  soundKeys: { activate: 'killstreak_airstrike_activate' },
+  // Fire-and-forget from the manager's perspective: the controller runs its
+  // own five-phase sequence and reports when it is done.
+  durationSeconds: 0,
+  cooldownSeconds: 45,
+  controllerClass: 'MissileKillstreakController',
+};
+
+/**
+ * Four streaks exist; a loadout equips three. The manager renders whatever it
+ * is given, so changing this list needs no HUD or manager changes.
+ */
 export const ALL_KILLSTREAKS: readonly KillstreakDefinition[] = [
-  UAV_DEFINITION, AIRSTRIKE_DEFINITION, HELICOPTER_DEFINITION,
+  UAV_DEFINITION, AIRSTRIKE_DEFINITION, HELICOPTER_DEFINITION, MISSILE_DEFINITION,
 ];
+
+/** The three equipped by default. */
+export const DEFAULT_KILLSTREAK_LOADOUT = ['uav', 'airstrike', 'guided_missile'];
 
 export function getKillstreak(id: string): KillstreakDefinition | null {
   return ALL_KILLSTREAKS.find((k) => k.id === id) ?? null;

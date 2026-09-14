@@ -18,6 +18,7 @@
 import * as THREE from 'three';
 import eventBus from '../core/EventBus';
 import settingsStore from '../core/SettingsStore';
+import inputContexts from '../core/InputContextStack';
 import cameraShake from '../camera/CameraShakeController';
 import type { InputManager } from '../core/InputManager';
 import { CAMERA, CAMERA_FEEL, LANDING, MOUSE, PLAYER, RECOIL, SETTINGS_KEYS, WEAPON } from '../utils/Constants';
@@ -200,7 +201,14 @@ export class PlayerCamera {
   /** Per-render-frame visual update (called once per frame, NOT fixed-step). */
   update(dt: number, sim: PlayerSimState, visuals: CameraVisuals): void {
     // 1) look: raw delta -> simulation yaw/pitch (instant, frame-rate smooth).
-    const delta = this.input.getMouseDelta();
+    //
+    // INPUT CONTEXT GUARD (Document I §6.5): while another system owns input
+    // — steering the guided missile, driving the tablet cursor — the camera
+    // must NOT consume the mouse delta, or the two fight over it and the
+    // missile receives nothing. One guard line; no internals refactored.
+    const delta = inputContexts.gameplayOwnsInput
+      ? this.input.getMouseDelta()
+      : { x: 0, y: 0 };
     // Document 3: WeaponSway needs the same per-frame delta; InputManager's
     // getter consumes, so mirror it here after PlayerCamera has read it.
     this.lastMouseDelta.x = delta.x;

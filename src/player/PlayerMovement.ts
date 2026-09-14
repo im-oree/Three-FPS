@@ -11,6 +11,7 @@
 import * as THREE from 'three';
 import eventBus from '../core/EventBus';
 import statusEffects from './ActiveStatusEffects';
+import inputContexts from '../core/InputContextStack';
 import characterState, { Locomotion } from '../character/CharacterStateSystem';
 import { JUMP, MOVEMENT, PLAYER, SLIDE, TAC_SPRINT } from '../utils/Constants';
 import { clamp, easeOutQuad, lerp } from '../utils/MathUtils';
@@ -144,6 +145,13 @@ export class PlayerMovement {
   }
 
   step(dt: number, intent: MovementIntent): void {
+    // INPUT CONTEXT GUARD (Document I §6.5): while the missile or the tablet
+    // owns input, the body must not move. Guarding once here keeps the rule
+    // in one place rather than at every call site.
+    if (!inputContexts.gameplayOwnsInput) {
+      intent.moveLocal.set(0, 0);
+      intent.jumpQueued = false;
+    }
     this.lastMoveLocal.copy(intent.moveLocal);
     this.updateTacticalSprint(dt, intent);
     this.updateSlide(dt, intent);

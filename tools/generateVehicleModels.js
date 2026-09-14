@@ -33,6 +33,7 @@ import { buildUAVPattern } from './builders/UAVBuilder.js';
 import { buildMissilePattern } from './builders/MissileBuilder.js';
 import {
   buildSmokeGrenadePattern, buildStunGrenadePattern, buildFlashbangPattern,
+  buildTabletPattern,
 } from './builders/GrenadeBuilder.js';
 
 const OUT_DIR = 'assets/models/vehicles';
@@ -54,6 +55,7 @@ const CONTRACTS = {
     'Root_Missile', 'Bone_SeekHead', 'Socket_Exhaust',
     'Socket_Detonation', 'Socket_NoseCam', 'Fin_0', 'Fin_1', 'Fin_2', 'Fin_3',
   ],
+  killstreak_tablet: ['Root_Device', 'Screen', 'Socket_Grip'],
   smoke_grenade: ['Root_Throwable', 'Socket_Fuse'],
   stun_grenade: ['Root_Throwable', 'Socket_Fuse'],
   flashbang: ['Root_Throwable', 'Socket_Fuse'],
@@ -61,13 +63,15 @@ const CONTRACTS = {
 
 /** Which directory each id belongs in. */
 const DIR_FOR = (id) => (
-  ['smoke_grenade', 'stun_grenade', 'flashbang'].includes(id) ? EQUIP_DIR : OUT_DIR
+  ['smoke_grenade', 'stun_grenade', 'flashbang', 'killstreak_tablet'].includes(id)
+    ? EQUIP_DIR : OUT_DIR
 );
 
 const vehicles = [
   ['attack_helicopter', () => buildHelicopterPattern().root],
   ['uav_drone', () => buildUAVPattern().root],
   ['guided_missile', () => buildMissilePattern().root],
+  ['killstreak_tablet', () => buildTabletPattern()],
   ['smoke_grenade', () => buildSmokeGrenadePattern()],
   ['stun_grenade', () => buildStunGrenadePattern()],
   ['flashbang', () => buildFlashbangPattern()],

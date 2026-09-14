@@ -181,6 +181,17 @@ const curve = await page.evaluate(async () => {
   // the boom is already partly collapsed against a ledge there.
   O.playerController.debugTeleport(0, 0, 4);
   O.playerController.debugSetOrientation(0, 0);
+  // The spring arm EXTENDS over time, so sample only once it has settled —
+  // a fixed sleep caught it mid-travel and read a collapsed baseline.
+  {
+    let last = -1;
+    for (let i = 0; i < 180; i += 1) {
+      await new Promise((r) => requestAnimationFrame(r));
+      const d = O.perspective.currentBoomDistance;
+      if (Math.abs(d - last) < 0.005) break;
+      last = d;
+    }
+  }
   await sleep(600);
   O.perspective.setPerspective('FIRST');
   await sleep(700);
@@ -606,7 +617,13 @@ const fists = await page.evaluate(async () => {
     await new Promise((r) => requestAnimationFrame(r));
     if (!O.weaponManager.switching && O.weaponManager.activeWeapon.def.id === 'fists') break;
   }
-  await sleep(900);
+  // The unarmed guard BLENDS in over ~0.5 s; sampling on a fixed sleep caught
+  // the arms still at their rest pose below the lens.
+  for (let i = 0; i < 240; i += 1) {
+    await new Promise((r) => requestAnimationFrame(r));
+    if (O.handsRig.guardWeight > 0.98) break;
+  }
+  await sleep(350);
 
   const cam = O.engine.sceneManager.getCamera();
   cam.updateMatrixWorld(true);
@@ -726,7 +743,18 @@ const facing = await page.evaluate(async () => {
   await sleep(1300);
   out.push(sample('sprint'));
   O.inputManager.heldKeys.add('KeyC');
-  await sleep(400);
+  // The slide TUCKS the weapon over a spring arc. A fixed sleep samples a
+  // random point along it, so wait for the carried weapon's heading to stop
+  // changing before reading it.
+  {
+    let last = -2;
+    for (let i = 0; i < 180; i += 1) {
+      await new Promise((r) => requestAnimationFrame(r));
+      const s2 = sample('slide');
+      if (s2.alignment !== null && Math.abs(s2.alignment - last) < 0.002) break;
+      last = s2.alignment ?? -2;
+    }
+  }
   out.push(sample('slide'));
   O.inputManager.heldKeys.clear();
   await sleep(500);
