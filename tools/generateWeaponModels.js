@@ -27,11 +27,21 @@ import fs from 'node:fs';
 import { buildRiflePattern } from './builders/RifleBuilder.js';
 import { buildPistolPattern } from './builders/PistolBuilder.js';
 import { buildShotgunPattern } from './builders/ShotgunBuilder.js';
+import { buildSMGPattern } from './builders/SMGBuilder.js';
+import { buildSniperPattern } from './builders/SniperBuilder.js';
+import {
+  buildRocketLauncherPattern, buildRocketProjectilePattern,
+} from './builders/RocketLauncherBuilder.js';
 
 const weapons = [
   ['rifle', buildRiflePattern],
   ['pistol', buildPistolPattern],
   ['shotgun', buildShotgunPattern],
+  // Document D roster.
+  ['smg', buildSMGPattern],
+  ['sniper', buildSniperPattern],
+  ['rocket_launcher', buildRocketLauncherPattern],
+  ['rocket_projectile', buildRocketProjectilePattern],
 ];
 
 for (const [id, build] of weapons) {

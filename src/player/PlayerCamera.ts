@@ -18,6 +18,8 @@
 import * as THREE from 'three';
 import eventBus from '../core/EventBus';
 import settingsStore from '../core/SettingsStore';
+import inputContexts from '../core/InputContextStack';
+import cameraShake from '../camera/CameraShakeController';
 import type { InputManager } from '../core/InputManager';
 import { CAMERA, CAMERA_FEEL, LANDING, MOUSE, PLAYER, RECOIL, SETTINGS_KEYS, WEAPON } from '../utils/Constants';
 import { clamp, degToRad, lerp } from '../utils/MathUtils';
@@ -77,6 +79,17 @@ export class PlayerCamera {
   private timeSinceKick = Infinity;
   /** 0..1 ADS blend — WeaponManager pushes it; scales the punch (§6.4). */
   private adsWeight = 0;
+  // Document C §6 / D §6.5: scope breath sway. Like recoil it is ADDITIVE
+  // ONLY — it must never touch the stored sim aim, or it would compound with
+  // mouse input and fight the player.
+  /**
+   * Document 5 §7.4: the user-chosen base FOV. Seeded from SettingsStore so a
+   * saved preference applies at boot, and settable live from the menu — the
+   * FOV modifier stack resolves against THIS rather than the constant.
+   */
+  private baseFov: number = settingsStore.get<number>('baseFOV', CAMERA.DEFAULT_FOV);
+  private scopeSwayPitch = 0;
+  private scopeSwayYaw = 0;
   private clockNow = 0;
   /** Raw look delta consumed this frame (read-only mirror for WeaponSway). */
   readonly lastMouseDelta: { x: number; y: number } = { x: 0, y: 0 };
@@ -108,8 +121,25 @@ export class PlayerCamera {
    * Distinct from shake() — recoil punches the true aim and springs back to
    * center after firing stops; shake() is nondirectional tremor for impacts.
    */
+  /** Live FOV preference from the Settings menu. */
+  setBaseFOV(fov: number): void {
+    this.baseFov = fov;
+  }
+
+  getBaseFOV(): number {
+    return this.baseFov;
+  }
+
+  /** ScopeSystem pushes its per-frame drift here (additive, never sim). */
+  setScopeSway(yaw: number, pitch: number): void {
+    this.scopeSwayYaw = yaw;
+    this.scopeSwayPitch = pitch;
+  }
+
   /** TEST seam support: drop queued kicks + the whole additive layer. */
   clearRecoil(): void {
+    this.scopeSwayPitch = 0;
+    this.scopeSwayYaw = 0;
     this.pendingKickPitch = 0;
     this.pendingKickYaw = 0;
     this.pendingKickShots = 0;
@@ -171,7 +201,15 @@ export class PlayerCamera {
   /** Per-render-frame visual update (called once per frame, NOT fixed-step). */
   update(dt: number, sim: PlayerSimState, visuals: CameraVisuals): void {
     // 1) look: raw delta -> simulation yaw/pitch (instant, frame-rate smooth).
-    const delta = this.input.getMouseDelta();
+    //
+    // INPUT CONTEXT GUARD (Document I §6.5): while another system owns input
+    // — steering the guided missile, driving the tablet cursor — the camera
+    // must NOT consume the mouse delta, or the two fight over it and the
+    // missile receives nothing. One guard line; no internals refactored.
+    const ownsCamera = inputContexts.gameplayOwnsInput;
+    const delta = ownsCamera
+      ? this.input.getMouseDelta()
+      : { x: 0, y: 0 };
     // Document 3: WeaponSway needs the same per-frame delta; InputManager's
     // getter consumes, so mirror it here after PlayerCamera has read it.
     this.lastMouseDelta.x = delta.x;
@@ -246,6 +284,14 @@ export class PlayerCamera {
     let shakeX = 0;
     let shakeY = 0;
     let shakeRoll = 0;
+    // Document E §1: the trauma engine composes at the SAME additive seam as
+    // the legacy impulse shakes, head-bob, landing dip and recoil. One more
+    // contributor to the existing "sum everything, apply once" step — no new
+    // composition code.
+    cameraShake.update(dt);
+    shakeX += cameraShake.output.position.x;
+    shakeY += cameraShake.output.position.y;
+    shakeRoll += cameraShake.output.rotation.z;
     for (const s of this.shakes) {
       const remaining = 1 - s.elapsed / s.duration;
       const decay = Math.pow(remaining, CAMERA_FEEL.SHAKE_DECAY_EXPONENT);
@@ -254,40 +300,54 @@ export class PlayerCamera {
       shakeRoll += (Math.random() * 2 - 1) * s.intensity * decay * 0.5;
     }
 
-    this.camera.position.set(
-      pos.x + right.x * (visuals.bob.x + shakeX),
-      eyeHeight + visuals.bob.y - this.landingDip + shakeY,
-      pos.z + right.z * (visuals.bob.x + shakeX),
-    );
-    // Orientation: yaw -> pitch -> roll ('YXZ', COORDINATE_CONVENTIONS.md).
-    // The additive recoil layer (climb + punch + jitter) composes AFTER the
-    // look angles; sim state stays pristine for physics and networking.
-    const recoilOn = RECOIL.CAMERA_ENABLED;
-    this.clockNow += dt;
-    const camPitch = sim.pitch
-      + (recoilOn ? this.climbPitch + this.punchPitch + this.jitterPitch : 0);
-    const camYaw = sim.yaw
-      + (recoilOn ? this.climbYaw + this.punchYaw + this.jitterYaw : 0);
-    this.camera.rotation.set(camPitch, camYaw, this.slideTiltRad + shakeRoll, 'YXZ');
+    // CAMERA OWNERSHIP GUARD (the missing half of the input-context seam):
+    // while this camera is a child of the guided missile, or the tabled-owning
+    // UI has input, writing the player-eye pose onto the same THREE camera
+    // stomps the cinematic controller's transform EVERY FRAME — the launch
+    // dolly, the chase hold and the nose-cam all fight it. That was the real
+    // reason "the cinematic never played": the camera stayed glued to the
+    // player's face. Springs/shake above keep integrating so nothing pops on
+    // the frame control returns; only the transform application is skipped.
+    if (ownsCamera) {
+      this.camera.position.set(
+        pos.x + right.x * (visuals.bob.x + shakeX),
+        eyeHeight + visuals.bob.y - this.landingDip + shakeY,
+        pos.z + right.z * (visuals.bob.x + shakeX),
+      );
+      // Orientation: yaw -> pitch -> roll ('YXZ', COORDINATE_CONVENTIONS.md).
+      // The additive recoil layer (climb + punch + jitter) composes AFTER the
+      // look angles; sim state stays pristine for physics and networking.
+      const recoilOn = RECOIL.CAMERA_ENABLED;
+      this.clockNow += dt;
+      const camPitch = sim.pitch
+        + (recoilOn ? this.climbPitch + this.punchPitch + this.jitterPitch : 0)
+        + this.scopeSwayPitch
+        + cameraShake.output.rotation.x;
+      const camYaw = sim.yaw
+        + (recoilOn ? this.climbYaw + this.punchYaw + this.jitterYaw : 0)
+        + this.scopeSwayYaw
+        + cameraShake.output.rotation.y;
+      this.camera.rotation.set(camPitch, camYaw, this.slideTiltRad + shakeRoll, 'YXZ');
 
-    // 3) FOV: highest-priority active modifier wins; smooth blend, never snap.
-    let target: number = CAMERA.DEFAULT_FOV;
-    let speed: number = CAMERA_FEEL.SPRINT_FOV_LERP_SPEED;
-    let bestPriority = -1;
-    for (const modifier of this.fovModifiers.values()) {
-      if (modifier.priority > bestPriority) {
-        bestPriority = modifier.priority;
-        target = modifier.targetFOV;
-        speed = modifier.lerpSpeed;
+      // 3) FOV: highest-priority active modifier wins; smooth blend, never snap.
+      let target: number = this.baseFov;
+      let speed: number = CAMERA_FEEL.SPRINT_FOV_LERP_SPEED;
+      let bestPriority = -1;
+      for (const modifier of this.fovModifiers.values()) {
+        if (modifier.priority > bestPriority) {
+          bestPriority = modifier.priority;
+          target = modifier.targetFOV;
+          speed = modifier.lerpSpeed;
+        }
       }
-    }
-    if (Math.abs(this.camera.fov - target) > 1e-3) {
-      // Frame-rate-independent exponential approach (1 - e^(-speed·dt)): at
-      // low/headless frame rates the old min(1, dt·speed) factor snapped to
-      // 1 and popped the FOV in a single frame.
-      const k = 1 - Math.exp(-speed * dt);
-      this.camera.fov = lerp(this.camera.fov, target, k);
-      this.camera.updateProjectionMatrix();
+      if (Math.abs(this.camera.fov - target) > 1e-3) {
+        // Frame-rate-independent exponential approach (1 - e^(-speed·dt)): at
+        // low/headless frame rates the old min(1, dt·speed) factor snapped to
+        // 1 and popped the FOV in a single frame.
+        const k = 1 - Math.exp(-speed * dt);
+        this.camera.fov = lerp(this.camera.fov, target, k);
+        this.camera.updateProjectionMatrix();
+      }
     }
   }
 

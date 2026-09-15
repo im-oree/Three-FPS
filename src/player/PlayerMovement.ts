@@ -10,6 +10,9 @@
  */
 import * as THREE from 'three';
 import eventBus from '../core/EventBus';
+import statusEffects from './ActiveStatusEffects';
+import inputContexts from '../core/InputContextStack';
+import characterState, { Locomotion } from '../character/CharacterStateSystem';
 import { JUMP, MOVEMENT, PLAYER, SLIDE, TAC_SPRINT } from '../utils/Constants';
 import { clamp, easeOutQuad, lerp } from '../utils/MathUtils';
 import type PlayerCharacterController from '../physics/PlayerCharacterController';
@@ -70,6 +73,7 @@ export class PlayerMovement {
 
   private slideTimer = 0;
   private slideCooldown = 0;
+  private slideJumpCancelled = false;
   private slideStartSpeed = 0;
   private wallStallTimer = 0;
   private landingImpactPending = 0;
@@ -102,9 +106,17 @@ export class PlayerMovement {
   /** Document 2.5 §4.3: promotion (double-tap or dedicated bind), validated. */
   requestTacticalSprint(): boolean {
     if (!this.state.isGrounded) return false;
-    const forwardInput = -this.lastMoveLocal.y; // +y forward in moveLocal
+    // moveLocal is +y FORWARD (see PlayerController.moveLocal). This used to
+    // negate it, so holding W produced forwardInput = -1, which never cleared
+    // MIN_FORWARD_INPUT — the second half of why tac sprint never engaged.
+    const forwardInput = this.lastMoveLocal.y;
     if (forwardInput < TAC_SPRINT.MIN_FORWARD_INPUT) return false;
     if (!this.isTacticalSprinting) {
+      // Promotion must clear the authority: TAC_SPRINT is declared reachable
+      // only from SPRINT, so this also enforces "no cold-start tac sprint".
+      if (!characterState.request({
+        channel: 'locomotion', to: Locomotion.TAC_SPRINT, source: 'PlayerMovement.requestTacticalSprint',
+      })) return false;
       this.isTacticalSprinting = true;
       this.wallStallTimer = 0;
       eventBus.emit('player:tacSprintStart', {});
@@ -117,6 +129,12 @@ export class PlayerMovement {
     if (!this.isTacticalSprinting) return;
     this.isTacticalSprinting = false;
     this.wallStallTimer = 0;
+    if (characterState.locomotion === Locomotion.TAC_SPRINT) {
+      characterState.request({
+        channel: 'locomotion', to: Locomotion.SPRINT,
+        source: `PlayerMovement.endTacticalSprint(${reason})`, force: true,
+      });
+    }
     eventBus.emit('player:tacSprintEnd', { reason });
   }
 
@@ -128,6 +146,13 @@ export class PlayerMovement {
   }
 
   step(dt: number, intent: MovementIntent): void {
+    // INPUT CONTEXT GUARD (Document I §6.5): while the missile or the tablet
+    // owns input, the body must not move. Guarding once here keeps the rule
+    // in one place rather than at every call site.
+    if (!inputContexts.gameplayOwnsInput) {
+      intent.moveLocal.set(0, 0);
+      intent.jumpQueued = false;
+    }
     this.lastMoveLocal.copy(intent.moveLocal);
     this.updateTacticalSprint(dt, intent);
     this.updateSlide(dt, intent);
@@ -140,10 +165,14 @@ export class PlayerMovement {
 
   // --- tactical sprint lifecycle (Document 2.5 §4.3) --------------------------
   private updateTacticalSprint(dt: number, intent: MovementIntent): void {
-    if (!this.isTacticalSprinting) return;
+    // Promotion is evaluated FIRST. It used to sit behind the
+    // `if (!this.isTacticalSprinting) return` guard below, which meant a
+    // request could only ever be honoured while tac-sprint was ALREADY
+    // running — so it could never start at all.
     if (intent.tacSprintRequested) this.requestTacticalSprint();
+    if (!this.isTacticalSprinting) return;
     // Exit conditions (§4.3): release, input angle, stamina, obstacle stall.
-    const forwardInput = -this.lastMoveLocal.y;
+    const forwardInput = this.lastMoveLocal.y;
     const sprintReleased = !intent.sprintActive;
     const inputTooWide = forwardInput < TAC_SPRINT.MIN_FORWARD_INPUT;
     if (sprintReleased || inputTooWide) {
@@ -172,6 +201,9 @@ export class PlayerMovement {
       this.slideStartSpeed = Math.min(horizontal * SLIDE.BOOST_MULTIPLIER, SLIDE.MAX_SPEED);
       this.state.velocity.x = this.slideDir.x * this.slideStartSpeed;
       this.state.velocity.z = this.slideDir.y * this.slideStartSpeed;
+      // Document E §2.6: the physical drop into a slide rattles the camera.
+      eventBus.emit('player:slideStarted', { entrySpeed: this.slideStartSpeed });
+      this.slideJumpCancelled = false;
       return;
     }
     if (!this.slideActive) return;
@@ -179,6 +211,7 @@ export class PlayerMovement {
     // Early exits: crouch released, or jump-cancel (momentum carries over).
     const endedByRelease = !intent.crouchActive;
     const endedByJump = intent.jumpQueued;
+    if (endedByJump) this.slideJumpCancelled = true;
     this.slideTimer += dt;
     const t = this.slideTimer / SLIDE.DURATION_SECONDS;
 
@@ -207,6 +240,9 @@ export class PlayerMovement {
   private endSlide(): void {
     this.slideActive = false;
     this.slideCooldown = SLIDE.COOLDOWN_SECONDS;
+    // Document E §2.6: a natural settle-out gets a smaller second pulse; a
+    // jump-cancel must not — the forthcoming JUMP already has its own feel.
+    eventBus.emit('player:slideEnded', { naturalStop: !this.slideJumpCancelled });
   }
 
   // --- horizontal accel / friction (§6.2) ------------------------------------
@@ -226,9 +262,28 @@ export class PlayerMovement {
       sim.velocity.z = approach(sim.velocity.z, this.desiredDir.z, accel * dt);
       this.probe('postApproach', sim.velocity.z);
     } else if (sim.isGrounded) {
+      // NO INPUT: come to a REAL stop, not an asymptotic one.
+      //
+      // Exponential decay alone (v *= 1 - k*dt) never reaches zero, so the
+      // player kept sliding for a few tenths of a metre after releasing a
+      // movement key — which is exactly the "shooting while standing still
+      // keeps drifting me sideways" bug. Real stopping uses an exponential
+      // term for the initial bite plus a LINEAR term that actually terminates,
+      // then snaps the last sub-epsilon crawl to zero.
       const decay = Math.max(0, 1 - MOVEMENT.GROUND_FRICTION * dt);
       sim.velocity.x *= decay;
       sim.velocity.z *= decay;
+
+      const speed = Math.hypot(sim.velocity.x, sim.velocity.z);
+      if (speed <= MOVEMENT.STOP_EPSILON) {
+        sim.velocity.x = 0;
+        sim.velocity.z = 0;
+      } else {
+        const drop = MOVEMENT.GROUND_STOP_DECELERATION * dt;
+        const scale = Math.max(0, speed - drop) / speed;
+        sim.velocity.x *= scale;
+        sim.velocity.z *= scale;
+      }
     }
   }
 
@@ -252,8 +307,11 @@ export class PlayerMovement {
         base = MOVEMENT.WALK_SPEED;
         break;
     }
-    // ADS slows movement by the equipped weapon's multiplier (Document 3).
-    return base * intent.adsSpeedMultiplier;
+    // ADS slows movement by the equipped weapon's multiplier (Document 3),
+    // and ActiveStatusEffects contributes any debuff on top (Document F §6.2).
+    // Reading a generic multiplier here means a stun grenade, a future EMP or
+    // any other slow needs ZERO further movement code.
+    return base * intent.adsSpeedMultiplier * statusEffects.multiplier('moveSlow');
   }
 
   // --- gravity / jump (§6.4) ---------------------------------------------------

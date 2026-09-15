@@ -24,13 +24,26 @@ export const Shotgun: WeaponDefinition = {
   parts: { pump: 'Bone_Pump', chargingHandle: 'Bone_ChargingHandle', magazine: 'Bone_Magazine' },
   pumpCycleSeconds: 0.55,
 
+  // Document D §4.4: damage comes from PELLETS, not one slug. 8 x 14 = 112
+  // at point blank, collapsing to 8 x 4 = 32 past 15 m — a brutal CQB curve.
+  // damageNear/Far remain as the single-ray fallback for any code path that
+  // has not been told about pellets.
   damageNear: 70,
   damageFar: 22,
-  damageFalloffStartDistance: 5,
-  damageFalloffEndDistance: 18,
+  damageFalloffStartDistance: 3,
+  damageFalloffEndDistance: 15,
+  pelletCount: 8,
+  pelletSpreadConeDeg: 6.5,
+  damagePerPelletNear: 14,
+  damagePerPelletFar: 4,
 
-  fireRateRPM: 65,
-  fireMode: 'semi',
+  fireRateRPM: 70,
+  // Document D §4.7: pump-action. Firing is gated by CyclingActionSystem.
+  fireMode: 'manualCycle',
+  requiresManualCycle: true,
+  cycleDurationSeconds: 0.55,
+  reloadStyle: 'perShell',
+  reloadShellInsertDuration: 0.55,
   burstCount: null,
   burstDelaySeconds: null,
 

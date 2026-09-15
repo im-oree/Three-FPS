@@ -20,6 +20,19 @@ export class InputManager {
   // would miss fast taps. Held-state semantics are unaffected (<=1 frame lag).
   private readonly pendingKeyReleases = new Set<string>();
   private readonly pendingMouseReleases = new Set<number>();
+  /**
+   * Rising-edge COUNTER per key code, consumed by the reader rather than
+   * cleared at frame end.
+   *
+   * `isActionDown` edge-detection (down && !wasDown) cannot see a press when
+   * the key was released and re-pressed inside a single 60 Hz fixed step: the
+   * release latch keeps `heldKeys` true across the gap, so the level never
+   * dips and no rising edge is ever observed. That is exactly what made a
+   * fast double-tap fail to promote to tactical sprint. Counting the raw
+   * keydown events and letting the consumer drain the count makes fast taps
+   * impossible to miss regardless of the step/frame boundary.
+   */
+  private readonly pressCounts = new Map<string, number>();
   private mouseDelta = { x: 0, y: 0 };
   // Mouse wheel ticks accumulated since the last getWheelDelta() call
   // (weapon cycling, Document 3). Not latched: wheel events are discrete.
@@ -27,6 +40,8 @@ export class InputManager {
   private bindings: KeyBindingMap;
 
   private readonly onKeyDown = (e: KeyboardEvent): void => {
+    // Browsers auto-repeat a held key; only genuine presses count as edges.
+    if (!e.repeat) this.pressCounts.set(e.code, (this.pressCounts.get(e.code) ?? 0) + 1);
     this.pendingKeyReleases.delete(e.code);
     this.heldKeys.add(e.code);
   };
@@ -93,6 +108,19 @@ export class InputManager {
     const delta = this.wheelDelta;
     this.wheelDelta = 0;
     return delta;
+  }
+
+  /**
+   * Drain the rising-edge count for an action since the last call. Returns how
+   * many distinct presses happened, so a consumer running at a fixed step can
+   * observe taps faster than its own tick rate.
+   */
+  consumeActionPresses(actionName: string): number {
+    const code = this.bindings[actionName];
+    if (!code) return 0;
+    const count = this.pressCounts.get(code) ?? 0;
+    if (count > 0) this.pressCounts.set(code, 0);
+    return count;
   }
 
   /**

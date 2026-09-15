@@ -88,6 +88,16 @@ export class TestArena {
     this.addBox(-3.4, 0, 3.6, -3, 2.4, 8.4, 0x47505c);
     this.addBox(3, 0, 3.6, 3.4, 2.4, 8.4, 0x47505c);
 
+    // --- mantle test gallery, on the open lane at z = -20 -------------------
+    // Graduated wall heights spanning the reach envelope for a 1.8 m
+    // character: vault band (<=1.46), mantle band (<=2.07), and one wall
+    // above full overhead reach that MUST be refused.
+    this.addBox(-22, 0, -22, -19, 0.9, -19, 0x6f7a5a);  // 0.90 m — vault
+    this.addBox(-17, 0, -22, -14, 1.4, -19, 0x6f7a5a);  // 1.40 m — vault
+    this.addBox(-12, 0, -22, -9, 1.8, -19, 0x5a6f7a);   // 1.80 m — mantle
+    this.addBox(-7, 0, -22, -4, 2.0, -19, 0x5a6f7a);    // 2.00 m — mantle
+    this.addBox(-2, 0, -22, 1, 2.6, -19, 0x7a5a5a);     // 2.60 m — too high
+
     // Medium cover boxes.
     this.addBox(-12, 0, 4, -9, 1.1, 7, 0x8a8a6a);
     this.addBox(14, 0, -14, 17, 1.4, -11, 0x8a8a6a);

@@ -12,6 +12,7 @@ import Clock from './Clock';
 import InputManager from './InputManager';
 import Renderer from './Renderer';
 import SceneManager from './SceneManager';
+import gameStateManager from '../state/GameStateManager';
 import Debug from '../utils/Debug';
 
 /** Anything the Engine should tick once per frame, in registration order. */
@@ -28,7 +29,11 @@ export class Engine {
   readonly debug: Debug;
 
   private readonly updatables: Updatable[] = [];
+  /** Updatables that tick even while paused/in menus (UI, audio). */
+  private readonly alwaysUpdatables: Updatable[] = [];
   private postRenderHook: ((renderer: WebGLRenderer) => void) | null = null;
+  /** FPS/TPS Spec §1: supplies the world pass's layer mask (perspective). */
+  private worldPassMaskProvider: (() => number) | null = null;
   private rafHandle: number | null = null;
   private running = false;
 
@@ -39,16 +44,35 @@ export class Engine {
 
     const dt = this.clock.getDelta();
 
-    // FORWARD-LOOKING SEAM (Document 5): this step will be gated so updates
-    // halt while a menu/pause screen is open. Document 1 intentionally has no
-    // pause/resume gating.
-    for (const updatable of this.updatables) updatable.update(dt);
+    // SIMULATION GATING (Document 5 §6 — this resolves Document 1's deferred
+    // seam). Gameplay updatables only tick while PLAYING; in any menu or
+    // while paused the world holds exactly where it was. RENDERING below is
+    // deliberately NOT gated, so a pause screen shows the frozen last frame
+    // rather than a black void, and resuming continues from the same instant.
+    if (gameStateManager.isSimulationActive()) {
+      for (const updatable of this.updatables) updatable.update(dt);
+    }
+    // ALWAYS-updatables run in EVERY state, including PLAYING. They are not
+    // the "else" of the gate: the HUD, for instance, must tick during play to
+    // drive the crosshair, and must ALSO tick while paused so a hit marker
+    // cannot freeze mid-flash on the frozen frame behind the menu.
+    for (const updatable of this.alwaysUpdatables) updatable.update(dt);
+
+    // Global culling: every camera that will draw this frame is now in its
+    // final pose, so the union-visibility pass runs exactly once here, ahead
+    // of both render passes (world AND viewmodel) and of capture renders
+    // (they push their camera and call flushNow() themselves).
+    this.sceneManager.update(dt);
 
     // Document 2.5 §3.2 (implemented exactly): ONE camera, TWO passes.
-    // Pass 1 (world): camera masked to layer 0.
+    // Pass 1 (world): camera masked to layer 0 — PLUS the third-person body
+    // layer whenever the FPS/TPS perspective controller says the body should
+    // be visible (worldPassMaskProvider). One camera still, one world pass:
+    // the perspective toggle is pure mask arithmetic.
     const camera = this.sceneManager.getCamera();
     const prevMask = camera.layers.mask;
-    camera.layers.set(0);
+    if (this.worldPassMaskProvider) camera.layers.mask = this.worldPassMaskProvider();
+    else camera.layers.set(0);
     this.renderer.getRenderer().render(this.sceneManager.getScene(), camera);
     camera.layers.mask = prevMask;
 
@@ -93,8 +117,22 @@ export class Engine {
     this.postRenderHook = hook;
   }
 
+  /** FPS/TPS Spec §1: PerspectiveController drives the world-pass mask. */
+  setWorldPassMaskProvider(provider: (() => number) | null): void {
+    this.worldPassMaskProvider = provider;
+  }
+
   registerUpdatable(obj: Updatable): void {
     if (!this.updatables.includes(obj)) this.updatables.push(obj);
+  }
+
+  /**
+   * Register something that must keep ticking while the simulation is gated
+   * (menus, HUD animation). Use sparingly: anything gameplay-affecting
+   * belongs in registerUpdatable so pause actually pauses it.
+   */
+  registerAlwaysUpdatable(obj: Updatable): void {
+    if (!this.alwaysUpdatables.includes(obj)) this.alwaysUpdatables.push(obj);
   }
 
   unregisterUpdatable(obj: Updatable): void {

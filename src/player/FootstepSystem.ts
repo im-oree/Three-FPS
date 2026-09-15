@@ -7,9 +7,10 @@
  *
  * PLAYS NO AUDIO — Document 5 owns playback and binds to these events.
  *
- * TEMPORARY: surfaceType is the hardcoded literal "concrete" because the
- * placeholder Test Arena has one surface. Document 4 replaces this with a real
- * lookup against whatever the ground raycast actually hit.
+ * SURFACE RESOLUTION (Document 4/5): the emitted surfaceType comes from a
+ * provider injected by main, which asks the physics layer what the player is
+ * actually standing on. It used to be the hardcoded literal "concrete".
+ * Falls back to 'concrete' when nothing is known, so audio never goes silent.
  */
 import eventBus from '../core/EventBus';
 import { FOOTSTEP } from '../utils/Constants';
@@ -17,6 +18,12 @@ import type { BobGait } from './HeadBob';
 
 export class FootstepSystem {
   private accumulator = 0;
+  private surfaceProvider: (() => string) | null = null;
+
+  /** Injected by main: what is under the player's feet right now. */
+  setSurfaceProvider(provider: () => string): void {
+    this.surfaceProvider = provider;
+  }
 
   update(dt: number, horizontalSpeed: number, isGrounded: boolean, gait: BobGait): void {
     if (!isGrounded || horizontalSpeed < 0.5 || gait === 'NONE') return;
@@ -25,7 +32,10 @@ export class FootstepSystem {
       gait === 'SPRINT' ? FOOTSTEP.STRIDE_SPRINT_METERS : gait === 'CROUCH' ? FOOTSTEP.STRIDE_CROUCH_METERS : FOOTSTEP.STRIDE_WALK_METERS;
     if (this.accumulator >= stride) {
       this.accumulator = 0;
-      eventBus.emit('player:footstep', { surfaceType: 'concrete' }); // TEMPORARY stand-in (see file header)
+      eventBus.emit('player:footstep', {
+        surfaceType: this.surfaceProvider?.() ?? 'concrete',
+        gait,
+      });
     }
   }
 }

@@ -29,6 +29,11 @@ export class WeaponSway {
   private kickYaw = 0;
   private kickVelPitch = 0;
   private kickVelYaw = 0;
+  /** Document E §2.8: the shot's straight-back punch and signed roll rock. */
+  private kickBack = 0;
+  private kickVelBack = 0;
+  private kickRoll = 0;
+  private kickVelRoll = 0;
   private breathPhase = 0;
   private strafeX = 0;
   private strafeZ = 0;
@@ -40,6 +45,10 @@ export class WeaponSway {
     const scale = RECOIL.VIEWMODEL_KICK_RECOVERY * RECOIL.VIEWMODEL_KICK_SCALE;
     this.kickVelPitch += ((pitchDeg * Math.PI) / 180) * scale;
     this.kickVelYaw += ((yawDeg * Math.PI) / 180) * scale;
+    // Recoil is not rotation-only: the receiver shoves straight back and the
+    // wrists rock. Pure presentation — the aim point and spread never see it.
+    this.kickVelBack += pitchDeg * RECOIL.VIEWMODEL_KICK_POS_BACK_PER_DEG * RECOIL.VIEWMODEL_KICK_RECOVERY;
+    this.kickVelRoll += (Math.random() * 2 - 1) * RECOIL.VIEWMODEL_KICK_ROLL_JITTER_RAD;
   }
 
   update(
@@ -65,17 +74,23 @@ export class WeaponSway {
     if (isStationary) this.breathPhase += dt * SWAY.BREATH_HZ * Math.PI * 2;
     const breath = isStationary ? Math.sin(this.breathPhase) * SWAY.BREATH_AMP_RAD : 0;
 
-    // 3) recoil kick spring-back.
+    // 3) recoil kick spring-back (rotation + the back-punch/roll pair).
     this.kickVelPitch += -this.kickPitch * RECOIL.VIEWMODEL_KICK_RECOVERY * dt * SWAY.KICK_SPRING_MULTIPLIER;
     this.kickVelYaw += -this.kickYaw * RECOIL.VIEWMODEL_KICK_RECOVERY * dt * SWAY.KICK_SPRING_MULTIPLIER;
     this.kickVelPitch *= Math.max(0, 1 - RECOIL.VIEWMODEL_KICK_RECOVERY * dt * SWAY.KICK_DAMP_FACTOR);
     this.kickVelYaw *= Math.max(0, 1 - RECOIL.VIEWMODEL_KICK_RECOVERY * dt * SWAY.KICK_DAMP_FACTOR);
     this.kickPitch += this.kickVelPitch * dt;
     this.kickYaw += this.kickVelYaw * dt;
+    this.kickVelBack += -this.kickBack * RECOIL.VIEWMODEL_KICK_RECOVERY * dt * SWAY.KICK_SPRING_MULTIPLIER;
+    this.kickVelBack *= Math.max(0, 1 - RECOIL.VIEWMODEL_KICK_RECOVERY * dt * SWAY.KICK_DAMP_FACTOR);
+    this.kickBack += this.kickVelBack * dt;
+    this.kickVelRoll += -this.kickRoll * RECOIL.VIEWMODEL_KICK_RECOVERY * dt * SWAY.KICK_SPRING_MULTIPLIER;
+    this.kickVelRoll *= Math.max(0, 1 - RECOIL.VIEWMODEL_KICK_RECOVERY * dt * SWAY.KICK_DAMP_FACTOR);
+    this.kickRoll += this.kickVelRoll * dt;
 
     this.offsets.rotX = (this.lagY + this.kickPitch) * scale;
     this.offsets.rotY = (this.lagX + this.kickYaw) * scale;
-    this.offsets.rotZ = this.lagX * SWAY.ROTZ_FACTOR * scale;
+    this.offsets.rotZ = (this.lagX * SWAY.ROTZ_FACTOR + this.kickRoll) * scale;
     // 3) inertial strafe sway: the weapon hangs back opposite the body's
     //    camera-local velocity, exp-smoothed both in and out (weight).
     const strafeTargetX = clamp(
@@ -100,8 +115,9 @@ export class WeaponSway {
     this.offsets.posX = (this.lagX * SWAY.POS_FACTOR + this.strafeX + this.speedT * SWAY.SPRINT_TUCK.x) * scale;
     this.offsets.posY =
       (-this.lagY * SWAY.POS_FACTOR + breath * SWAY.BREATH_POS_FACTOR + this.speedT * SWAY.SPRINT_TUCK.y) * scale;
-    // kick jolts the gun backward; strafe depth adds the forward/back hang
-    this.offsets.posZ = (this.kickPitch * SWAY.POS_FACTOR * 3 + this.strafeZ) * scale;
+    // kick jolts the gun backward (pitch-coupled + the §2.8 back-punch);
+    // strafe depth adds the forward/back hang
+    this.offsets.posZ = (this.kickPitch * SWAY.POS_FACTOR * 3 + this.kickBack + this.strafeZ) * scale;
     return this.offsets;
   }
 

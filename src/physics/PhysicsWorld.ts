@@ -99,6 +99,43 @@ export class PhysicsWorld {
     };
   }
 
+  /**
+   * Hitscan against static colliders PLUS an explicit set of dynamic
+   * collider handles (Document K shootable props). The kinematic player and
+   * every dynamic body not in the allow-set (casings, dropped mags, debris)
+   * stay excluded — only registered prop hits can be struck.
+   */
+  castRayWithProps(
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    maxToi: number,
+    allowedDynamicHandles: ReadonlySet<number> | null,
+  ): RapierHit | null {
+    if (!allowedDynamicHandles || allowedDynamicHandles.size === 0) {
+      return this.castRayStatic(origin, dir, maxToi);
+    }
+    const ray = new RAPIER.Ray(
+      { x: origin.x, y: origin.y, z: origin.z },
+      { x: dir.x, y: dir.y, z: dir.z },
+    );
+    const flags = RAPIER.QueryFilterFlags.EXCLUDE_KINEMATIC;
+    const hit = this.world.castRayAndGetNormal(
+      ray, maxToi, true, flags,
+      undefined, undefined, undefined,
+      (collider) => collider.parent()?.isFixed() === true
+        || allowedDynamicHandles.has(collider.handle),
+    );
+    if (!hit) return null;
+    scratchNormal.set(hit.normal.x, hit.normal.y, hit.normal.z);
+    scratchPoint.copy(dir).multiplyScalar(hit.timeOfImpact).add(origin);
+    return {
+      collider: hit.collider,
+      toi: hit.timeOfImpact,
+      normal: scratchNormal.clone(),
+      point: scratchPoint.clone(),
+    };
+  }
+
   /** Static-geometry-only ray distance probe (no normal needed). */
   castRayDistance(origin: THREE.Vector3, dir: THREE.Vector3, maxToi: number): number | null {
     const ray = new RAPIER.Ray(

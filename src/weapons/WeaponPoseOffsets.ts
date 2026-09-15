@@ -10,7 +10,8 @@
  * other.
  */
 import * as THREE from 'three';
-import { POSE_OFFSETS, SPRING_PROFILES } from '../utils/Constants';
+import cameraShake from '../camera/CameraShakeController';
+import { FOOTSTEP, HAND_BOB, POSE_OFFSETS, SPRING_PROFILES } from '../utils/Constants';
 import { degToRad } from '../utils/MathUtils';
 import { SpringDamper3 } from '../utils/SpringDamper';
 import type { PlayerStateValue } from '../player/PlayerState';
@@ -23,6 +24,15 @@ export interface PoseOffsetsInput {
   isSnappingToReady: boolean;
   /** Landing event this frame (consumed by the caller from PlayerMovement). */
   landingImpactVelocity: number;
+  /** Killstreak tablet raised (Document I §2.3) — deep low-ready hold. */
+  tabletRaised?: boolean;
+  /**
+   * Document E §2: live travel speed + grounding, needed for the stride-
+   * synced hand bob and the airborne micro-drift. Optional so legacy callers
+   * compile; main's provider always sends them.
+   */
+  horizontalSpeed?: number;
+  isGrounded?: boolean;
 }
 
 export interface PoseOffsets {
@@ -54,9 +64,12 @@ export class WeaponPoseOffsets {
   readonly offsets: PoseOffsets = { posX: 0, posY: 0, posZ: 0, rotX: 0, rotY: 0, rotZ: 0 };
 
   update(dt: number, input: PoseOffsetsInput): PoseOffsets {
-    // --- layer 7a: state pose target (priority: tac > slide > sprint > crouch) ---
+    // --- layer 7a: state pose target (priority: tablet > tac > slide > sprint) ---
     let entry: OffsetEntry;
-    if (input.isTacticalSprinting) {
+    if (input.tabletRaised) {
+      // The laptop owns centre-frame; the weapon parks at a deep low-ready.
+      entry = POSE_OFFSETS.TABLET;
+    } else if (input.isTacticalSprinting) {
       entry = POSE_OFFSETS.TAC_SPRINT;
     } else if (input.movementState === PlayerState.SLIDE) {
       entry = POSE_OFFSETS.SLIDE;
@@ -87,8 +100,10 @@ export class WeaponPoseOffsets {
 
     // --- layer 7c: landing settle — hybrid instant-kick + spring recovery ---
     if (input.landingImpactVelocity > 0) {
-      // §6.5: instant displacement (not via the spring), then the spring
-      // pulls back to 0 — punchy kick, smooth settle.
+      // §6.5 hybrid: instant displacement (not via the spring), then the
+      // spring pulls back to 0 — punchy kick, smooth settle. Fired from the
+      // SAME player:landed event as the camera dip and the trauma pulse, so
+      // all three are frame-synchronised (Document E §2.7).
       const k = Math.min(1, input.landingImpactVelocity * 0.02);
       this.landPos.displace(SETTLE_POS.clone().multiplyScalar(k));
       this.landRot.displace(SETTLE_ROT.clone().multiplyScalar(k));
@@ -96,21 +111,86 @@ export class WeaponPoseOffsets {
     this.landPos.update(dt, ZERO);
     this.landRot.update(dt, ZERO);
 
+    // --- layer 7d (Document E §2): stride-synced hand bob -------------------
+    // The hands ride the SAME distance-driven cadence as FootstepSystem: one
+    // lateral cycle and two vertical bumps per stride, so the visual bob peak
+    // lands exactly on each audible footfall. Amplitude is per-gait
+    // (HAND_BOB table), with a light ±10% noise wobble so no two strides are
+    // pixel-identical — dead-even machinery is what makes static bobs read
+    // fake, not amplitude.
+    const speed = input.horizontalSpeed ?? 0;
+    const grounded = input.isGrounded ?? true;
+    const sliding = input.movementState === PlayerState.SLIDE;
+    const walking = input.movementState !== PlayerState.IDLE
+      && input.movementState !== PlayerState.CROUCH_IDLE;
+    let amp = 0;
+    let strideMeters: number = FOOTSTEP.STRIDE_WALK_METERS;
+    if (grounded && !sliding && walking) {
+      if (input.isTacticalSprinting) {
+        amp = HAND_BOB.TAC_SPRINT_AMPLITUDE;
+        strideMeters = FOOTSTEP.STRIDE_SPRINT_METERS;
+      } else if (input.movementState === PlayerState.SPRINT) {
+        amp = HAND_BOB.SPRINT_AMPLITUDE;
+        strideMeters = FOOTSTEP.STRIDE_SPRINT_METERS;
+      } else if (input.movementState === PlayerState.CROUCH_WALK) {
+        amp = HAND_BOB.CROUCH_AMPLITUDE;
+        strideMeters = FOOTSTEP.STRIDE_CROUCH_METERS;
+      } else {
+        amp = HAND_BOB.WALK_AMPLITUDE;
+        strideMeters = FOOTSTEP.STRIDE_WALK_METERS;
+      }
+    }
+    // Distance-driven phase: identical to HeadBob/FootstepSystem math at the
+    // same gait, so footstep sound and hand-bob can never visibly desync.
+    this.stridePhase += (speed * dt / strideMeters) * Math.PI * 2;
+    // Blend amplitude on gait changes — no pop when sprint catching.
+    const ampRate = 10;
+    this.strideAmp += (amp - this.strideAmp) * (1 - Math.exp(-ampRate * dt));
+    const wobble = 1 + 0.12 * cameraShake.sampleNoise(7, this.clock);
+    this.clock += dt;
+    const a2 = this.strideAmp * wobble;
+    const bobVert = -Math.abs(Math.sin(this.stridePhase)) * a2;  // two bumps/stride
+    const bobLat = Math.sin(this.stridePhase * 0.5) * a2 * 0.6;  // one lateral cycle
+    this.bobRotX = bobVert;
+    this.bobRotZ = bobLat * 0.8;
+    this.bobPosY = bobVert * 0.35;
+    this.bobPosX = bobLat * 0.25;
+
+    // --- layer 7e (Document E §2.7): airborne micro-drift --------------------
+    // No ground contact means no stride cycle: stride bob correctly reads 0
+    // there, but perfectly frozen mid-air arms look DEAD. Swap in a quiet,
+    // noise-driven drift instead — slow, smooth, subtle.
+    let driftX = 0;
+    let driftZ = 0;
+    if (!grounded) {
+      const t = this.clock * HAND_BOB.AIR_DRIFT_FREQUENCY;
+      driftX = cameraShake.sampleNoise(8, t) * HAND_BOB.AIR_DRIFT_AMPLITUDE;
+      driftZ = cameraShake.sampleNoise(9, t) * HAND_BOB.AIR_DRIFT_AMPLITUDE * 0.7;
+    }
+
     // --- composition: simple additive sum (§6.1 layers 5-7 share one step) ---
     const p = this.statePos.value;
     const a = this.airPos.value;
     const l = this.landPos.value;
-    this.offsets.posX = p.x + a.x + l.x;
-    this.offsets.posY = p.y + a.y + l.y;
+    this.offsets.posX = p.x + a.x + l.x + this.bobPosX;
+    this.offsets.posY = p.y + a.y + l.y + this.bobPosY;
     this.offsets.posZ = p.z + a.z + l.z;
     const pr = this.stateRot.value;
     const ar = this.airRot.value;
     const lr = this.landRot.value;
-    this.offsets.rotX = pr.x + ar.x + lr.x;
+    this.offsets.rotX = pr.x + ar.x + lr.x + this.bobRotX + driftX;
     this.offsets.rotY = pr.y + ar.y + lr.y;
-    this.offsets.rotZ = pr.z + ar.z + lr.z;
+    this.offsets.rotZ = pr.z + ar.z + lr.z + this.bobRotZ + driftZ;
     return this.offsets;
   }
+
+  private stridePhase = 0;
+  private strideAmp = 0;
+  private clock = 0;
+  private bobRotX = 0;
+  private bobRotZ = 0;
+  private bobPosX = 0;
+  private bobPosY = 0;
 
   /** Weapon switch / test determinism. */
   reset(): void {
@@ -120,6 +200,12 @@ export class WeaponPoseOffsets {
     this.airRot.reset();
     this.landPos.reset();
     this.landRot.reset();
+    this.stridePhase = 0;
+    this.strideAmp = 0;
+    this.bobRotX = 0;
+    this.bobRotZ = 0;
+    this.bobPosX = 0;
+    this.bobPosY = 0;
   }
 }
 

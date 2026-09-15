@@ -27,6 +27,7 @@
  * Socket_GripSecondary (twoHanded) or a wrist-support point (oneHanded).
  */
 import * as THREE from 'three';
+import characterState, { Carry } from '../character/CharacterStateSystem';
 import eventBus from '../core/EventBus';
 import { animationEngine } from '../animation-engine/OperatorAnimEngine';
 import type { AssetLoader } from '../core/AssetLoader';
@@ -53,8 +54,13 @@ export interface PlayClipOptions {
  *  arm rig applies them pre-bake so skin and bones agree — see HandsRig). */
 export interface ArmRigCommand {
   active: boolean;
-  right: { solution: IKSolution } | null;
-  left: { solution: IKSolution } | null;
+  /**
+   * `additive` means a baked clip owns this chain: the IK solution positions
+   * the arm on the weapon, and the clip's authored rotation is layered ON TOP
+   * as a delta rather than replacing it.
+   */
+  right: { solution: IKSolution; additive: boolean } | null;
+  left: { solution: IKSolution; additive: boolean } | null;
   /** Blended IK weight (equip/unequip ease, Constants.IK.GLOBAL_WEIGHT). */
   weight: number;
   /** Camera-space coarse target for the arm rig's placement servo (midpoint). */
@@ -136,6 +142,36 @@ export class WeaponViewmodel {
   private _adsWeight = 0;
   private adsWeightTarget = 0;
   /** Eased ADS weight (0..1) — shared with the rig layer (pose suppression). */
+  /**
+   * Document C §8.4 step 1: at full magnified-scope ADS the shooter's eye is
+   * pressed against the glass, so the arms and weapon are not visible. We
+   * hide the RIG ROOT rather than skipping the viewmodel pass, so the
+   * perspective system's own visibility rules stay untouched.
+   */
+  setHiddenByScope(hidden: boolean): void {
+    this.hiddenByScope = hidden;
+    this.rigRoot.visible = !hidden;
+  }
+
+  /**
+   * Killstreak tablet: DROP the weapon while the device is actively used —
+   * the arms stay (they belong to the rig and are what plays the
+   * tablet_raise/tablet_lower hand animations), only the weapon mesh and
+   * its lights/parts leave the frame. Toggling `attached.visible` is the
+   * cheap, exact switch: the weapon stops drawing but its pose/IK keeps
+   * updating, so it re-enters from the correct pose on lower with zero snap.
+   */
+  setWeaponHidden(hidden: boolean): void {
+    if (this.attached && this.attached.visible === !hidden) {
+      this.attached.visible = !hidden;
+    }
+  }
+
+  get isHiddenByScope(): boolean {
+    return this.hiddenByScope;
+  }
+  private hiddenByScope = false;
+
   get adsWeight(): number {
     return this._adsWeight;
   }
@@ -209,6 +245,15 @@ export class WeaponViewmodel {
     return this._adsWeight;
   }
 
+  /**
+   * FPS/TPS Spec §4: the currently-playing 1PS action, so PerspectiveSync can
+   * time-scale it to gameplay's hard logical duration (PlaybackRate =
+   * clipLength / logicalDuration) exactly as it scales the 3PS counterpart.
+   */
+  get activeAction(): THREE.AnimationAction | null {
+    return this.currentAction;
+  }
+
   /** TEST seam: the last composed rig pose (layers 3+5+6+7 output, §6.1). */
   get lastComposedPose(): ComposedPose | null {
     return this.lastComposed;
@@ -218,6 +263,11 @@ export class WeaponViewmodel {
   getFollowLagRad(): number {
     if (!this.rigRoot.parent) return 0;
     return this.followQuat.angleTo(this.rigRoot.parent.getWorldQuaternion(_qCamera));
+  }
+
+  /** The live weapon instance in the scene (unified-character re-layering). */
+  get attachedWeaponRoot(): THREE.Object3D | null {
+    return this.attached;
   }
 
   /** The muzzle socket node itself (muzzle flash parenting). */
@@ -238,10 +288,30 @@ export class WeaponViewmodel {
     if (!def.modelPath || def.melee) {
       // Fists/equipment slot: no weapon scene — the arm rig IS the viewmodel.
       // (§9: any future "weapon" without a model conforms the same way.)
+      //
+      // It still needs a MIXER and a baked-clip store, though: the melee combo
+      // clips animate the arm pivots directly, and without a mixer rooted on
+      // the rig they could never play at all (punching was silently a no-op).
       this.currentWeaponId = def.id;
       this.attachedProfile = profile;
       this.lastEquippedDef = def;
       this.currentAction = null;
+      this.currentOneShotName = null;
+      let meleeCache = this.cache.get(def.id);
+      if (!meleeCache) {
+        const baked = await loadBakedClips(this.assetLoader, [
+          ...(def.punchClips ?? []),
+          def.clips.switchOut, def.clips.switchIn,
+          'mantle_climb', 'vault_over',
+          // The killstreak tablet is usable with any weapon equipped, so its
+          // clips must live in every weapon's store.
+          'tablet_raise', 'tablet_lower',
+        ].filter((n) => n.length > 0));
+        meleeCache = { scene: new THREE.Group(), clips: [], baked };
+        this.cache.set(def.id, meleeCache);
+      }
+      this.attachedDef = def;
+      this.mixer = new THREE.AnimationMixer(this.rigRoot);
       eventBus.emit('weapon:viewmodelEquipped', { weaponId: def.id });
       return;
     }
@@ -251,6 +321,15 @@ export class WeaponViewmodel {
       const baked = await loadBakedClips(this.assetLoader, [
         def.clips.reloadTactical, def.clips.reloadEmpty, def.clips.switchOut,
         def.clips.switchIn, def.clips.inspect,
+        // Traversal clips are weapon-independent but load into the same store
+        // so the single shared mixer can play them (generated by
+        // tools/generateTraversalClips.js).
+        'mantle_climb', 'vault_over',
+        // The killstreak tablet is usable with any weapon equipped.
+        'tablet_raise', 'tablet_lower',
+        // Melee combo clips, so the fists slot actually has animations to
+        // play — punchClips are declared on the definition, not in def.clips.
+        ...(def.punchClips ?? []),
       ].filter((n) => n.length > 0));
       cached = { scene: loaded.scene, clips: loaded.animations, baked };
       this.cache.set(def.id, cached);
@@ -309,11 +388,22 @@ export class WeaponViewmodel {
         THREE.MathUtils.degToRad(profile.hipRestRotationEuler[2]),
       );
     }
+    // The first-person weapon always belongs to the VIEWMODEL layer: it is the
+    // camera-relative hero mesh, drawn in the depth-cleared pass so it can
+    // never clip into world geometry. The body's third-person weapon is a
+    // separate prop (ThirdPersonBody.setWeaponProp) on the BODY_ARMS layer.
     ensureViewmodelLayers(this.attached);
 
     // ONE shared mixer on the rig root (Document A §7.2): it drives BOTH the
     // arm pivots and the weapon's named part nodes from the same JSON clips.
     this.mixer = new THREE.AnimationMixer(this.rigRoot);
+    // Equipping rebuilds the mixer, so any AnimationAction from the previous
+    // weapon is now orphaned. currentOneShotName is normally cleared by
+    // watching that action finish — with the action gone it would stay set
+    // forever, permanently reporting ownership 'both' and suppressing the
+    // procedural arm layer. That is what made the fists guard never apply.
+    this.currentAction = null;
+    this.currentOneShotName = null;
     this.partAnimator = new WeaponPartAnimator(def, this.attached);
     this.compositor?.resetForWeapon(def.id);
     /** Internal event: AnimationStateMachine re-attaches its layers and flips
@@ -372,14 +462,38 @@ export class WeaponViewmodel {
     return null;
   }
 
+  /** Map a logical clip name onto the equipped weapon's asset id. */
+  private resolveClipName(clipName: string): string {
+    const clips = this.attachedDef?.clips;
+    if (!clips) return clipName;
+    switch (clipName) {
+      case 'reload_tactical': return clips.reloadTactical ?? clipName;
+      case 'reload_empty': return clips.reloadEmpty ?? clipName;
+      case 'switch_out': return clips.switchOut ?? clipName;
+      case 'switch_in': return clips.switchIn ?? clipName;
+      case 'inspect': return clips.inspect ?? clipName;
+      default: return clipName;
+    }
+  }
+
   /** The single entry point AnimationStateMachine uses (Document A §7.3). */
   playClip(clipName: string, options: PlayClipOptions = {}): THREE.AnimationAction | null {
     if (!this.mixer) return null;
     // BAKED joint-keyframe clips first (Document A §7.2): reloads, switches,
     // punches. Durations equal the definitions' (data-integrity pair).
-    const bakedClip = this.attachedDef && this.cache.get(this.attachedDef.id)?.baked.get(clipName);
-    const clip = bakedClip ? bakedClip.clip : this.clips.find((c) => c.name === clipName);
+    // The state machine speaks in LOGICAL clip names ('reload_tactical'); the
+    // weapon definition maps those to its own asset ids ('rifle_reload_
+    // tactical'). Resolving here — rather than making every caller know the
+    // weapon prefix — is why a reload request from the ASM silently resolved
+    // to nothing and no reload animation ever played.
+    const resolvedName = this.resolveClipName(clipName);
+    const store = this.attachedDef ? this.cache.get(this.attachedDef.id) : null;
+    const bakedClip = store?.baked.get(resolvedName) ?? store?.baked.get(clipName);
+    const clip = bakedClip
+      ? bakedClip.clip
+      : this.clips.find((c) => c.name === resolvedName) ?? this.clips.find((c) => c.name === clipName);
     if (!clip) return null;
+    clipName = resolvedName;
     this.currentOneShotName = loopIsOnce(options.loop) ? clipName : null;
     const { loop = THREE.LoopRepeat, crossfadeDuration = 0.15, clampWhenFinished = true } = options;
     const next = this.mixer.clipAction(clip);
@@ -433,6 +547,13 @@ export class WeaponViewmodel {
   }
 
   update(dt: number, mainCamera: THREE.PerspectiveCamera): void {
+    // CARRY CHANNEL CONSUMER (CharacterStateSystem). STOWED means the weapon
+    // is physically off the hands — during a mantle both hands are on the
+    // ledge, so the viewmodel must not be drawn at all. This is a derived read
+    // of the authority; nothing here decides the carry state.
+    if (this.attached) {
+      this.attached.visible = characterState.carry !== Carry.STOWED;
+    }
     this.lastMainCamera = mainCamera;
 
     // --- L3 mirror: eased ADS weight (drives the optic solve + additive L3) --
@@ -441,9 +562,22 @@ export class WeaponViewmodel {
     // --- clips: baked one-shots + part cycles run on the SHARED mixer -------
     this.mixer?.update(dt);
     // One-shot finished → ownership returns to the procedural layer.
-    if (this.currentAction && this.currentOneShotName
-        && !this.currentAction.isRunning() && this.currentAction.loop === THREE.LoopOnce) {
-      this.currentOneShotName = null;
+    //
+    // This MUST also release when the action has gone away entirely. Equipping
+    // a weapon rebuilds the mixer, and a weapon with no baked clips (fists)
+    // never creates a replacement action — so the old guard, which required
+    // `this.currentAction` to still exist AND report finished, left
+    // currentOneShotName pinned forever. The viewmodel then reported ownership
+    // 'both' for the rest of the session, suppressing the procedural arm layer
+    // and leaving unarmed hands stuck at their rest pose below the screen.
+    if (this.currentOneShotName) {
+      const action = this.currentAction;
+      const finished = !action
+        || (!action.isRunning() && action.loop === THREE.LoopOnce);
+      if (finished) {
+        this.currentOneShotName = null;
+        this.currentAction = null;
+      }
     }
     this.partAnimator?.update(dt);
 
@@ -518,7 +652,14 @@ export class WeaponViewmodel {
     camera: THREE.PerspectiveCamera,
     composed: ComposedPose | null,
   ): void {
-    const weaponGripped = Boolean(this.attached && this.gripSocket && this.armRig);
+    // CARRY CHANNEL: a STOWED weapon is not in the hands, so there is nothing
+    // for the weapon IK to solve toward. Leaving it enabled during a mantle
+    // drove the arms to a grip anchor that was no longer being rendered, and
+    // the clip — which composes ADDITIVELY over the IK pose — inherited that
+    // bogus 150-degree forearm. The authority decides; the IK obeys.
+    const weaponInHands = characterState.carry !== Carry.STOWED;
+    const weaponGripped = Boolean(this.attached && this.gripSocket && this.armRig)
+      && weaponInHands;
     // IK presence eases (no pops on equip/unequip).
     this.ikWeight += ((weaponGripped ? IK.GLOBAL_WEIGHT : 0) - this.ikWeight)
       * (1 - Math.exp(-IK.SMOOTH_RATE * dt));
@@ -558,13 +699,17 @@ export class WeaponViewmodel {
     const rightTargetPos = _anchorWorld.clone()
       .sub(this.gripMount.clone().applyQuaternion(_qDesiredWeapon));
     const rightTargetQuat = _qDesiredWeapon.clone();
-    if (!rightOwned) {
-      const rightSolution = solveJointIK(chainR, rightTargetPos, this._poleHintWorld(camera), rightTargetQuat);
-      if (rightSolution) this.armCommand.right = { solution: rightSolution };
-    }
+    // IK is ALWAYS solved, even while a baked clip owns the joint. Previously
+    // ownership skipped the solve entirely, so the arm fell back to its rest
+    // pose for the whole clip — which is exactly why reload and inspect looked
+    // like the gun "sank" and the hands disappeared. The clip is now applied
+    // as an ADDITIVE offset on top of the IK pose (see HandsRig.applyArmCommand),
+    // so the weapon stays in the hands throughout the action.
+    const rightSolution = solveJointIK(chainR, rightTargetPos, this._poleHintWorld(camera), rightTargetQuat);
+    if (rightSolution) this.armCommand.right = { solution: rightSolution, additive: rightOwned };
 
     // --- OFF-HAND (§5.2, grip-style data) -----------------------------------
-    if (chainL && this.attachedProfile && !leftOwned) {
+    if (chainL && this.attachedProfile) {
       let leftTargetPos: THREE.Vector3;
       let leftTargetQuat: THREE.Quaternion;
       if (this.attachedProfile.gripStyle === 'twoHanded') {
@@ -589,7 +734,7 @@ export class WeaponViewmodel {
         leftTargetQuat = _qDesiredWeapon.clone();
       }
       const leftSolution = solveJointIK(chainL, leftTargetPos, this._poleHintWorld(camera), leftTargetQuat);
-      if (leftSolution) this.armCommand.left = { solution: leftSolution };
+      if (leftSolution) this.armCommand.left = { solution: leftSolution, additive: leftOwned };
     }
 
     // Coarse servo target (reported for rig-level consumers).
@@ -613,6 +758,20 @@ export class WeaponViewmodel {
    * Which chain the RUNNING one-shot owns (Document A §7.4). Empty while no
    * one-shot or after it finishes — the mixer clock is the single truth.
    */
+  /**
+   * Does the running one-shot animate the shoulder joints? Read from the
+   * clip's actual tracks, so a clip that drives the shoulder (the mantle
+   * pull-up) is respected without naming it anywhere in code.
+   */
+  get activeOneShotDrivesShoulder(): boolean {
+    const name = this.currentOneShotName;
+    if (!name) return false;
+    const store = this.attachedDef && this.cache.get(this.attachedDef.id);
+    const clip = store?.baked.get(name);
+    if (!clip) return false;
+    return clip.clip.tracks.some((t) => t.name.includes('Shoulder_'));
+  }
+
   get activeOneShotOwnership(): ClipOwnership {
     const name = this.currentOneShotName;
     if (!name) return 'none';

@@ -25,20 +25,26 @@ import HeadBob, { type BobGait } from './HeadBob';
 import PlayerCamera from './PlayerCamera';
 import type PlayerCharacterController from '../physics/PlayerCharacterController';
 import PlayerMovement from './PlayerMovement';
+import characterState, { Traversal } from '../character/CharacterStateSystem';
 import { PlayerState, resolveNextState, type InputSnapshot, type PhysicsSnapshot, type PlayerStateValue } from './PlayerState';
 import StaminaSystem from './StaminaSystem';
+import VaultSystem, { type VaultProbes } from './VaultSystem';
 import eventBus from '../core/EventBus';
 
 export class PlayerController {
   readonly movement: PlayerMovement;
   readonly camera: PlayerCamera;
   readonly stamina = new StaminaSystem();
+  /** FPS/TPS Spec §2: vaulting/mantling. Suspends movement while traversing. */
+  readonly vault = new VaultSystem();
   /** Document 3 wires this via weapon:adsStart/adsStop events (see §6.3). */
   private adsActive = false;
   private adsSpeedMultiplier = 1;
 
   private readonly headBob = new HeadBob();
   private readonly footstep = new FootstepSystem();
+  /** Document 5: main injects the ground-surface provider for audio. */
+  get footstepSystem(): FootstepSystem { return this.footstep; }
   private readonly collider: PlayerCharacterController;
   private readonly canvas: HTMLCanvasElement;
 
@@ -47,8 +53,9 @@ export class PlayerController {
   private clockTime = 0;
   /** Document 2.5 §4.3 double-tap detection: last sprint PRESS-edge time (sim clock). */
   private lastSprintPressAt = -Infinity;
-  private previousSprintDown = false;
   private tacSprintRequestPending = false;
+  /** Which traversal (if any) the current ledge probe says is available. */
+  private traversalArmed: 'vault' | 'mantle' | null = null;
   /** §4.2: fire/ADS-cancel suppression — sprint re-entry blocked while > 0. */
   private sprintSuppressTimer = 0;
 
@@ -115,6 +122,17 @@ export class PlayerController {
       this.adsActive = false;
       this.adsSpeedMultiplier = 1;
     });
+    // §2 traversal probes route through the SAME collision query surface the
+    // movement integrator uses, so vaulting is automatically correct for
+    // whatever CollisionWorld is active.
+    const probes: VaultProbes = {
+      ray: (origin, dir, maxDistance) => {
+        if (dir.y > 0.5) return this.collider.raycastUp(origin, maxDistance)?.distance ?? null;
+        if (dir.y < -0.5) return this.collider.raycastDown(origin, maxDistance)?.distance ?? null;
+        return this.collider.raycastHorizontal(origin, dir, maxDistance)?.distance ?? null;
+      },
+    };
+    this.vault.setProbes(probes);
   }
 
   // --- read-only seams future systems (Doc 3 spread, HUD, AI) need -----------
@@ -146,8 +164,27 @@ export class PlayerController {
     return this.movement.slideActive;
   }
 
+  /** FPS/TPS Spec §2: true while the Bezier traversal owns the capsule. */
+  isVaulting(): boolean {
+    return this.vault.isActive;
+  }
+
+  /** Local-space velocity (+z forward, +x right) — the 3PS stride driver. */
+  getLocalVelocity(out: { x: number; z: number }): { x: number; z: number } {
+    const v = this.movement.state.velocity;
+    const yaw = this.movement.state.yaw;
+    out.x = v.x * Math.cos(yaw) - v.z * Math.sin(yaw);
+    out.z = -(v.x * Math.sin(yaw) + v.z * Math.cos(yaw));
+    return out;
+  }
+
   get isADSActive(): boolean {
     return this.adsActive;
+  }
+
+  /** HUD seam: 'vault' | 'mantle' when a ledge is in reach, else null. */
+  get traversalPrompt(): 'vault' | 'mantle' | null {
+    return this.traversalArmed;
   }
 
   /** Document 2.5 §4.1: the orthogonal tactical-sprint flag. */
@@ -251,12 +288,49 @@ export class PlayerController {
   // --- fixed-timestep simulation step ----------------------------------------
   private fixedStep(dt: number): void {
     this.clockTime += dt;
+
+    // --- §2 traversal owns the capsule while it runs -------------------------
+    // "Temporary suspension of player physics/gravity control": the Bezier
+    // drives the position outright; the state machine, movement integrator
+    // and gravity are all skipped until the curve completes.
+    if (this.vault.isActive) {
+      this.vault.update(dt);
+      this.movement.state.position.copy(this.vault.state.position);
+      this.movement.state.velocity.set(0, 0, 0);
+      this.movement.state.isGrounded = false;
+      if (!this.vault.isActive) {
+        // Physics restored immediately on curve completion, momentum kept.
+        this.vault.exitVelocity(this.movement.state.velocity);
+        characterState.request({
+          channel: 'traversal', to: Traversal.NONE,
+          source: 'PlayerController.traversalComplete', force: true,
+        });
+      }
+      this.previousCrouchDown = this.input.isActionDown('crouch');
+      this.previousJumpDown = this.input.isActionDown('jump');
+      return;
+    }
+    this.vault.update(dt);
+
     const snapshot = this.gatherSnapshot();
     const physics = this.gatherPhysicsSnapshot();
+    // --- state authority: PlayerState RESOLVES, CharacterStateSystem DECIDES -
+    // resolveNextState is a pure suggestion function; the transition only
+    // becomes real once the authority accepts it. If it is rejected (e.g. a
+    // traversal owns the capsule) the previous state simply persists, which is
+    // exactly the behaviour we want and is visible in the rejection log.
     const next = resolveNextState(this.state, snapshot, physics);
+    characterState.setFact('grounded', physics.isGrounded);
     if (next !== this.state) {
-      this.state = next;
-      this.timeInState = 0;
+      const accepted = characterState.request({
+        channel: 'locomotion', to: next, source: 'PlayerController.fixedStep',
+      });
+      if (accepted) {
+        this.state = next;
+        this.timeInState = 0;
+      } else {
+        this.timeInState += dt;
+      }
     } else {
       this.timeInState += dt;
     }
@@ -267,13 +341,61 @@ export class PlayerController {
       state: this.state,
       sprintActive: this.state === PlayerState.SPRINT,
       crouchActive: snapshot.crouchHeld,
-      jumpQueued: snapshot.jumpPressedThisFrame,
+      // A jump press while a ledge prompt is armed is CONSUMED by the
+      // traversal below — you climb instead of hopping into the wall.
+      jumpQueued: snapshot.jumpPressedThisFrame && this.traversalArmed === null,
       slideTriggered,
       adsSpeedMultiplier: this.adsSpeedMultiplier,
       tacSprintRequested: this.tacSprintRequestPending,
       canStandUp: () => this.hasHeadroom(),
     });
     this.tacSprintRequestPending = false;
+
+    // §2 vault trigger: probed AFTER the movement step so the obstruction
+    // test sees this frame's real position (a pre-step test triggers a frame
+    // early and the Bezier starts inside the wall).
+    // --- traversal is JUMP-TRIGGERED, never automatic ----------------------
+    // Previously any forward movement into a ledge silently mantled you. Now
+    // it works like every other shooter: you must be facing something
+    // climbable AND press jump. `vaultArmed` reports whether a ledge is in
+    // reach, so the HUD can show a prompt.
+    const moveInput = this.moveLocal();
+    // Decide against the prompt that was armed BEFORE this step: the player
+    // pressed jump because they saw that prompt. Re-probing first would test
+    // a position the jump has already moved.
+    const wantsTraversal = snapshot.jumpPressedThisFrame
+      && moveInput.y > 0.1 && this.traversalArmed !== null;
+    const armedKind = this.traversalArmed;
+    this.traversalArmed = this.vault.probeOnly({
+      position: this.movement.state.position,
+      yaw: this.movement.state.yaw,
+      velocity: this.movement.state.velocity,
+      isGrounded: this.movement.state.isGrounded,
+      capsuleHeight: this.movement.state.capsuleHeight,
+      forwardInput: true,
+    });
+    if (wantsTraversal && armedKind && characterState.canTraverse()) {
+      const kind = armedKind === 'mantle' ? Traversal.MANTLE : Traversal.VAULT;
+      // The authority gates it; only on acceptance does the Bezier start.
+      if (characterState.request({
+        channel: 'traversal', to: kind, source: 'PlayerController.jumpTraversal',
+      })) {
+        const started = this.vault.tryStart({
+          position: this.movement.state.position,
+          yaw: this.movement.state.yaw,
+          velocity: this.movement.state.velocity,
+          isGrounded: this.movement.state.isGrounded,
+          capsuleHeight: this.movement.state.capsuleHeight,
+          forwardInput: true,
+        });
+        if (!started) {
+          characterState.request({
+            channel: 'traversal', to: Traversal.NONE,
+            source: 'PlayerController.jumpTraversal(abort)', force: true,
+          });
+        }
+      }
+    }
 
     // §4.3: tac sprint drains the meter at its own steeper constant, and a
     // depleted meter immediately ends it.
@@ -320,11 +442,16 @@ export class PlayerController {
     // first sprint is still active promotes to Tactical Sprint. (A dedicated
     // bind, if the settings menu exposes one, goes through the same latch.)
     const sprintDown = this.input.isActionDown('sprint');
-    const sprintPressed = sprintDown && !this.previousSprintDown;
-    this.previousSprintDown = sprintDown;
-    if (sprintPressed) {
-      if (this.clockTime - this.lastSprintPressAt <= TAC_SPRINT.DOUBLE_TAP_WINDOW_SECONDS
-        && this.state === PlayerState.SPRINT) {
+    // Drain every sprint press edge that happened since the last step. A
+    // double-tap can easily fit inside one 16 ms step, so level-based edge
+    // detection would collapse the two presses into one and never promote.
+    const sprintPresses = this.input.consumeActionPresses('sprint');
+    for (let i = 0; i < sprintPresses; i += 1) {
+      const withinWindow =
+        this.clockTime - this.lastSprintPressAt <= TAC_SPRINT.DOUBLE_TAP_WINDOW_SECONDS;
+      // The second tap promotes while sprinting, or while the player is
+      // already moving forward fast enough that sprint is about to latch.
+      if (withinWindow && (this.state === PlayerState.SPRINT || sprintDown)) {
         this.tacSprintRequestPending = true;
       }
       this.lastSprintPressAt = this.clockTime;

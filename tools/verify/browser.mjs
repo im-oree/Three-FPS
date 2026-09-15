@@ -59,10 +59,19 @@ export async function launchBrowser(opts = {}) {
   return puppeteer.launch({
     executablePath: CHROMIUM_BIN,
     headless: true,
+    // Headless throttles requestAnimationFrame hard, so any harness that
+    // waits on FRAMES (the only reliable way to observe render-loop state)
+    // can outlast the 30 s default and die with a ProtocolError that looks
+    // like a game hang but is purely a harness limit.
+    protocolTimeout: 180000,
     defaultViewport: { width: opts.width ?? 1280, height: opts.height ?? 720 },
     env: { ...process.env, LD_LIBRARY_PATH: RUNTIME_LIBS, LD_PRELOAD: SHIM },
     args: [
       '--no-sandbox',
+      // Keep rAF running at full rate even when the page is not focused.
+      '--disable-renderer-backgrounding',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-background-timer-throttling',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--enable-unsafe-swiftshader',

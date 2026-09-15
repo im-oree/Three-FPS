@@ -8,19 +8,35 @@
  * Pattern index resets after WEAPON.PATTERN_RESET_GRACE_SECONDS of no fire.
  */
 import eventBus from '../core/EventBus';
+import cameraShake from '../camera/CameraShakeController';
 import type { PlayerCamera } from '../player/PlayerCamera';
-import { RECOIL, WEAPON } from '../utils/Constants';
+import { CAMERA_SHAKE, RECOIL, WEAPON } from '../utils/Constants';
 import { Rifle } from './definitions/Rifle';
 import { Pistol } from './definitions/Pistol';
 import { Shotgun } from './definitions/Shotgun';
+import { SMG } from './definitions/SMG';
+import { Sniper } from './definitions/Sniper';
+import { RocketLauncher } from './definitions/RocketLauncher';
 import RECOIL_PATTERNS, { type RecoilPatternEntry, type RecoilPatternId } from './RecoilPatterns';
 import type { WeaponSway } from './WeaponSway';
 
+/**
+ * Every fireable weapon sends its OWN pattern (Document C §1.3). SMG, Sniper
+ * and the Launcher used to silently fall through — they had authored patterns
+ * in the table that were never reached, so document-D weapons fired with NO
+ * camera kick at all.
+ */
 const PATTERN_BY_WEAPON: Record<string, RecoilPatternId> = {
   [Rifle.id]: Rifle.recoilPatternId as RecoilPatternId,
   [Pistol.id]: Pistol.recoilPatternId as RecoilPatternId,
   [Shotgun.id]: Shotgun.recoilPatternId as RecoilPatternId,
+  [SMG.id]: SMG.recoilPatternId as RecoilPatternId,
+  [Sniper.id]: Sniper.recoilPatternId as RecoilPatternId,
+  [RocketLauncher.id]: RocketLauncher.recoilPatternId as RecoilPatternId,
 };
+
+/** Document E §2.8: only AUTOMATIC fire adds the hand-fatigue wobble tick. */
+const AUTOMATIC_WEAPONS = new Set<string>([Rifle.id, SMG.id]);
 
 export class RecoilSystem {
   private readonly shotIndex = new Map<string, number>();
@@ -43,6 +59,15 @@ export class RecoilSystem {
       const yaw = entry.yawDeg * jitter();
       this.camera.applyRecoilKick(pitch, yaw, index);
       this.sway.notifyKick(pitch, yaw);
+      // Document E §1.4/§2.8: on TOP of the deterministic learnable kick, a
+      // tiny stochastic wobble per shot while an automatic is cycling —
+      // scale-warmed with burst length so the first round of a burst still
+      // jumps clean. Semi/bolt weapons deliberately skip this: their per-shot
+      // motion should read crisp and deliberate, never chaotic.
+      if (AUTOMATIC_WEAPONS.has(weaponId)) {
+        const warmth = Math.min(1, 0.4 + index * 0.08);
+        cameraShake.addTrauma(CAMERA_SHAKE.AUTO_FIRE_SUPPLEMENTAL_TRAUMA * warmth);
+      }
       this.shotIndex.set(weaponId, index + 1);
     });
   }

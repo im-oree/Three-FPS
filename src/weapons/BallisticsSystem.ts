@@ -17,6 +17,7 @@ import * as THREE from 'three';
 import eventBus from '../core/EventBus';
 import type { PlayerStateValue } from '../player/PlayerState';
 import { BALLISTICS } from '../utils/Constants';
+import projectileSystem from './ProjectileSystem';
 import type { WeaponBase } from './WeaponBase';
 
 export interface HittableMetadata {
@@ -41,7 +42,20 @@ class BallisticsSystem {
   get hittables(): readonly HittableEntry[] { return this._hittables; }
   private readonly _hittables: HittableEntry[] = [];
   /** Rapier backend (Document C §4.2) — attached by main before play. */
-  private physics: { castRayStatic(o: THREE.Vector3, d: THREE.Vector3, m: number): { collider: { handle: number }; toi: number; normal: THREE.Vector3; point: THREE.Vector3 } | null } | null = null;
+  private physics: {
+    castRayStatic(o: THREE.Vector3, d: THREE.Vector3, m: number):
+      { collider: { handle: number }; toi: number; normal: THREE.Vector3; point: THREE.Vector3 } | null;
+    /** Document K: hitscan that also covers registered dynamic prop hits. */
+    castRayWithProps?(o: THREE.Vector3, d: THREE.Vector3, m: number, allowed: ReadonlySet<number> | null):
+      { collider: { handle: number }; toi: number; normal: THREE.Vector3; point: THREE.Vector3 } | null;
+  } | null = null;
+  /** Live provider for the level's shootable dynamic-prop collider handles. */
+  private propHitProvider: (() => ReadonlySet<number> | null) | null = null;
+
+  /** Wire the dynamic prop allow-set (level unload swaps the pool). */
+  setPropHitProvider(provider: (() => ReadonlySet<number> | null) | null): void {
+    this.propHitProvider = provider;
+  }
   private colliderMeta: { hittableOf(handle: number): { object: THREE.Object3D; metadata: HittableMetadata } | null } | null = null;
 
   /** Wire the Rapier world + collider metadata (ColliderFactory). */
@@ -77,26 +91,93 @@ class BallisticsSystem {
    * Resolve one confirmed shot. Emits combat:hit (on impact), then
    * combat:shotFired (always), plus internal combat:tracer for tracer rounds.
    */
+  /**
+   * Document D §2.2 / §4.5 dispatch. One trigger pull resolves as:
+   *   - projectile  -> hand off to ProjectileSystem (no ray at all)
+   *   - pelletCount -> N independently-jittered rays (shotgun)
+   *   - otherwise   -> exactly one ray, the original behaviour
+   * The single-ray path below is UNCHANGED; this is a loop around it.
+   */
   resolveShot(camera: THREE.PerspectiveCamera, weapon: WeaponBase, context: ShotContext): boolean {
+    const def = weapon.def;
+
+    if (def.fireMode === 'projectile') {
+      return this.launchProjectile(camera, weapon, context);
+    }
+
+    const pellets = def.pelletCount ?? 1;
+    if (pellets > 1) {
+      // Each pellet is an independent ray with its own falloff and its own
+      // combat:hit, so a single blast can produce multiple hit markers and
+      // multiple impact decals — which is what a real shotgun does.
+      let anyHit = false;
+      for (let i = 0; i < pellets; i += 1) {
+        if (this.resolveSingleRay(camera, weapon, context, true)) anyHit = true;
+      }
+      eventBus.emit('combat:shotFired', { weaponId: def.id, hit: anyHit });
+      return anyHit;
+    }
+
+    const hit = this.resolveSingleRay(camera, weapon, context, false);
+    eventBus.emit('combat:shotFired', { weaponId: def.id, hit });
+    return hit;
+  }
+
+  /** Spawn a physics rocket instead of a ray (Document D §7.6). */
+  private launchProjectile(
+    camera: THREE.PerspectiveCamera, weapon: WeaponBase, context: ShotContext,
+  ): boolean {
     const spreadRad = THREE.MathUtils.degToRad(
       weapon.getCurrentSpreadAngle(context.movementState, context.isADS, context.isJumping),
     );
-
-    // Base direction: true camera center.
     camera.getWorldDirection(this.scratchDir);
-    // Uniform-disk jitter inside the spread cone.
-    if (spreadRad > 0) {
-      this.scratchUp.set(0, 1, 0);
-      this.scratchRight.crossVectors(this.scratchDir, this.scratchUp).normalize();
-      if (this.scratchRight.lengthSq() < 1e-6) this.scratchRight.set(1, 0, 0);
-      this.scratchUp.crossVectors(this.scratchRight, this.scratchDir).normalize();
-      const radius = spreadRad * Math.sqrt(Math.random());
-      const angle = Math.random() * Math.PI * 2;
-      this.scratchDir
-        .addScaledVector(this.scratchRight, Math.cos(angle) * radius)
-        .addScaledVector(this.scratchUp, Math.sin(angle) * radius)
-        .normalize();
-    }
+    this.jitterWithinCone(this.scratchDir, spreadRad);
+    // Spawn CLEAR OF THE SHOOTER. The viewmodel muzzle sits a few centimetres
+    // from the lens, which is inside the player's own capsule collider — a
+    // rocket born there detonates on frame 1, at the player's feet. Push the
+    // spawn point out past the capsule along the launch axis.
+    const base = this.muzzleProvider?.() ?? camera.position;
+    const origin = base.clone().addScaledVector(
+      this.scratchDir, BALLISTICS.PROJECTILE_SPAWN_OFFSET,
+    );
+    projectileSystem.launch(origin, this.scratchDir.clone(), weapon.def);
+    eventBus.emit('combat:shotFired', { weaponId: weapon.def.id, hit: false });
+    return false;
+  }
+
+  /** Jitter `dir` uniformly inside a cone of half-angle `spreadRad`. */
+  private jitterWithinCone(dir: THREE.Vector3, spreadRad: number): void {
+    if (spreadRad <= 0) return;
+    this.scratchUp.set(0, 1, 0);
+    this.scratchRight.crossVectors(dir, this.scratchUp).normalize();
+    if (this.scratchRight.lengthSq() < 1e-6) this.scratchRight.set(1, 0, 0);
+    this.scratchUp.crossVectors(this.scratchRight, dir).normalize();
+    const radius = spreadRad * Math.sqrt(Math.random());
+    const angle = Math.random() * Math.PI * 2;
+    dir.addScaledVector(this.scratchRight, Math.cos(angle) * radius)
+      .addScaledVector(this.scratchUp, Math.sin(angle) * radius)
+      .normalize();
+  }
+
+  private resolveSingleRay(
+    camera: THREE.PerspectiveCamera,
+    weapon: WeaponBase,
+    context: ShotContext,
+    isPellet: boolean,
+  ): boolean {
+    const baseSpread = weapon.getCurrentSpreadAngle(
+      context.movementState, context.isADS, context.isJumping,
+    );
+    // A pellet's own cone dominates the aim cone; they add in quadrature so
+    // neither is simply thrown away.
+    const coneDeg = isPellet
+      ? Math.hypot(baseSpread, weapon.def.pelletSpreadConeDeg ?? 0)
+      : baseSpread;
+    const spreadRad = THREE.MathUtils.degToRad(coneDeg);
+
+    // Base direction: true camera center, then jitter inside the cone.
+    camera.getWorldDirection(this.scratchDir);
+    this.jitterWithinCone(this.scratchDir, spreadRad);
 
     const maxDistance = weapon.def.melee
       ? (weapon.def.meleeRangeMeters ?? BALLISTICS.MAX_RANGE_METERS)
@@ -105,14 +186,19 @@ class BallisticsSystem {
     const start = this.muzzleProvider?.() ?? camera.position;
     let hit = false;
     if (this.physics && this.colliderMeta) {
-      // --- Rapier scene query (Document C §4.2): static colliders only ------
-      const rh = this.physics.castRayStatic(camera.position, this.scratchDir, maxDistance);
+      // --- Rapier scene query: static colliders + registered prop hits -----
+      const rh = this.physics.castRayWithProps
+        ? this.physics.castRayWithProps(
+          camera.position, this.scratchDir, maxDistance,
+          this.propHitProvider?.() ?? null,
+        )
+        : this.physics.castRayStatic(camera.position, this.scratchDir, maxDistance);
       if (rh) {
         const entry = this.colliderMeta.hittableOf(rh.collider.handle);
         if (entry) {
           hit = true;
           const distance = rh.toi;
-          const damage = weapon.getDamageAtDistance(distance);
+          const damage = this.damageFor(weapon, distance, isPellet);
           const point = rh.point;
           entry.metadata.takeDamage?.(damage, point);
           eventBus.emit('combat:hit', {
@@ -139,7 +225,7 @@ class BallisticsSystem {
         if (entry) {
           hit = true;
           const distance = intersection.distance;
-          const damage = weapon.getDamageAtDistance(distance);
+          const damage = this.damageFor(weapon, distance, isPellet);
           const normal = intersection.face
             ? intersection.face.normal.clone().transformDirection(intersection.object.matrixWorld)
             : this.scratchDir.clone().negate();
@@ -162,8 +248,24 @@ class BallisticsSystem {
       const end = camera.position.clone().addScaledVector(this.scratchDir, BALLISTICS.MAX_RANGE_METERS);
       this.emitTracer(start, end);
     }
-    eventBus.emit('combat:shotFired', { weaponId: weapon.def.id, hit });
     return hit;
+  }
+
+  /**
+   * Pellets carry their own near/far damage numbers so a shotgun's total
+   * close-range damage is pelletCount x damagePerPellet, not one bullet's.
+   */
+  private damageFor(weapon: WeaponBase, distance: number, isPellet: boolean): number {
+    if (!isPellet) return weapon.getDamageAtDistance(distance);
+    const def = weapon.def;
+    const near = def.damagePerPelletNear ?? def.damageNear;
+    const far = def.damagePerPelletFar ?? def.damageFar;
+    const start = def.damageFalloffStartDistance;
+    const end = def.damageFalloffEndDistance;
+    if (distance <= start) return near;
+    if (distance >= end) return far;
+    const t = (distance - start) / Math.max(1e-6, end - start);
+    return near + (far - near) * t;
   }
 
   private emitTracer(from: THREE.Vector3, to: THREE.Vector3): void {

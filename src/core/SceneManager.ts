@@ -9,11 +9,17 @@
  */
 import * as THREE from 'three';
 import { CAMERA } from '../utils/Constants';
+import { FrustumCullingManager } from './FrustumCullingManager';
 import type Clock from './Clock';
 
 export class SceneManager {
   private scene: THREE.Scene;
   private readonly camera: THREE.PerspectiveCamera;
+  /** Global multi-camera union culling (see FrustumCullingManager). Owned
+   *  here so it exists for — and ticks in — EVERY scene, present and future.
+   *  The main camera is registered once for the manager's whole lifetime;
+   *  secondary cameras (minimap/tablet capture, cinematics) push/pop. */
+  readonly culling: FrustumCullingManager;
 
   constructor(_clock: Clock) {
     this.camera = new THREE.PerspectiveCamera(
@@ -33,6 +39,17 @@ export class SceneManager {
     // Document 2.5 §3.1: ViewmodelRigRoot is a CHILD of this camera, so the
     // camera must live in the scene graph for its subtree to render.
     this.scene.add(this.camera);
+
+    this.culling = new FrustumCullingManager();
+    // The main camera is an active camera for the manager's entire life.
+    this.culling.pushCamera(this.camera);
+  }
+
+  /** Per-frame tick, called by the Engine JUST before the render passes so
+   *  every registered camera has already been positioned for this frame
+   *  and the culling union is exact. */
+  update(_dt: number): void {
+    this.culling.update();
   }
 
   getScene(): THREE.Scene {
@@ -48,6 +65,9 @@ export class SceneManager {
   setScene(newScene: THREE.Scene): void {
     newScene.add(this.camera);
     this.scene = newScene;
+    // Old scene's culling registrations die with it; anything visible-false
+    // is restored first so leaked references never stay hidden.
+    this.culling.clearEntries();
   }
 
   /** Called by Renderer's resize handler to keep projection undistorted. */
