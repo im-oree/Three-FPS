@@ -391,3 +391,168 @@ export function buildDistantSkyline({
   }
   return group;  // visual only: NEVER passed to collision registration
 }
+
+// ===========================================================================
+// Document N §6 — IRREGULAR (POLYGON) PERIMETER
+//
+// buildRectangularPerimeter above assumes 4 straight sides, which is right
+// for a fenced dockyard square (Shipment) and wrong for Firing Range, whose
+// silhouette is a ragged polygon. These are ADDITIVE siblings: the rectangular
+// path is untouched, and both share buildPerimeterWallSegment, so wall art,
+// gap handling and the COL_ naming convention stay identical.
+// ===========================================================================
+
+/**
+ * Perimeter following an arbitrary CLOSED polyline of boundary points (world
+ * XZ, in order). Openings are authored per EDGE (fraction along that edge),
+ * not along the whole perimeter, so inserting a boundary point never silently
+ * moves every gate on the map.
+ *
+ * `wallKinds` lets each edge pick its treatment: 'concrete' (the shared
+ * concrete+wire segment), 'berm' (an earth bank — used where jungle hillside
+ * seals the map), or 'none' (no visual, collision only — for edges hidden
+ * behind buildings).
+ */
+export function buildIrregularPerimeter({
+  boundaryPoints, wallHeight = 1.35, fenceHeight = 1.75, thickness = 0.35,
+  openings = [], wallKinds = {}, bermMaterial = null,
+}) {
+  const group = new THREE.Group();
+  group.name = 'Perimeter_Irregular';
+  const collisionMeshes = [];
+
+  for (let i = 0; i < boundaryPoints.length; i += 1) {
+    const a = boundaryPoints[i];
+    const b = boundaryPoints[(i + 1) % boundaryPoints.length];
+    const dx = b[0] - a[0];
+    const dz = b[1] - a[1];
+    const edgeLength = Math.hypot(dx, dz);
+    if (edgeLength < 0.25) continue;
+    // Yaw so the segment's local +X runs a->b. Segments are built along X and
+    // rotated about Y; atan2(dx, dz) is the angle from +Z, which is what a
+    // Y-rotation of a +X-aligned box needs.
+    const edgeAngle = Math.atan2(dx, dz) - Math.PI / 2;
+    const kind = wallKinds[i] ?? 'concrete';
+
+    const edgeOpenings = openings.filter((o) => o.edgeIndex === i);
+    for (const seg of _computeSegmentsWithGaps(edgeLength, edgeOpenings)) {
+      const t = seg.center / edgeLength;
+      const worldX = a[0] + dx * t;
+      const worldZ = a[1] + dz * t;
+
+      if (kind === 'concrete') {
+        const { group: wallGroup, collisionMesh } = buildPerimeterWallSegment({
+          length: seg.length, wallHeight, fenceHeight, thickness,
+        });
+        wallGroup.position.set(worldX, 0, worldZ);
+        wallGroup.rotation.y = edgeAngle;
+        collisionMesh.position.set(worldX, (wallHeight + fenceHeight) / 2, worldZ);
+        collisionMesh.rotation.y = edgeAngle;
+        collisionMesh.name = `COL_PerimeterWall_edge${i}_${collisionMeshes.length}`;
+        group.add(wallGroup);
+        collisionMeshes.push(collisionMesh);
+      } else if (kind === 'berm') {
+        // An earth bank: a wide, low trapezoid that reads as terrain rather
+        // than architecture. Collision is a plain tall box behind it.
+        const bermH = wallHeight + fenceHeight;
+        const berm = new THREE.Mesh(
+          new THREE.BoxGeometry(seg.length, bermH * 1.15, thickness * 6),
+          bermMaterial ?? ShellMaterials.concreteWallDark,
+        );
+        berm.position.set(worldX, bermH * 0.35, worldZ);
+        berm.rotation.y = edgeAngle;
+        berm.castShadow = true;
+        berm.receiveShadow = true;
+        group.add(berm);
+        const col = new THREE.Mesh(
+          new THREE.BoxGeometry(seg.length, bermH * 2, thickness * 4),
+          ShellMaterials.invisible,
+        );
+        col.position.set(worldX, bermH, worldZ);
+        col.rotation.y = edgeAngle;
+        col.name = `COL_PerimeterBerm_edge${i}_${collisionMeshes.length}`;
+        collisionMeshes.push(col);
+      } else {
+        const col = new THREE.Mesh(
+          new THREE.BoxGeometry(seg.length, (wallHeight + fenceHeight) * 2, thickness),
+          ShellMaterials.invisible,
+        );
+        col.position.set(worldX, wallHeight + fenceHeight, worldZ);
+        col.rotation.y = edgeAngle;
+        col.name = `COL_PerimeterBlank_edge${i}_${collisionMeshes.length}`;
+        collisionMeshes.push(col);
+      }
+    }
+  }
+  return { group, collisionMeshes };
+}
+
+/**
+ * Polygon-generalised out-of-bounds boundary: each edge is pushed OUTWARD
+ * along its own normal by `margin` and built as an invisible tall wall — the
+ * same treatment buildOutOfBoundsBoundary applies to a rectangle.
+ *
+ * Winding-independent: the outward direction is chosen by testing a probe
+ * point against the polygon, so a clockwise or counter-clockwise boundary
+ * both push the walls the right way (getting this backwards shrinks the
+ * playspace instead of padding it).
+ */
+export function buildOutOfBoundsBoundaryFromPolygon({
+  boundaryPoints, margin = 3, height = 25,
+}) {
+  const meshes = [];
+  const inside = (px, pz) => {
+    let hit = false;
+    for (let i = 0, j = boundaryPoints.length - 1; i < boundaryPoints.length; j = i, i += 1) {
+      const [xi, zi] = boundaryPoints[i];
+      const [xj, zj] = boundaryPoints[j];
+      if (((zi > pz) !== (zj > pz)) && (px < ((xj - xi) * (pz - zi)) / (zj - zi) + xi)) hit = !hit;
+    }
+    return hit;
+  };
+
+  for (let i = 0; i < boundaryPoints.length; i += 1) {
+    const a = boundaryPoints[i];
+    const b = boundaryPoints[(i + 1) % boundaryPoints.length];
+    const dx = b[0] - a[0];
+    const dz = b[1] - a[1];
+    const len = Math.hypot(dx, dz);
+    if (len < 0.25) continue;
+    let nx = dz / len;
+    let nz = -dx / len;
+    const midX = (a[0] + b[0]) / 2;
+    const midZ = (a[1] + b[1]) / 2;
+    if (inside(midX + nx * 0.5, midZ + nz * 0.5)) { nx = -nx; nz = -nz; }
+
+    const mesh = new THREE.Mesh(
+      // Overlong so adjacent edges always overlap at the corners — a gap in
+      // an out-of-bounds wall is an escape-the-map bug.
+      new THREE.BoxGeometry(len + margin * 2, height, 0.6), ShellMaterials.invisible,
+    );
+    mesh.position.set(midX + nx * margin, height / 2, midZ + nz * margin);
+    mesh.rotation.y = Math.atan2(dx, dz) - Math.PI / 2;
+    mesh.name = `COL_OutOfBounds_${i}`;
+    meshes.push(mesh);
+  }
+  return meshes;
+}
+
+/** Centroid of a polygon — callout label anchors and airspace centres. */
+export function polygonCentroid(points) {
+  let area = 0; let cx = 0; let cz = 0;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
+    const cross = points[j][0] * points[i][1] - points[i][0] * points[j][1];
+    area += cross;
+    cx += (points[j][0] + points[i][0]) * cross;
+    cz += (points[j][1] + points[i][1]) * cross;
+  }
+  if (Math.abs(area) < 1e-6) {
+    const n = points.length;
+    return [
+      points.reduce((s, p) => s + p[0], 0) / n,
+      points.reduce((s, p) => s + p[1], 0) / n,
+    ];
+  }
+  area *= 0.5;
+  return [cx / (6 * area), cz / (6 * area)];
+}

@@ -26,3 +26,7 @@ tools/verify/out/*
 
 # Local caches (never in git; re-derivable via tools/verify/bootstrap.sh)
 .verify/
+
+# Reference imagery pulled down while authoring maps (research scratch, not
+# a build input — the layout it informed lives in tools/lib/FiringRangeLayout.js)
+image-search/

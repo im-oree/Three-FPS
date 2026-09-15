@@ -234,6 +234,16 @@ export class PlayerController {
     this.currVisualPos.set(x, y, z);
   }
 
+  /**
+   * TEST-ONLY seam: aim the camera. Poking THREE camera.rotation directly does
+   * not work — PlayerCamera rewrites the camera transform from simulation
+   * state every frame, so the poke is gone before the next paint.
+   */
+  debugLook(yaw: number, pitch: number): void {
+    this.movement.state.yaw = yaw;
+    this.movement.state.pitch = pitch;
+  }
+
   /** TEST-ONLY seam: set stamina directly for deterministic acceptance runs. */
   debugSetStamina(value: number): void {
     this.stamina.debugSet(value);

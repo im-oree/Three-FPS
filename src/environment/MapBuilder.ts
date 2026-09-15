@@ -14,7 +14,8 @@ import type { PhysicsWorld } from '../physics/PhysicsWorld';
 import type ColliderFactory from '../physics/ColliderFactory';
 import PropPool from './props/PropPool';
 import type { FrustumCullingManager } from '../core/FrustumCullingManager';
-import { resolvePropDefinition } from './props/PropCatalog';
+import { resolvePropDefinition, preloadColliderData } from './props/PropCatalog';
+import WindSwayAnimator from './props/WindSwayAnimator';
 
 export interface PropManifestEntry {
   readonly propType: string;
@@ -29,6 +30,8 @@ const DEFAULT_DYNAMIC_POOL_SIZE = 24;
 
 export class MapBuilder {
   readonly propPool: PropPool;
+  /** Document N §5.3: palms sway individually; created only if a level asks. */
+  readonly windSway = new WindSwayAnimator();
   private elapsed = 0;
 
   constructor(
@@ -45,6 +48,7 @@ export class MapBuilder {
   async build(
     manifestUrl: string,
     poolSizeOverrides: Record<string, number> = {},
+    windSwayPropTypes: readonly string[] = [],
   ): Promise<number> {
     const manifest: PropManifestEntry[] = await fetch(manifestUrl).then((r) => {
       if (!r.ok) throw new Error(`MapBuilder: ${manifestUrl} -> HTTP ${r.status}`);
@@ -56,6 +60,12 @@ export class MapBuilder {
     for (const entry of manifest) {
       counts.set(entry.propType, (counts.get(entry.propType) ?? 0) + 1);
     }
+
+    // Document N §4: buildings keep their compound colliders in sidecar JSON.
+    // Fetch them ALL before any placement — collider resolution inside the
+    // placement loop is synchronous, so a lazy fetch there would place
+    // buildings before their collision existed.
+    await preloadColliderData(counts.keys());
     for (const [propTypeId, count] of counts) {
       const def = resolvePropDefinition(propTypeId);
       const poolSize = def.physicsBehavior === 'dynamic'
@@ -75,10 +85,19 @@ export class MapBuilder {
       );
       if (obj) placed += 1;
     }
+    // Document N §5.3: register wind sway on the cloned-static tree instances.
+    let swayNodes = 0;
+    for (const propTypeId of windSwayPropTypes) {
+      for (const model of this.propPool.getPlacedModels(propTypeId)) {
+        swayNodes += this.windSway.registerTree(model);
+      }
+    }
+
     // All instances placed → derive per-group union bounds for global culling.
     this.propPool.finalizeCulling();
     console.log(
-      `[MapBuilder] placed ${placed}/${manifest.length} props across ${counts.size} prop types.`,
+      `[MapBuilder] placed ${placed}/${manifest.length} props across ${counts.size} prop types`
+      + (swayNodes ? `, ${swayNodes} wind-sway nodes.` : '.'),
     );
     return placed;
   }
@@ -86,9 +105,11 @@ export class MapBuilder {
   update(dt: number): void {
     this.elapsed += dt;
     this.propPool.update(dt, this.elapsed);
+    this.windSway.update(dt, this.elapsed);
   }
 
   dispose(): void {
+    this.windSway.clear();
     this.propPool.disposeAll();
   }
 }

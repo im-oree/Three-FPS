@@ -25,7 +25,7 @@ import type ColliderFactory from '../../physics/ColliderFactory';
 import {
   resolvePropDefinition, type PropDefinition,
 } from './PropCatalog';
-import { buildColliderDescs, colliderTopY } from './ColliderShapeBuilder';
+import { buildColliderDescs, colliderTopY, applyLocalPlacement } from './ColliderShapeBuilder';
 import MaterialVariantLibrary from './MaterialVariantLibrary';
 import CraneSwayAnimator from './CraneSwayAnimator';
 import type { CullingHandle, FrustumCullingManager } from '../../core/FrustumCullingManager';
@@ -67,6 +67,10 @@ export class PropPool {
   private readonly placedLights: THREE.PointLight[] = [];
   private readonly swayAnimators: CraneSwayAnimator[] = [];
   private readonly placedBodies: RAPIER.RigidBody[] = [];
+  /** Cloned-static instances by prop type — the handle post-placement systems
+   *  (Document N's wind sway) need to reach individual models. Instanced and
+   *  dynamic props are deliberately absent: they have no per-instance nodes. */
+  private readonly placedModels = new Map<string, THREE.Object3D[]>();
   /** Culling registrations, released on disposeAll (level unload). */
   private readonly cullingHandles: CullingHandle[] = [];
   /** Per instanced group: world positions accumulate as instances are
@@ -158,9 +162,8 @@ export class PropPool {
           .setLinearDamping(2.2)
           .setAngularDamping(3.5),
       );
-      const colliders = buildColliderDescs(def.collider).map(({ desc, offset }) => {
-        const d = desc
-          .setTranslation(offset.x, offset.y, offset.z)
+      const colliders = buildColliderDescs(def.collider).map((item) => {
+        const d = applyLocalPlacement(item)
           .setRestitution(def.restitution ?? 0.2)
           .setFriction(def.friction ?? 0.7);
         if (def.mass) d.setMass(def.mass);
@@ -184,6 +187,11 @@ export class PropPool {
   // -------------------------------------------------------------------------
   // Placement
   // -------------------------------------------------------------------------
+
+  /** Cloned-static models of one prop type (empty for instanced/dynamic). */
+  getPlacedModels(propTypeId: string): readonly THREE.Object3D[] {
+    return this.placedModels.get(propTypeId) ?? [];
+  }
 
   placeInstance(
     propTypeId: string,
@@ -227,21 +235,27 @@ export class PropPool {
     this.pendingInstancedBounds.get(propTypeId)?.positions.push(position.clone());
 
     // Real collision per instance — one FIXED body with the catalog shape.
-    const body = this.physics.world.createRigidBody(
-      RAPIER.RigidBodyDesc.fixed()
-        .setTranslation(position.x, position.y, position.z)
-        .setRotation({ x: _quat.x, y: _quat.y, z: _quat.z, w: _quat.w }),
-    );
-    for (const { desc, offset } of buildColliderDescs(def.collider, scale)) {
-      const collider = this.physics.world.createCollider(
-        desc.setTranslation(offset.x, offset.y, offset.z), body,
+    // Zero-shape entries (walk-through foliage) get NO body at all: creating
+    // an empty rigid body per grass tuft is hundreds of pointless broadphase
+    // entries on a map that ships 380 of them.
+    const built = buildColliderDescs(def.collider, scale);
+    if (built.length) {
+      const body = this.physics.world.createRigidBody(
+        RAPIER.RigidBodyDesc.fixed()
+          .setTranslation(position.x, position.y, position.z)
+          .setRotation({ x: _quat.x, y: _quat.y, z: _quat.z, w: _quat.w }),
       );
-      this.colliderFactory.byHandle.set(collider.handle, {
-        topY: position.y + colliderTopY(def.collider, scale),
-        surfaceType: def.surfaceTag,
-      });
+      for (const item of built) {
+        const collider = this.physics.world.createCollider(
+          applyLocalPlacement(item), body,
+        );
+        this.colliderFactory.byHandle.set(collider.handle, {
+          topY: position.y + colliderTopY(def.collider, scale),
+          surfaceType: def.surfaceTag,
+        });
+      }
+      this.placedBodies.push(body);
     }
-    this.placedBodies.push(body);
     return group.mesh;
   }
 
@@ -260,22 +274,29 @@ export class PropPool {
     mesh.receiveShadow = def.receiveShadow;
     mesh.name = `Prop_${propTypeId}`;
     this.root.add(mesh);
+    const siblings = this.placedModels.get(propTypeId);
+    if (siblings) siblings.push(mesh);
+    else this.placedModels.set(propTypeId, [mesh]);
 
-    const body = this.physics.world.createRigidBody(
-      RAPIER.RigidBodyDesc.fixed()
-        .setTranslation(position.x, position.y, position.z)
-        .setRotation({ x: _quat.setFromEuler(_euler.set(rot[0], rot[1], rot[2])).x, y: _quat.y, z: _quat.z, w: _quat.w }),
-    );
-    for (const { desc, offset } of buildColliderDescs(def.collider, scale)) {
-      const d = desc.setTranslation(offset.x, offset.y, offset.z);
-      d.setFriction(0.7).setRestitution(0.1);
-      const collider = this.physics.world.createCollider(d, body);
-      this.colliderFactory.byHandle.set(collider.handle, {
-        topY: position.y + colliderTopY(def.collider, scale),
-        surfaceType: def.surfaceTag,
-      });
+    // Zero-shape colliders (walk-through foliage) get no body at all.
+    const built = buildColliderDescs(def.collider, scale);
+    if (built.length) {
+      const body = this.physics.world.createRigidBody(
+        RAPIER.RigidBodyDesc.fixed()
+          .setTranslation(position.x, position.y, position.z)
+          .setRotation({ x: _quat.setFromEuler(_euler.set(rot[0], rot[1], rot[2])).x, y: _quat.y, z: _quat.z, w: _quat.w }),
+      );
+      for (const item of built) {
+        const d = applyLocalPlacement(item);
+        d.setFriction(0.7).setRestitution(0.1);
+        const collider = this.physics.world.createCollider(d, body);
+        this.colliderFactory.byHandle.set(collider.handle, {
+          topY: position.y + colliderTopY(def.collider, scale),
+          surfaceType: def.surfaceTag,
+        });
+      }
+      this.placedBodies.push(body);
     }
-    this.placedBodies.push(body);
 
     if (def.emissiveLight) {
       const lampHead = findByName(mesh, 'LampHead') ?? mesh;
@@ -484,6 +505,7 @@ export class PropPool {
       this.physics.world.removeRigidBody(body);
     }
     this.placedBodies.length = 0;
+    this.placedModels.clear();
     for (const pool of this.dynamicPools.values()) {
       for (const slot of pool.slots) ballistics.unregisterHittable(slot.mesh);
     }

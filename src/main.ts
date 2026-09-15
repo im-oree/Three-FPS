@@ -90,6 +90,8 @@ import MuzzleFlashEffect from './weapons/MuzzleFlashEffect';
 import ImpactEffect from './weapons/ImpactEffect';
 import TracerEffect from './weapons/TracerEffect';
 import ballistics from './weapons/BallisticsSystem';
+import RAPIER from '@dimforge/rapier3d-compat';
+import calloutZoneRegistry from './world/CalloutZoneRegistry';
 import { PhysicsWorld } from './physics/PhysicsWorld';
 import { ColliderFactory } from './physics/ColliderFactory';
 import PlayerCharacterController from './physics/PlayerCharacterController';
@@ -1359,6 +1361,11 @@ interface OperatorTestHook {
 Object.assign((window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__, {
   audioManager, hud, ui, matchStats, playerHealth, loadoutManager, skinManager,
   settingsStore, levelLoader, mainMenu, loadingScreen, settingsMenu, loadoutMenu,
+  // Document N: the acceptance harness ray-casts the live world to verify
+  // terrain relief, door openings and perimeter containment — assertions a
+  // screenshot cannot make. RAPIER rides along because constructing a Ray
+  // needs the same module instance the world was built with.
+  physics, RAPIER, playerCollider, calloutZones: calloutZoneRegistry,
 });
 // ---------------------------------------------------------------------------
 // End TEMPORARY block.

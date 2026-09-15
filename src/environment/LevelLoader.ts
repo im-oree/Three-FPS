@@ -21,6 +21,8 @@ import { TrainingDummy } from './TrainingDummy';
 import { getLevel, LEVELS, type LevelDefinition } from './LevelDefinition';
 import MapBuilder from './MapBuilder';
 import HDRISkyManager from './HDRISkyManager';
+import calloutZoneRegistry from '../world/CalloutZoneRegistry';
+import RAPIER from '@dimforge/rapier3d-compat';
 import { LAYER, setLayerRecursive } from '../core/RenderLayers';
 import type ColliderFactory from '../physics/ColliderFactory';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
@@ -58,6 +60,8 @@ export class LevelLoader {
   private readonly cullingHandles: CullingHandle[] = [];
   private mapBuilder: MapBuilder | null = null;
   private hdriSky: HDRISkyManager | null = null;
+  /** Document N: heightfield terrain body, removed wholesale on unload. */
+  private terrainBody: RAPIER.RigidBody | null = null;
 
   constructor(
     private readonly colliderFactory: ColliderFactory,
@@ -122,6 +126,10 @@ export class LevelLoader {
       this.buildGround(def);
       for (const box of def.boxes) this.buildBox(box);
     }
+    // Document N §2.4: terrain collision BEFORE props, so anything that
+    // queries ground height during placement sees the real surface.
+    if (def.terrainCollision) await this.buildTerrainCollision(def);
+    if (def.calloutZonesFile) await this.loadCalloutZones(def);
     if (def.propManifest) await this.buildProps(def);
     if (def.hdri) await this.applyHDRI(def);
     this.buildDummies(def);
@@ -145,6 +153,14 @@ export class LevelLoader {
     this.mapBuilder?.dispose();
     this.mapBuilder = null;
     this.hdriSky?.clear();
+    calloutZoneRegistry.clear();
+    if (this.terrainBody) {
+      for (let i = 0; i < this.terrainBody.numColliders(); i += 1) {
+        this.colliderFactory.byHandle.delete(this.terrainBody.collider(i).handle);
+      }
+      this.builderDeps?.physics.world.removeRigidBody(this.terrainBody);
+      this.terrainBody = null;
+    }
 
     for (const handle of this.cullingHandles) handle.release();
     this.cullingHandles.length = 0;
@@ -330,10 +346,81 @@ export class LevelLoader {
       this.builderDeps.assetLoader,
       this.builderDeps.culling ?? null,
     );
-    await this.mapBuilder.build(def.propManifest, def.propPoolSizes ?? {});
+    await this.mapBuilder.build(
+      def.propManifest, def.propPoolSizes ?? {}, def.windSwayPropTypes ?? [],
+    );
   }
 
   /** Document K §5: HDRI background + IBL for prop-built levels. */
+  /**
+   * Document N §2.4: terrain collision from a baked heightfield.
+   *
+   * The sample grid was produced by the SAME height function that generated
+   * the visual terrain mesh (tools/lib/TerrainHeightfieldBuilder.js), so the
+   * collider cannot drift from what the player sees — the usual failure of
+   * hand-tuned terrain collision.
+   *
+   * Rapier's heightfield stores heights COLUMN-MAJOR as
+   * index = col * (nrows + 1) + row, with `row` running along +Z and `col`
+   * along +X, and centres the field on its rigid body. Transposing those is
+   * the classic bug here: the terrain mirrors across the diagonal and only
+   * looks wrong where the map is asymmetric.
+   */
+  private async buildTerrainCollision(def: LevelDefinition): Promise<void> {
+    if (!def.terrainCollision || !this.builderDeps) return;
+    const data = await fetch(def.terrainCollision).then((r) => {
+      if (!r.ok) throw new Error(`LevelLoader: ${def.terrainCollision} -> HTTP ${r.status}`);
+      return r.json();
+    }) as {
+      width: number; depth: number; nrows: number; ncols: number;
+      scale: { x: number; y: number; z: number }; heights: number[];
+    };
+
+    const expected = (data.nrows + 1) * (data.ncols + 1);
+    if (data.heights.length !== expected) {
+      console.error(
+        `LevelLoader: terrain heightfield size mismatch — got ${data.heights.length}, `
+        + `expected ${expected} for ${data.nrows}x${data.ncols}. Terrain collision SKIPPED.`,
+      );
+      return;
+    }
+
+    const world = this.builderDeps.physics.world;
+    const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, 0, 0));
+    const collider = world.createCollider(
+      RAPIER.ColliderDesc.heightfield(
+        data.nrows, data.ncols, new Float32Array(data.heights),
+        new THREE.Vector3(data.scale.x, data.scale.y, data.scale.z),
+      ),
+      body,
+    );
+    this.colliderFactory.byHandle.set(collider.handle, {
+      topY: 0,                       // terrain has no single top; unused for ground
+      surfaceType: def.groundSurface,
+    });
+    this.terrainBody = body;
+    console.log(
+      `[LevelLoader] terrain heightfield ${data.nrows}x${data.ncols} `
+      + `over ${data.width}x${data.depth} m (surface '${def.groundSurface}').`,
+    );
+  }
+
+  /** Document N §7: load named callout polygons into the shared registry. */
+  private async loadCalloutZones(def: LevelDefinition): Promise<void> {
+    if (!def.calloutZonesFile) return;
+    try {
+      const zones = await fetch(def.calloutZonesFile).then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      }) as { name: string; polygon: [number, number][] }[];
+      calloutZoneRegistry.loadZones(zones);
+      console.log(`[LevelLoader] ${calloutZoneRegistry.count} callout zones registered.`);
+    } catch (err) {
+      // Callouts are HUD garnish: a failure must not block the match.
+      console.error('LevelLoader: callout zones failed to load —', err);
+    }
+  }
+
   private async applyHDRI(def: LevelDefinition): Promise<void> {
     if (!this.builderDeps || !def.hdri) return;
     this.hdriSky = new HDRISkyManager(this.builderDeps.renderer, this.scene);

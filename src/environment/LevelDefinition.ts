@@ -92,6 +92,28 @@ export interface LevelDefinition {
    * below this (bug, exploit, collision gap), they're teleported to spawn.
    */
   readonly killPlaneY?: number;
+  /**
+   * Document N §2.4: heightfield terrain collision, built at LOAD time from
+   * baked sample data rather than from the shell .glb's triangles.
+   *
+   * A 240x240 terrain mesh is ~115k triangles; a trimesh collider over that
+   * is an enormous physics asset for ground a capsule only ever touches the
+   * top of. A Rapier heightfield at 128x128 is a fraction of the memory with
+   * exact, closed-form ray queries — and unlike a trimesh it cannot have
+   * gaps. The same authored height function produced both, so collision and
+   * visuals agree by construction.
+   */
+  readonly terrainCollision?: string;
+  /**
+   * Document N §7: named callout regions (JSON polygon list). Loaded into
+   * CalloutZoneRegistry, consumed by the minimap and position readouts.
+   */
+  readonly calloutZonesFile?: string;
+  /**
+   * Document N §5.3: prop types whose instances sway in the wind (palms).
+   * Named here rather than inferred so a level can opt out cheaply.
+   */
+  readonly windSwayPropTypes?: readonly string[];
 }
 
 /** A rectangular room: four walls, open top, built from eight numbers. */
@@ -268,8 +290,51 @@ const SHIPMENT: LevelDefinition = {
   killPlaneY: -25,
 };
 
+// --- FIRING RANGE (Document N): the Black Ops classic. Unlike every level
+// above it, the ground is a real heightfield (authored greyscale heightmap +
+// noise, flattened under buildings and along worn paths) and the perimeter is
+// an irregular polygon rather than a square. All ~20 structures come from the
+// shared modular building kit, and their collision is derived from the kit
+// panels at build time so doors and windows are passable by construction.
+// Layout is authored in tools/lib/FiringRangeLayout.js and baked from there:
+// terrain, props, callouts and minimap bounds all read the same plan. --------
+const FIRING_RANGE: LevelDefinition = {
+  id: 'firingrange',
+  displayName: 'Firing Range',
+  description: 'Tropical military training compound. Three lanes converge on the central tower.',
+  ambientSoundKey: 'ambient_range',
+  skyColor: 0x7fa3c4,
+  fogDensity: 0.0022,
+  hemiIntensity: 0.65,
+  sunIntensity: 2.3,
+  // West course entrance: on the main road, >5 m clear of every building and
+  // 14 m inside the perimeter, looking east down the lane toward the tower.
+  // (Yaw convention: forward is -Z at yaw 0 — see COORDINATE_CONVENTIONS.md.)
+  spawn: [-27.5, 0, 17.5],
+  spawnYaw: -1.06,
+  groundHalfSize: 75,
+  worldExtents: { centerX: 0, centerZ: 2, halfWidth: 50, halfHeight: 48 },
+  groundSurface: 'dirt',
+  groundColor: 0x8a6f45,
+  boxes: [],
+  dummies: [[-3, 0, -30.5], [2.2, 0, -30.5], [7.4, 0, -30.5]],
+  killstreakAirspace: { centerXZ: [0, 2], radius: 110, arrivalAltitude: 150, uavOrbitHeight: 62 },
+  shellFile: '/assets/models/environment/firingrange_shell.glb',
+  propManifest: '/assets/environment-meta/firingrange_props.json',
+  terrainCollision: '/assets/environment-meta/firingrange_terrain.json',
+  calloutZonesFile: '/assets/environment-meta/firingrange_callouts.json',
+  windSwayPropTypes: ['palm_tree_a', 'palm_tree_b', 'palm_tree_c'],
+  propPoolSizes: { oil_barrel: 16, oil_barrel_explosive: 6 },
+  hdri: '/assets/hdri/tropical_firingrange.hdr',
+  // Harsh tropical sun: the HDRI is far brighter than Shipment's overcast, so
+  // the IBL gain is pulled down harder to keep dirt and plywood from tone-
+  // mapping to white (the Document L white-out failure mode).
+  hdriIntensity: 0.42,
+  killPlaneY: -33,
+};
+
 export const LEVELS: readonly LevelDefinition[] = [
-  WAREHOUSE, FACILITY, TRAINING_RANGE, SHIPMENT,
+  WAREHOUSE, FACILITY, TRAINING_RANGE, SHIPMENT, FIRING_RANGE,
 ];
 
 export function getLevel(id: string): LevelDefinition {
