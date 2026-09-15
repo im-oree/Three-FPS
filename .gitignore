@@ -30,3 +30,8 @@ tools/verify/out/*
 # Reference imagery pulled down while authoring maps (research scratch, not
 # a build input — the layout it informed lives in tools/lib/FiringRangeLayout.js)
 image-search/
+
+# Ad-hoc diagnostic probes (throwaway, regenerated as needed)
+tools/scratch/
+tools/verify/shots/bugs/
+tools/verify/shots/opt/

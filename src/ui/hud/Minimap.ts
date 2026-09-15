@@ -129,14 +129,21 @@ export class Minimap {
     if (!ctx) return;
 
     const size = MINIMAP.PIXEL_SIZE;
-    // Map the DOM dish rect into raw framebuffer pixels (GL origin bottom-left).
+    // The dish rect in CSS pixels, GL origin (bottom-left).
+    //
+    // NOT device pixels: renderer.setViewport/setScissor multiply whatever
+    // they are given by the renderer's pixel ratio internally. Pre-scaling
+    // here too squared the ratio, which was invisible while the ratio was
+    // exactly 1 and became very visible once adaptive resolution started
+    // driving it to ~0.5 — the capture landed in the wrong place and at the
+    // wrong size, which is the minimap "not staying in its box".
+    const el = renderer.domElement;
     const cssRect = this.canvas.getBoundingClientRect();
-    if (cssRect.width < 2) return;
-    const scale = renderer.domElement.width / renderer.domElement.clientWidth;
+    if (cssRect.width < 2 || el.clientHeight < 2) return;
     const rect = {
-      x: Math.round(cssRect.left * scale),
-      y: Math.round(renderer.domElement.height - (cssRect.bottom) * scale),
-      size: Math.round(cssRect.width * scale),
+      x: Math.round(cssRect.left),
+      y: Math.round(el.clientHeight - cssRect.bottom),
+      size: Math.round(cssRect.width),
     };
     const yaw = this.deps.getYaw();
     const rotate = getMinimapRotate();
@@ -158,9 +165,15 @@ export class Minimap {
     ctx.beginPath();
     ctx.arc(half, half, half - 1, 0, Math.PI * 2);
     ctx.clip();
+    // drawImage samples the BACKING STORE, so the CSS-pixel rect has to be
+    // converted back into device pixels here — with the same ratio three.js
+    // just used, read from the renderer rather than assumed.
+    const dpr = renderer.getPixelRatio();
+    const sx = Math.round(rect.x * dpr);
+    const sSize = Math.max(1, Math.round(rect.size * dpr));
     // Y-flip: source canvas is top-left origin, the capture rect is bottom-left.
-    const sy = renderer.domElement.height - rect.y - rect.size;
-    ctx.drawImage(renderer.domElement, rect.x, sy, rect.size, rect.size, 0, 0, size, size);
+    const sy = Math.round(el.height - rect.y * dpr - sSize);
+    ctx.drawImage(el, sx, sy, sSize, sSize, 0, 0, size, size);
     this.drawOverlays(ctx, yaw, rotate, zoomMeters);
     ctx.restore();
 

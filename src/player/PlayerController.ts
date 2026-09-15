@@ -31,6 +31,9 @@ import StaminaSystem from './StaminaSystem';
 import VaultSystem, { type VaultProbes } from './VaultSystem';
 import eventBus from '../core/EventBus';
 
+/** Scratch for debugTeleport's ground probe (test seam, never hot). */
+const TELEPORT_SCRATCH = new THREE.Vector3();
+
 export class PlayerController {
   readonly movement: PlayerMovement;
   readonly camera: PlayerCamera;
@@ -228,10 +231,24 @@ export class PlayerController {
    * and zero its velocity. Not used by any gameplay path.
    */
   debugTeleport(x: number, y: number, z: number): void {
-    this.movement.state.position.set(x, y, z);
+    // Snap DOWN onto whatever floor is under the requested spot.
+    //
+    // Callers pass a nominal standing height (0.2, 1.7, ...) but the real
+    // floor varies per map — terrain, building pads, container roofs. Landing
+    // 1.5 m above it means the capsule is airborne, and a screenshot taken
+    // during that fall shows the camera sinking through the ground: an
+    // alarming "the map has no floor" artefact that is purely the harness.
+    // Probing here makes the seam mean "stand here", which is what every
+    // caller actually wants.
+    const probeFrom = TELEPORT_SCRATCH.set(x, y + PLAYER.MAX_STEP_HEIGHT + 2, z);
+    const ground = this.collider.raycastDown(probeFrom, 200);
+    const floorY = ground ? probeFrom.y - ground.distance : y;
+    // Never teleport INTO the floor, and never silently fall a long way.
+    const finalY = Math.abs(floorY - y) < 60 ? floorY : y;
+    this.movement.state.position.set(x, finalY, z);
     this.movement.state.velocity.set(0, 0, 0);
-    this.prevVisualPos.set(x, y, z);
-    this.currVisualPos.set(x, y, z);
+    this.prevVisualPos.set(x, finalY, z);
+    this.currVisualPos.set(x, finalY, z);
   }
 
   /**

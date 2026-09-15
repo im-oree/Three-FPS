@@ -212,7 +212,27 @@ export class StaticBatcher {
         ? this.decimate(merged, this.lodStrength)
         : null;
 
-      if (simplified && this.lodDistance > 0) {
+      // THREE.LOD switches on distance to the node's ORIGIN, which is only a
+      // sane proxy for "how far away is this object" when the object is small
+      // relative to that distance. A merged cell can be tens of metres across
+      // — the Shipment ground batch is 54 m wide — so the player can stand ON
+      // a batch whose centre is 30 m away and see it snap to its lowest
+      // level. Only attach an LOD when the cell is small enough for the
+      // centre-distance test to mean something.
+      // mergeGeometries does NOT compute bounds, so this must be explicit —
+      // reading .boundingSphere directly would be null here and silently
+      // disable every LOD (radius 0 fails the size test below).
+      if (!merged.boundingSphere) merged.computeBoundingSphere();
+      const lodRadius = merged.boundingSphere?.radius ?? 0;
+      const lodWorthwhile = simplified !== null
+        && this.lodDistance > 0
+        && lodRadius > 0
+        // Require the swap distance to clear the cell's own radius with
+        // margin, so no part of the geometry is ever nearer than the
+        // distance at which we claim it is far away.
+        && this.lodDistance > lodRadius * 1.75;
+
+      if (lodWorthwhile && simplified) {
         const lod = new THREE.LOD();
         lod.autoUpdate = false; // we drive update() ourselves, once per frame
         const far = new THREE.Mesh(simplified, bucket.material);
@@ -238,6 +258,9 @@ export class StaticBatcher {
         this.owned.push(simplified);
         lodTriangles += simplified.attributes.position.count / 3;
       } else {
+        // Decimated but rejected (cell too large for a centre-distance test):
+        // free it here rather than tracking an orphan in `owned`.
+        if (simplified) simplified.dispose();
         objects.push(near);
       }
       batches += 1;
