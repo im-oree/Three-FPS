@@ -51,6 +51,9 @@ export class OperatorShowcase {
   private readonly scratchPole = new THREE.Vector3();
   private readonly scratchOffset = new THREE.Vector3();
   private readonly scratchQuat = new THREE.Quaternion();
+  /** Rest intensities, so exposure scaling is never cumulative. */
+  private readonly baseIntensity = new Map<THREE.Light, number>();
+  private exposureScale = 1;
   /** The weapon hangs here, in body space, and the hands chase it. */
   private readonly weaponMount = new THREE.Group();
   /** Grip points in weapon-local space, measured from the model. */
@@ -102,6 +105,12 @@ export class OperatorShowcase {
 
     this.scene.add(new THREE.HemisphereLight(0x1e2836, 0x05070a, 0.30));
 
+    // Remember rest intensities before anything scales them.
+    this.scene.traverse((node) => {
+      const light = node as THREE.Light;
+      if (light.isLight) this.baseIntensity.set(light, light.intensity);
+    });
+
     // A ground disc catches the key light so the operator is not floating.
     // Its alpha falls off toward the rim: a hard-edged plane reads as a
     // rectangle sitting in the frame, which is worse than no floor at all.
@@ -143,7 +152,7 @@ export class OperatorShowcase {
       this.renderer.setClearColor(0x000000, 0);
       this.renderer.outputColorSpace = THREE.SRGBColorSpace;
       this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      this.renderer.toneMappingExposure = 0.82;
+      this.renderer.toneMappingExposure = MENU_SHOWCASE.EXPOSURE * this.exposureScale;
     }
     parent.appendChild(this.canvas);
     this.running = true;
@@ -337,6 +346,27 @@ export class OperatorShowcase {
 
   setStance(stance: ShowcaseStance): void {
     this.stance = stance;
+  }
+
+  /**
+   * Brighten (or dim) the whole showcase.
+   *
+   * Operator select is a showroom: the player is judging a character, so the
+   * dark-fatigue operators have to be legible. The lobby is a mood shot and
+   * wants the opposite. One multiplier keeps both from needing separate
+   * light rigs.
+   */
+  /** Body yaw override; operator select faces the player more squarely. */
+  setBodyYaw(yaw: number): void {
+    if (this.root) this.root.rotation.y = yaw;
+  }
+
+  setExposure(scale: number): void {
+    this.exposureScale = scale;
+    if (this.renderer) {
+      this.renderer.toneMappingExposure = MENU_SHOWCASE.EXPOSURE * scale;
+    }
+    for (const [light, base] of this.baseIntensity) light.intensity = base * scale;
   }
 
   /**

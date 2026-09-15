@@ -49,7 +49,7 @@ const MODEL_PATHS: Record<string, string> = {
 };
 
 export class LoadoutMenu implements Screen {
-  readonly element = div('screen');
+  readonly element = div('screen screen--cod screen--loadout');
   private readonly previewHost = div('loadout__preview');
   private readonly primaryCol = div();
   private readonly secondaryCol = div();
@@ -68,24 +68,48 @@ export class LoadoutMenu implements Screen {
     private readonly assetLoader: AssetLoader,
     private readonly skins: SkinManager,
   ) {
-    const inner = div('screen__inner');
-    const panel = div('panel');
-    panel.append(el('p', 'subtitle', 'Prepare'), el('h2', 'title', 'LOADOUT'));
+    // Same chrome as the rest of the lobby: a top bar with the screen name
+    // and the tab row, the working columns in the middle, key hints along the
+    // bottom. The weapon preview machinery below is untouched -- this is a
+    // reskin of the shell, not a rewrite of what works.
+    const top = div('cod__topbar');
+    const tabs = div('cod__tabs');
+    for (const [label, target] of [
+      ['PLAY', GameState.MAIN_MENU],
+      ['WEAPONS', null],
+      ['OPERATORS', GameState.OPERATORS],
+    ] as const) {
+      const tab = el('button', 'cod__tab');
+      tab.type = 'button';
+      tab.textContent = label;
+      tab.classList.toggle('cod__tab--active', target === null);
+      if (target !== null) {
+        tab.addEventListener('click', () => {
+          uiSound('back');
+          eventBus.emit('ui:navigate', { to: target });
+        });
+      }
+      tabs.appendChild(tab);
+    }
+    top.append(div('cod__mode-title', 'CREATE A CLASS'), tabs);
 
-    const grid = div('loadout__grid');
-    grid.append(this.primaryCol, this.secondaryCol, this.previewHost);
-    panel.appendChild(grid);
+    const body = div('loadout__body');
+    const columns = div('loadout__columns');
+    columns.append(this.primaryCol, this.secondaryCol);
+    body.append(columns, this.previewHost);
 
-    const footer = div('btn-row');
-    footer.style.marginTop = '22px';
-    footer.appendChild(button('Back', 'btn', () => {
+    const footer = div('cod__footer');
+    const keys = div('cod__keys');
+    const back = div('cod__key');
+    back.append(div('cod__key-cap', 'Esc'), div('cod__key-label', 'Back'));
+    keys.appendChild(back);
+    footer.append(keys, div('cod__ticker', 'Changes save as you make them.'));
+    footer.addEventListener('click', () => {
       uiSound('back');
       eventBus.emit('ui:navigate', { to: GameState.MAIN_MENU });
-    }));
-    panel.appendChild(footer);
+    });
 
-    inner.appendChild(panel);
-    this.element.appendChild(inner);
+    this.element.append(top, body, footer);
 
     this.previewCamera.position.set(0, 0.08, 0.95);
     this.previewCamera.lookAt(0, 0, 0);

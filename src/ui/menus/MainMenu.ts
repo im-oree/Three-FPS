@@ -29,6 +29,7 @@ import { GameState, type GameStateValue } from '../../state/GameStateManager';
 import { LEVELS, getLevel } from '../../environment/LevelDefinition';
 import loadoutManager from '../../customization/LoadoutManager';
 import { getWeapon } from '../../weapons/definitions';
+import { MENU_SHOWCASE } from '../../utils/Constants';
 import { button, div, el, uiSound } from '../dom';
 import type { Screen } from '../UIManager';
 import type { OperatorShowcase } from '../showcase/OperatorShowcase';
@@ -196,6 +197,8 @@ export class MainMenu implements Screen {
     if (!this.showcase) return;
     this.showcase.mount(this.stage);
     this.showcase.setStance('stand');
+    this.showcase.setExposure(1);
+    this.showcase.setBodyYaw(MENU_SHOWCASE.BODY_YAW);
     const primary = loadoutManager.getCurrentLoadout().primaryId;
     if (getWeapon(primary)) await this.showcase.setWeapon(primary);
     this.showcase.resize();

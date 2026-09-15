@@ -43,6 +43,8 @@ export const CLOCK = {
 export const MENU_SHOWCASE = {
   BODY_PATH: 'characters/body_standard.glb',
   FOV: 30,
+  /** Base tone-mapping exposure; screens scale this. */
+  EXPOSURE: 0.82,
   /**
    * The model faces -Z, so the camera sits at NEGATIVE z to see his face.
    * Low and slightly off-axis, looking up at chest height: the reference's

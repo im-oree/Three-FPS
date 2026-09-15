@@ -85,8 +85,13 @@ export class OperatorsMenu implements Screen {
   private async mountShowcase(): Promise<void> {
     if (!this.showcase) return;
     this.showcase.mount(this.stage);
-    // A wider, more heroic stance than the main menu's low ready.
-    this.showcase.setStance('stand');
+    this.showcase.setStance('ready');
+    // Squarer to camera than the lobby: the player is judging the character
+    // here, not admiring a composition.
+    this.showcase.setBodyYaw(0.12);
+    // A showroom, not a mood shot: the dark-fatigue operators are unreadable
+    // at the lobby's deliberately moody exposure.
+    this.showcase.setExposure(1.9);
     const primary = loadoutManager.getCurrentLoadout().primaryId;
     if (getWeapon(primary)) await this.showcase.setWeapon(primary);
     this.showcase.setOperatorTint(operatorRoster.selected);
