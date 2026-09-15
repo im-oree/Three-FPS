@@ -31,6 +31,7 @@ import {
   type RadarContactLike,
 } from '../radarMapDraw';
 import type { RadarContactRegistry } from '../../world/RadarContactRegistry';
+import calloutZoneRegistry from '../../world/CalloutZoneRegistry';
 import type LiveMinimapCapture from './LiveMinimapCapture';
 import {
   getMinimapMode, getMinimapRotate, getMinimapZoomMeters,
@@ -55,6 +56,19 @@ export class Minimap {
   private accumulator = 0;
   private playing = false;
   private compositeDue = false;
+  /**
+   * Document N §7: callout names, rasterised ONCE per level into an
+   * offscreen canvas and blitted each frame.
+   *
+   * Text layout is the expensive part of canvas 2D — measuring and shaping
+   * ~24 labels at 15 Hz is real per-frame cost for content that never
+   * changes. The labels live in WORLD space on this layer, so the composite
+   * only has to translate (and, in rotate mode, rotate) it into place.
+   */
+  private calloutLayer: HTMLCanvasElement | null = null;
+  private calloutLayerOrigin = { x: 0, z: 0 };
+  private calloutLayerScale = 1;
+  private calloutLayerZoneCount = -1;
 
   constructor(
     private readonly registry: RadarContactRegistry,
@@ -194,11 +208,100 @@ export class Minimap {
 
     const px = this.deps.getPlayerX();
     const pz = this.deps.getPlayerZ();
+    this.drawCalloutLabels(ctx, px, pz, yaw, rotate, zoomMeters);
     const projection = makeRadarProjection(half, half, half - 4, zoomMeters);
     for (const c of this.registry.getActiveContacts()) {
       drawRadarContact(ctx, projection, this.rotateContact(c, yaw, rotate), px, pz, 3);
     }
     drawPlayerTriangle(ctx, half, half, rotate ? 0 : yaw, 6);
+  }
+
+  /**
+   * Build (once) and blit the callout-name layer.
+   *
+   * Rebuilt only when the zone set changes — i.e. on level load — which is
+   * why the guard is a zone COUNT rather than a time or a dirty flag: it is
+   * the cheapest thing that is actually correct across a level swap.
+   */
+  /** TEST-ONLY seam: the cached callout-name layer (null before first draw). */
+  get debugCalloutLayer(): HTMLCanvasElement | null { return this.calloutLayer; }
+
+  private drawCalloutLabels(
+    ctx: CanvasRenderingContext2D,
+    px: number, pz: number, yaw: number, rotate: boolean, zoomMeters: number,
+  ): void {
+    const zones = calloutZoneRegistry.zones;
+    if (!zones.length) return;
+
+    const size = MINIMAP.PIXEL_SIZE;
+    const half = size / 2;
+    // Pixels per world metre, matching makeRadarProjection's scale exactly.
+    const scale = (half - 4) / zoomMeters;
+
+    if (this.calloutLayerZoneCount !== zones.length || this.calloutLayerScale !== scale) {
+      this.buildCalloutLayer(zones, scale);
+    }
+    const layer = this.calloutLayer;
+    if (!layer) return;
+
+    // Clip to the dish, then place the world-space layer under the player.
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(half, half, half - 2, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.globalAlpha = 0.72;
+    ctx.translate(half, half);
+    if (rotate) ctx.rotate(yaw);
+    ctx.drawImage(
+      layer,
+      (this.calloutLayerOrigin.x - px) * scale,
+      (this.calloutLayerOrigin.z - pz) * scale,
+    );
+    ctx.restore();
+  }
+
+  private buildCalloutLayer(
+    zones: readonly { name: string; centroid: readonly [number, number] }[],
+    scale: number,
+  ): void {
+    let minX = Infinity; let maxX = -Infinity;
+    let minZ = Infinity; let maxZ = -Infinity;
+    for (const z of zones) {
+      minX = Math.min(minX, z.centroid[0]); maxX = Math.max(maxX, z.centroid[0]);
+      minZ = Math.min(minZ, z.centroid[1]); maxZ = Math.max(maxZ, z.centroid[1]);
+    }
+    const pad = 40;
+    const w = Math.ceil((maxX - minX) * scale) + pad * 2;
+    const h = Math.ceil((maxZ - minZ) * scale) + pad * 2;
+    if (!(w > 0 && h > 0) || w > 4096 || h > 4096) return;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const c = canvas.getContext('2d');
+    if (!c) return;
+
+    c.font = '600 7px ui-monospace, monospace';
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.lineJoin = 'round';
+    for (const z of zones) {
+      const x = (z.centroid[0] - minX) * scale + pad;
+      const y = (z.centroid[1] - minZ) * scale + pad;
+      const label = z.name.toUpperCase();
+      // Dark halo first: callouts sit over sunlit dirt in the live capture,
+      // and plain white text is unreadable against it.
+      c.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+      c.lineWidth = 2.5;
+      c.strokeText(label, x, y);
+      c.fillStyle = 'rgba(255, 245, 220, 0.95)';
+      c.fillText(label, x, y);
+    }
+
+    this.calloutLayer = canvas;
+    this.calloutLayerOrigin = { x: minX - pad / scale, z: minZ - pad / scale };
+    this.calloutLayerScale = scale;
+    this.calloutLayerZoneCount = zones.length;
   }
 
   /**

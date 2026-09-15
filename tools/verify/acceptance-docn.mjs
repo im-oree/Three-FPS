@@ -291,23 +291,63 @@ check(
 );
 
 // ---------------------------------------------------------------------------
+console.log('\n[5b] Minimap callout labels');
+// ---------------------------------------------------------------------------
+const mmap = await page.evaluate(async () => {
+  const ops = window.__OPERATOR__;
+  const mm = ops.minimap;
+  // Force a composite so the callout layer is built this frame.
+  await new Promise((r) => setTimeout(r, 400));
+  const layer = mm?.debugCalloutLayer;
+  if (!layer) return { built: false };
+  // Proof that text was actually rasterised, rather than a blank canvas of
+  // the right size being allocated. Sampled on a sparse grid: a full
+  // getImageData sweep of this layer costs ~48 s under SwiftShader and
+  // destabilises the tab, and a grid is just as conclusive for "is there
+  // ink on this canvas".
+  const c = layer.getContext('2d', { willReadFrequently: true });
+  let ink = 0;
+  const step = 3;
+  for (let y = 0; y < layer.height; y += step) {
+    const row = c.getImageData(0, y, layer.width, 1).data;
+    for (let i = 3; i < row.length; i += 4 * step) if (row[i] > 40) ink += 1;
+  }
+  return {
+    built: true, w: layer.width, h: layer.height, ink,
+    zones: ops.calloutZones?.count ?? 0,
+  };
+});
+check('minimap callout layer built', mmap.built, mmap.built ? `${mmap.w}x${mmap.h}px` : 'missing');
+check(
+  'callout names rasterised to the layer',
+  (mmap.ink ?? 0) > 100,
+  `${mmap.ink ?? 0} inked pixels for ${mmap.zones} zones`,
+);
+
+// ---------------------------------------------------------------------------
 console.log('\n[6] Perimeter containment');
 // ---------------------------------------------------------------------------
-const perim = await page.evaluate(() => {
-  const ops = window.__OPERATOR__;
-  const RAPIER = ops.RAPIER;
-  const world = ops.physics.world;
-  // Fire rays outward from the centre in a full circle at chest height:
-  // every direction must hit something before 90 m or the map leaks.
-  const leaks = [];
-  for (let i = 0; i < 72; i += 1) {
-    const a = (i / 72) * Math.PI * 2;
-    const ray = new RAPIER.Ray({ x: 0, y: 1.2, z: 2 }, { x: Math.cos(a), y: 0, z: Math.sin(a) });
-    const hit = world.castRay(ray, 90, true);
-    if (!hit) leaks.push(Math.round((a * 180) / Math.PI));
-  }
+// Swept in two halves: 72 ray casts plus their result marshalling in one
+// evaluate() call is enough to trip the CDP target under SwiftShader.
+const perim = { leaks: [] };
+for (const [from, to] of [[0, 36], [36, 72]]) {
+  const part = await page.evaluate((from, to) => {
+    const ops = window.__OPERATOR__;
+    const RAPIER = ops.RAPIER;
+    const world = ops.physics.world;
+    // Fire rays outward from the centre in a full circle at chest height:
+    // every direction must hit something before 90 m or the map leaks.
+    const leaks = [];
+    for (let i = from; i < to; i += 1) {
+      const a = (i / 72) * Math.PI * 2;
+      const ray = new RAPIER.Ray({ x: 0, y: 1.2, z: 2 }, { x: Math.cos(a), y: 0, z: Math.sin(a) });
+      const hit = world.castRay(ray, 90, true);
+      if (!hit) leaks.push(Math.round((a * 180) / Math.PI));
+    }
   return { leaks };
-});
+  }, from, to);
+  perim.leaks.push(...part.leaks);
+}
 check(
   'perimeter contains the map in all directions',
   perim.leaks.length === 0,

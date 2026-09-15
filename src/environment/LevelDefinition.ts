@@ -302,7 +302,7 @@ const FIRING_RANGE: LevelDefinition = {
   id: 'firingrange',
   displayName: 'Firing Range',
   description: 'Tropical military training compound. Three lanes converge on the central tower.',
-  ambientSoundKey: 'ambient_range',
+  ambientSoundKey: 'ambient_village_dusty_loop',
   skyColor: 0x7fa3c4,
   fogDensity: 0.0022,
   hemiIntensity: 0.65,

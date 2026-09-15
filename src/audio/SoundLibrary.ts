@@ -86,6 +86,8 @@ export const SOUND_MANIFEST = {
   ambient_warehouse: 'ambient/ambient_warehouse.wav',
   ambient_facility: 'ambient/ambient_facility.wav',
   ambient_range: 'ambient/ambient_range.wav',
+  // Document N: outdoor tropical compound bed for Firing Range.
+  ambient_village_dusty_loop: 'ambient/ambient_village_dusty_loop.wav',
 } as const;
 
 export type SoundKey = keyof typeof SOUND_MANIFEST | string;
