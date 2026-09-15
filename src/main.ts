@@ -45,6 +45,12 @@ import scopeSystem from './weapons/ScopeSystem';
 import scopeOverlay from './ui/ScopeOverlay';
 import explosionDamage from './weapons/ExplosionDamageResolver';
 import { TraversalPrompt } from './ui/TraversalPrompt';
+// --- Document V: vehicles ---------------------------------------------------
+import { VehicleSystem } from './vehicles/VehicleSystem';
+import { VehicleHUD } from './ui/VehicleHUD';
+import { VehiclePrompt } from './ui/VehiclePrompt';
+import { TeleportPadSystem } from './world/TeleportPadSystem';
+import PROTOTYPE_TELEPORTS from './world/PrototypeTeleports';
 import LevelLoader from './environment/LevelLoader';
 import AudioManager from './audio/AudioManager';
 import bindGameAudio from './audio/GameAudioBindings';
@@ -226,6 +232,63 @@ const killPlaneGuard = {
   },
 };
 engine.registerUpdatable(killPlaneGuard);
+
+// --- Document V: vehicle system + teleport pads -----------------------------
+// VehicleSystem is the single owner of character<->vehicle: entering,
+// exiting, seat occupancy and camera placement. It sits above the per-domain
+// handling models (land/air/sea) and below nothing — gameplay talks to it,
+// never to a Vehicle directly.
+const vehicleHUD = new VehicleHUD();
+const vehiclePrompt = new VehiclePrompt();
+const vehicleSystem = new VehicleSystem({
+  scene: levelLoader.scene,
+  camera: engine.sceneManager.getCamera(),
+  input: engine.inputManager,
+  physics,
+  assetLoader: engine.assetLoader,
+  player: playerController,
+  hud: vehicleHUD,
+  prompt: vehiclePrompt,
+});
+engine.registerUpdatable(vehicleSystem);
+
+const teleportPads = new TeleportPadSystem(
+  levelLoader.scene, playerController, engine.inputManager,
+);
+engine.registerUpdatable({
+  update: (dt: number): void => {
+    // Pads are disabled while driving: the confirm key is the same one that
+    // gets you out of a vehicle, and a car parked on a pad would otherwise
+    // pop the chooser every frame.
+    if (!vehicleSystem.isRiding) teleportPads.update(dt);
+  },
+});
+
+/**
+ * Populate the prototype map once it finishes loading.
+ *
+ * Bound to the level-loaded event rather than called once at boot, because
+ * the pads live in the shell .glb and the vehicles must be re-spawned every
+ * time the level is (re)loaded.
+ */
+async function populatePrototype(levelId: string): Promise<void> {
+  if (levelId !== 'prototype') return;
+  const bound = teleportPads.bindFromScene(levelLoader.scene, PROTOTYPE_TELEPORTS);
+  console.info(`[prototype] bound ${bound} teleport pads`);
+
+  // Two Humvees at the hub, one of each variant, angled so the player can
+  // see both from spawn.
+  await vehicleSystem.spawn('military_car', new THREE.Vector3(-9, 0.6, 14), 0.25);
+  await vehicleSystem.spawn('military_car_gunner', new THREE.Vector3(9, 0.6, 14), -0.25);
+  // One on the driving course, so teleporting there has something to drive.
+  await vehicleSystem.spawn('military_car', new THREE.Vector3(70, 0.6, 70), Math.PI / 2);
+}
+
+eventBus.on('level:loaded', (payload: unknown) => {
+  const id = (payload as { levelId?: string } | undefined)?.levelId
+    ?? levelLoader.current?.id;
+  if (id) void populatePrototype(id);
+});
 
 void handsRig.load().then(() => {
   viewmodel.setArmRig(handsRig); // may re-run the equip attach (race guard)
@@ -501,6 +564,9 @@ throwableEffects.start();
 void smokeVolume.load(engine.assetLoader, levelLoader.scene);
 
 const equipmentHUD = new EquipmentHUD(equipmentManager);
+/** Tracks the last applied weapon-HUD visibility so it is only written on
+ *  change, not every frame. */
+let weaponHudHidden = false;
 const disorientOverlays = new DisorientOverlays();
 const minimap = new Minimap(radarContacts, {
   getPlayerX: () => playerController.getPosition().x,
@@ -762,7 +828,10 @@ engine.setPostRenderHook((renderer) => {
   // skipped entirely — cheaper than hiding the meshes, and it also drops the
   // masked 3PS head meshes (which live on the viewmodel layer in 1PS) from
   // ever being drawn.
-  if (perspective.viewmodelVisible) {
+  // Document V: riding a vehicle is a forced third-person exterior view, so
+  // the first-person arms/weapon pass is skipped for the same reason as 3PS.
+  // Without this the rifle floats in front of the chase camera.
+  if (perspective.viewmodelVisible && !vehicleSystem.isRiding) {
     viewmodel.renderPass(renderer, engine.sceneManager.getScene());
   }
   drawCalls.viewmodel = renderer.info.render.calls;
@@ -970,6 +1039,15 @@ engine.registerUpdatable({
     smokeVolume.update(dt);
     audioManager.update(dt);
     equipmentHUD.update();
+    // Weapon-only HUD follows the ride state. The ammo counter and crosshair
+    // describe a gun the driver is not holding, and the ammo block sits
+    // exactly where the vehicle HUD draws speed and gear.
+    const ridingNow = vehicleSystem.isRiding;
+    if (ridingNow !== weaponHudHidden) {
+      weaponHudHidden = ridingNow;
+      hud.setWeaponHudVisible(!ridingNow);
+      equipmentHUD.element.style.display = ridingNow ? 'none' : '';
+    }
     disorientOverlays.setSmokeAmount(smokeVolume.occlusionAt(eyeOf()));
     disorientOverlays.update();
     minimap.update(dt);
@@ -1374,6 +1452,9 @@ Object.assign((window as unknown as { __OPERATOR__: Record<string, unknown> })._
   // screenshot cannot make. RAPIER rides along because constructing a Ray
   // needs the same module instance the world was built with.
   physics, RAPIER, playerCollider, calloutZones: calloutZoneRegistry,
+  // Document V: the harness drives the vehicle system headlessly to prove
+  // entering, driving and exiting actually work.
+  vehicleSystem, teleportPads,
 });
 // ---------------------------------------------------------------------------
 // End TEMPORARY block.

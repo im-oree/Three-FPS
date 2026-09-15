@@ -202,6 +202,29 @@ try {
     `suspended=${entered.suspended}`);
   check('vehicle HUD shown on entry', entered.hudVisible === '1', `opacity=${entered.hudVisible}`);
 
+  // --- 12b. Weapon HUD yields to the vehicle HUD ---------------------------
+  //
+  // The ammo block is drawn in the same corner as the vehicle speed/gear
+  // readout, and the crosshair belongs to a gun the driver is not holding.
+  const hudSwap = await page.evaluate(() => {
+    const vis = (sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return 'missing';
+      return getComputedStyle(el).display === 'none' ? 'hidden' : 'shown';
+    };
+    return {
+      riding: window.__OPERATOR__.vehicleSystem.isRiding,
+      ammo: vis('.hud__ammo'),
+      crosshair: vis('.hud__crosshair'),
+      equipment: vis('.hud__equipment'),
+    };
+  });
+  check('weapon HUD hides while driving, vehicle HUD takes over',
+    hudSwap.riding === true && hudSwap.ammo === 'hidden'
+      && hudSwap.crosshair === 'hidden' && hudSwap.equipment === 'hidden',
+    JSON.stringify(hudSwap));
+
+
   // --- 6. Camera is third-person exterior ---------------------------------
   // The hard requirement: never an interior camera. Prove the camera is
   // OUTSIDE the vehicle's bounding box and behind it.
