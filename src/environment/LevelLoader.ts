@@ -28,6 +28,8 @@ import type ColliderFactory from '../physics/ColliderFactory';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
 import type { AssetLoader } from '../core/AssetLoader';
 import type { CullingHandle, FrustumCullingManager } from '../core/FrustumCullingManager';
+import StaticBatcher from '../core/quality/StaticBatcher';
+import type RenderQualityManager from '../core/quality/RenderQualityManager';
 
 /** Optional dependencies required only by Document K/L prop-built levels. */
 export interface LevelBuilderDeps {
@@ -37,6 +39,9 @@ export interface LevelBuilderDeps {
   /** Global union culling (SceneManager-owned). Optional so exact-array
    *  levels and old call sites stay source-compatible. */
   culling?: FrustumCullingManager;
+  /** Render-cost owner: supplies the shadow box, occluders and the active
+   *  quality preset (batch cell size, LOD distances, cull scaling). */
+  quality?: RenderQualityManager;
 }
 
 /** Collision nodes inside a shell .glb carry this prefix (Document L §2). */
@@ -62,6 +67,10 @@ export class LevelLoader {
   private hdriSky: HDRISkyManager | null = null;
   /** Document N: heightfield terrain body, removed wholesale on unload. */
   private terrainBody: RAPIER.RigidBody | null = null;
+  /** Static-geometry merges for this level; disposed on unload. */
+  private batcher: StaticBatcher | null = null;
+  /** LOD nodes produced by the batcher — need an explicit per-frame update. */
+  private readonly lodNodes: THREE.LOD[] = [];
 
   constructor(
     private readonly colliderFactory: ColliderFactory,
@@ -111,6 +120,18 @@ export class LevelLoader {
     this.mapBuilder?.update(dt);
   }
 
+  /**
+   * Pick the LOD level for every batched cell. THREE.LOD.autoUpdate would do
+   * this inside the render call, once PER CAMERA — which means the top-down
+   * minimap capture (an 80 m-high camera) would drag every batch to its
+   * lowest detail and leave it there for the player's own render pass in the
+   * same frame. Driving it once, explicitly, from the player's camera is both
+   * cheaper and correct.
+   */
+  updateLODs(camera: THREE.Camera): void {
+    for (const lod of this.lodNodes) lod.update(camera);
+  }
+
   async load(levelId: string): Promise<LevelDefinition> {
     this.unloadCurrentLevel();
     const def = getLevel(levelId);
@@ -133,6 +154,11 @@ export class LevelLoader {
     if (def.propManifest) await this.buildProps(def);
     if (def.hdri) await this.applyHDRI(def);
     this.buildDummies(def);
+    // Occluders come from the placed buildings, so this must follow props.
+    this.registerOccluders();
+    // Batching runs LAST: every static mesh this level will ever have must
+    // already exist, because merging bakes world transforms into vertices.
+    this.batchStaticGeometry();
 
     // Yield one frame so a caller awaiting this sees the progress bar paint.
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -161,6 +187,11 @@ export class LevelLoader {
       this.builderDeps?.physics.world.removeRigidBody(this.terrainBody);
       this.terrainBody = null;
     }
+
+    this.builderDeps?.quality?.onLevelUnloaded();
+    this.batcher?.dispose();
+    this.batcher = null;
+    this.lodNodes.length = 0;
 
     for (const handle of this.cullingHandles) handle.release();
     this.cullingHandles.length = 0;
@@ -197,15 +228,149 @@ export class LevelLoader {
     const sun = new THREE.DirectionalLight(0xfff2e0, def.sunIntensity);
     sun.position.set(18, 34, 12);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    const r = def.groundHalfSize;
-    sun.shadow.camera.left = -r;
-    sun.shadow.camera.right = r;
-    sun.shadow.camera.top = r;
-    sun.shadow.camera.bottom = -r;
-    sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 100;
     this.levelRoot.add(hemi, sun);
+    this.levelRoot.add(sun.target);
+
+    // The shadow camera used to be sized to `groundHalfSize` — 75 m on
+    // Firing Range, so a 150x150 m box. That is ~13 texels per metre on a
+    // 2048 map (a blurry smear) AND it forced every shadow caster in the
+    // whole level through the depth pass every frame. ShadowDirector instead
+    // keeps a much smaller, texel-snapped box centred on the player: sharper
+    // shadows from fewer casters. Size and resolution come from the active
+    // quality preset.
+    const quality = this.builderDeps?.quality;
+    if (quality) {
+      quality.shadows.setSun(sun);
+    } else {
+      // No quality manager (bare/exact-array call sites): keep the old
+      // whole-map behaviour so those levels are unaffected.
+      sun.shadow.mapSize.set(2048, 2048);
+      const r = def.groundHalfSize;
+      sun.shadow.camera.left = -r;
+      sun.shadow.camera.right = r;
+      sun.shadow.camera.top = r;
+      sun.shadow.camera.bottom = -r;
+      sun.shadow.camera.near = 1;
+      sun.shadow.camera.far = 100;
+    }
+  }
+
+  /**
+   * Merge this level's static scenery into a few large meshes.
+   *
+   * Runs after every other build step because merging bakes world transforms
+   * into vertex data: anything that still needs its own transform, or that
+   * another system toggles/animates individually, must be excluded rather
+   * than merged and then discovered to be immovable.
+   */
+  private batchStaticGeometry(): void {
+    const quality = this.builderDeps?.quality;
+    if (!quality) return;
+    const preset = quality.current;
+
+    const batcher = new StaticBatcher({
+      cellSize: preset.batchCellSize,
+      lodDistance: preset.lodDistance,
+      lodStrength: preset.lodStrength,
+    });
+
+    // Everything the batcher must NOT take.
+    const propPool = this.mapBuilder?.propPool;
+    const protectedRoots = new Set<THREE.Object3D>();
+    if (propPool) {
+      // Wind-swaying trees and dynamic (pooled, physics-driven) props keep
+      // their own nodes: batching would freeze them in place forever.
+      for (const obj of propPool.getBatchExclusions()) protectedRoots.add(obj);
+    }
+    for (const dummy of this.dummies) protectedRoots.add(dummy);
+
+    const skip = (o: THREE.Object3D): boolean => {
+      if (protectedRoots.has(o)) return true;
+      // Collision-only nodes are invisible and must stay individually
+      // addressable; lights, cameras and helpers are not geometry.
+      if (COLLECTION_PREFIX.test(o.name)) return true;
+      return false;
+    };
+
+    // Two roots to sweep: the level shell (terrain, perimeter, skyline) lives
+    // under levelRoot, but the ~1700 meshes that actually dominate the draw
+    // call count are the placed props — buildings assembled from dozens of
+    // kit panels each — and those hang off PropPool's own group.
+    let taken = batcher.collect(this.levelRoot, skip);
+    if (propPool) taken += batcher.collect(propPool.rootGroup, skip);
+    if (taken === 0) { batcher.dispose(); return; }
+
+    const result = batcher.build();
+    if (result.stats.batches === 0) { batcher.dispose(); return; }
+
+    // Swap the originals out for the merges. The consumed meshes are only
+    // removed if they actually ended up inside a batch (build() drops
+    // single-mesh buckets), so `consumed` is filtered against what survived.
+    const batchRoot = new THREE.Group();
+    batchRoot.name = 'StaticBatches';
+    batchRoot.matrixAutoUpdate = false;
+    for (const obj of result.objects) {
+      batchRoot.add(obj);
+      if ((obj as THREE.LOD).isLOD) this.lodNodes.push(obj as THREE.LOD);
+    }
+    this.levelRoot.add(batchRoot);
+
+    // Hide (don't destroy) the source meshes: their geometry may be shared
+    // with prop sources still in the asset cache, and ballistics/collision
+    // hold references to some of them. Hiding removes the draw call, which
+    // is the entire point, without breaking any of those relationships.
+    let removed = 0;
+    for (const src of result.consumed) {
+      if (!src.parent) continue;
+      if (src.visible) { src.visible = false; removed += 1; }
+    }
+
+    // The merged batches take over culling duty from the meshes they
+    // replaced. They are frustum-only (no distance band: a batch spans a
+    // whole cell) and NOT occludable (a batch's sphere is usually larger
+    // than the occluders themselves, so the proof would never hold anyway).
+    if (this.builderDeps?.culling) {
+      for (const obj of result.objects) {
+        const sphere = new THREE.Box3().setFromObject(obj)
+          .getBoundingSphere(new THREE.Sphere());
+        this.cullingHandles.push(this.builderDeps.culling.registerSphere(obj, sphere, {
+          id: `batch:${obj.name}`,
+          margin: 1.5,
+          // Batch cells are deliberately kept near occluder scale (see
+          // batchCellSize), so a cell CAN be provably hidden behind a wall —
+          // and hiding one removes a whole merged draw call, which is the
+          // best return the occlusion test can get.
+          occludable: true,
+        }));
+      }
+    }
+
+    this.batcher = batcher;
+    console.log(
+      `[LevelLoader] static batching: ${result.stats.sourceMeshes} meshes -> `
+      + `${result.stats.batches} batches (${removed} draw calls removed, `
+      + `${result.stats.triangles} tris, LOD ${result.stats.lodTriangles} tris).`,
+    );
+  }
+
+  /**
+   * Register the level's big solid buildings as occluders.
+   *
+   * Only large closed volumes qualify: the whole value of the occlusion stage
+   * is that a warehouse hides everything behind it, and a fence or a palm
+   * tree hides nothing reliably while still costing a test every frame.
+   */
+  private registerOccluders(): void {
+    const quality = this.builderDeps?.quality;
+    if (!quality) return;
+    const propPool = this.mapBuilder?.propPool;
+    if (!propPool) return;
+    let count = 0;
+    for (const box of propPool.getOccluderBoxes()) {
+      quality.occlusion.addOccluder(box);
+      count += 1;
+    }
+    if (count) console.log(`[LevelLoader] ${count} occluders registered.`);
   }
 
   private buildGround(def: LevelDefinition): void {
@@ -345,6 +510,7 @@ export class LevelLoader {
       this.colliderFactory,
       this.builderDeps.assetLoader,
       this.builderDeps.culling ?? null,
+      this.builderDeps.quality ?? null,
     );
     await this.mapBuilder.build(
       def.propManifest, def.propPoolSizes ?? {}, def.windSwayPropTypes ?? [],

@@ -6,13 +6,14 @@
  * WeaponManager, ...) plug in exclusively through registerUpdatable(), so
  * this file never imports them.
  */
-import type { WebGLRenderer } from 'three';
+import type { Vector3, WebGLRenderer } from 'three';
 import AssetLoader from './AssetLoader';
 import Clock from './Clock';
 import InputManager from './InputManager';
 import Renderer from './Renderer';
 import SceneManager from './SceneManager';
 import gameStateManager from '../state/GameStateManager';
+import RenderQualityManager from './quality/RenderQualityManager';
 import Debug from '../utils/Debug';
 
 /** Anything the Engine should tick once per frame, in registration order. */
@@ -26,6 +27,10 @@ export class Engine {
   readonly renderer: Renderer;
   readonly inputManager: InputManager;
   readonly assetLoader: AssetLoader;
+  /** Owns every render-cost decision (presets, adaptive resolution, shadow
+   *  box, occlusion). Constructed after the renderer, since it inspects the
+   *  live GL context to guess the hardware tier. */
+  readonly quality: RenderQualityManager;
   readonly debug: Debug;
 
   private readonly updatables: Updatable[] = [];
@@ -34,6 +39,9 @@ export class Engine {
   private postRenderHook: ((renderer: WebGLRenderer) => void) | null = null;
   /** FPS/TPS Spec §1: supplies the world pass's layer mask (perspective). */
   private worldPassMaskProvider: (() => number) | null = null;
+  /** Supplies the player's world position to the shadow director, which
+   *  keeps the sun's shadow box centred on them. */
+  private focusProvider: (() => Vector3 | null) | null = null;
   private rafHandle: number | null = null;
   private running = false;
 
@@ -57,6 +65,12 @@ export class Engine {
     // drive the crosshair, and must ALSO tick while paused so a hit marker
     // cannot freeze mid-flash on the frozen frame behind the menu.
     for (const updatable of this.alwaysUpdatables) updatable.update(dt);
+
+    // Quality BEFORE culling: the adaptive resolution controller judges the
+    // frame that just finished, and the shadow director re-centres the sun's
+    // shadow box on the player. The culling union that follows must see the
+    // final shadow/occluder state for this frame.
+    this.quality.update(dt, this.focusProvider?.() ?? null);
 
     // Global culling: every camera that will draw this frame is now in its
     // final pose, so the union-visibility pass runs exactly once here, ahead
@@ -92,6 +106,13 @@ export class Engine {
     this.renderer = new Renderer(canvas, this.sceneManager);
     this.inputManager = new InputManager();
     this.assetLoader = new AssetLoader(this.renderer.getRenderer());
+    this.quality = new RenderQualityManager(this.renderer.getRenderer());
+    this.renderer.attachQuality(this.quality);
+    // The occlusion stage is evaluated from the player's camera only; the
+    // culling union keeps every other registered camera authoritative.
+    this.sceneManager.culling.setOcclusion(
+      this.quality.occlusion, this.sceneManager.getCamera(),
+    );
     this.debug = new Debug(this.inputManager, this.renderer.getRenderer());
 
     this.registerUpdatable(this.debug);
@@ -120,6 +141,11 @@ export class Engine {
   /** FPS/TPS Spec §1: PerspectiveController drives the world-pass mask. */
   setWorldPassMaskProvider(provider: (() => number) | null): void {
     this.worldPassMaskProvider = provider;
+  }
+
+  /** Tell the shadow director where the player is (shadow box centre). */
+  setFocusProvider(provider: (() => Vector3 | null) | null): void {
+    this.focusProvider = provider;
   }
 
   registerUpdatable(obj: Updatable): void {

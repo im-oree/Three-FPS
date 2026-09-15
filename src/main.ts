@@ -124,6 +124,7 @@ const levelLoader = new LevelLoader(colliderFactory, {
   assetLoader: engine.assetLoader,
   renderer: engine.renderer.getRenderer(),
   culling: engine.sceneManager.culling,
+  quality: engine.quality,
 });
 const arena = levelLoader; // legacy alias: same `.scene`/`.update(dt)` surface
 engine.sceneManager.setScene(levelLoader.scene);
@@ -162,6 +163,10 @@ const playerController = new PlayerController(
 );
 engine.registerUpdatable(playerController);
 engine.registerUpdatable({ update: (dt: number) => physics.update(dt) });
+// The sun's shadow box follows the player (ShadowDirector): sharper shadows
+// from a small fraction of the casters. Registered here rather than inside
+// the Engine, which must never import gameplay systems.
+engine.setFocusProvider(() => playerController.getPosition());
 
 // --- Document 2.5 viewmodel stack (§10 required files) ------------------------
 const sway = new WeaponSway();
@@ -982,6 +987,9 @@ engine.registerUpdatable({
     impactEffect.update(dt);
     tracerEffect.update(dt);
     arena.update(dt);
+    // Batched-cell LOD selection, driven ONCE from the player's camera (see
+    // LevelLoader.updateLODs for why THREE.LOD.autoUpdate is off).
+    levelLoader.updateLODs(engine.sceneManager.getCamera());
   },
 });
 

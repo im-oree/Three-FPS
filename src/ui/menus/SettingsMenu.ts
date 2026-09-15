@@ -112,10 +112,21 @@ export class SettingsMenu implements Screen {
     const body = div('tab-body');
     this.bodies.set('video', body);
 
+    // RenderQualityManager owns what each tier means and listens for the
+    // write on the event bus, so the menu stays a pure settings surface.
     const quality = settingsStore.get<string>('video.quality', 'High');
-    body.appendChild(choiceRow('Quality Preset', ['Low', 'Medium', 'High'], quality, (choice) => {
-      // Document 5 only STORES this; Document 6 decides what it changes.
-      settingsStore.set('video.quality', choice);
+    body.appendChild(choiceRow(
+      'Quality Preset',
+      ['Potato', 'Low', 'Medium', 'High', 'Ultra'],
+      quality,
+      (choice) => { settingsStore.set('video.quality', choice); },
+    ));
+
+    // The safety net for weak hardware: render below native resolution and
+    // upscale, trading sharpness for a stable frame rate. On by default.
+    const adaptive = settingsStore.get<boolean>('video.adaptiveResolution', true);
+    body.appendChild(toggle('Adaptive Resolution', adaptive, (on) => {
+      settingsStore.set('video.adaptiveResolution', on);
     }));
 
     const fov = settingsStore.get<number>('baseFOV', 90);

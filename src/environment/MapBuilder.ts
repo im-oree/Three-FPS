@@ -14,6 +14,7 @@ import type { PhysicsWorld } from '../physics/PhysicsWorld';
 import type ColliderFactory from '../physics/ColliderFactory';
 import PropPool from './props/PropPool';
 import type { FrustumCullingManager } from '../core/FrustumCullingManager';
+import type RenderQualityManager from '../core/quality/RenderQualityManager';
 import { resolvePropDefinition, preloadColliderData } from './props/PropCatalog';
 import WindSwayAnimator from './props/WindSwayAnimator';
 
@@ -40,8 +41,11 @@ export class MapBuilder {
     colliderFactory: ColliderFactory,
     assetLoader: AssetLoader,
     culling: FrustumCullingManager | null = null,
+    quality: RenderQualityManager | null = null,
   ) {
-    this.propPool = new PropPool(scene, physics, colliderFactory, assetLoader, culling);
+    this.propPool = new PropPool(
+      scene, physics, colliderFactory, assetLoader, culling, quality,
+    );
   }
 
   /** Build from a fetched manifest; poolSize overrides come from the level def. */
@@ -91,6 +95,9 @@ export class MapBuilder {
       for (const model of this.propPool.getPlacedModels(propTypeId)) {
         swayNodes += this.windSway.registerTree(model);
       }
+      // Swaying trees rotate their crowns every frame, so they must survive
+      // static batching as individual objects.
+      this.propPool.excludeTypeFromBatching(propTypeId);
     }
 
     // All instances placed → derive per-group union bounds for global culling.
