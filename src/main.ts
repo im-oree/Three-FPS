@@ -282,6 +282,13 @@ async function populatePrototype(levelId: string): Promise<void> {
   await vehicleSystem.spawn('military_car_gunner', new THREE.Vector3(9, 0.6, 14), -0.25);
   // One on the driving course, so teleporting there has something to drive.
   await vehicleSystem.spawn('military_car', new THREE.Vector3(70, 0.6, 70), Math.PI / 2);
+
+  // Helicopters on the pads. The HELIPADS teleport drops the player at
+  // (-46, -24) facing +X, so the nearest pad at (-62, -24) is dead ahead.
+  // Nose them -Z (north, down the open apron) so a first take-off is not
+  // immediately into the hangars.
+  await vehicleSystem.spawn('utility_helicopter', new THREE.Vector3(-62, 0.1, -24), 0);
+  await vehicleSystem.spawn('utility_helicopter', new THREE.Vector3(-95, 0.1, -40), 0.4);
 }
 
 eventBus.on('level:loaded', (payload: unknown) => {

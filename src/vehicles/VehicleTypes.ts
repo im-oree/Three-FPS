@@ -153,13 +153,52 @@ export interface AirHandling {
   readonly stallSpeed: number;
   /** Lift per (m/s)^2 of airspeed. */
   readonly liftCoefficient: number;
+  /**
+   * Quadratic drag, as a pure 1/m coefficient in `a = -k * v * |v|` (an
+   * ACCELERATION, like maxThrust — not a force). This is what sets top speed:
+   * at equilibrium `k * topSpeed^2` equals the forward acceleration the craft
+   * can generate, so `k ~= availableAccel / topSpeed^2`.
+   */
   readonly dragCoefficient: number;
+  /**
+   * Quadratic drag on the vertical axis only, same units as
+   * `dragCoefficient`. Much larger for rotary craft, which climb into their
+   * own downwash. Sets the climb rate: `sqrt(excessThrust / k)`.
+   */
+  readonly verticalDragCoefficient?: number;
+  /**
+   * Rotary only. Maximum nose-down/up angle the cyclic will command, radians.
+   * This caps forward acceleration, so it also caps achievable top speed:
+   * `a_fwd = maxThrust * sin(maxPitchAngle)`.
+   */
+  readonly maxPitchAngle?: number;
+  /** Rotary only. Maximum commanded bank angle, radians. */
+  readonly maxBankAngle?: number;
   /** Control authority in radians/second at full deflection. */
   readonly pitchRate: number;
   readonly rollRate: number;
   readonly yawRate: number;
   /** How strongly the airframe self-levels; 0 for a jet, high for a heli. */
   readonly stability: number;
+  /**
+   * How fast the stick's commanded rate is reached, per second. Low values
+   * feel heavy and cargo-like; high values feel twitchy and aerobatic.
+   */
+  readonly controlResponse?: number;
+  /**
+   * Engine/rotor spool rate, fraction of full power per second. 0.35 means
+   * roughly three seconds from cold to full thrust — enough that a helicopter
+   * has to wind up before it will leave the pad.
+   */
+  readonly spoolRate?: number;
+  /** Visual rotor speed in radians/second at full spool. */
+  readonly rotorRPM?: number;
+  /** Height of the origin above the ground when resting on the gear. */
+  readonly groundRestHeight?: number;
+  /** Ground friction while the gear carries weight. */
+  readonly groundFriction?: number;
+  /** Altitude above which thrust bleeds off, giving a soft ceiling. */
+  readonly serviceCeiling?: number;
   /** Rotary only: vertical thrust range. */
   readonly collectiveMin?: number;
   readonly collectiveMax?: number;

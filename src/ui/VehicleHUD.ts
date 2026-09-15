@@ -68,10 +68,18 @@ export class VehicleHUD {
 
     // Exponential smoothing, frame-rate independent.
     const k = 1 - Math.exp(-9 * dt);
-    const kmh = Math.abs(state.forwardSpeed) * 3.6;
+    // Aircraft show AIRSPEED (the magnitude of the velocity vector), not the
+    // component along the nose. A helicopter descending nose-down has almost
+    // no along-nose velocity, so forwardSpeed would read ~0 while it is
+    // actually moving fast -- exactly when a pilot most needs the number.
+    const speed = state.medium === 'air'
+      ? state.velocity.length()
+      : Math.abs(state.forwardSpeed);
+    const kmh = speed * 3.6;
     this.shownSpeed += (kmh - this.shownSpeed) * k;
     this.shownLoad += (state.throttleLoad - this.shownLoad) * k;
-    this.shownAltitude += (state.altitude - this.shownAltitude) * k;
+    const alt = Number.isFinite(state.altitude) ? state.altitude : 0;
+    this.shownAltitude += (alt - this.shownAltitude) * k;
 
     const ctx = this.ctx;
     ctx.clearRect(0, 0, W, H);

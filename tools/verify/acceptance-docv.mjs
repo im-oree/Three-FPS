@@ -120,7 +120,16 @@ try {
       grounded: v.state.grounded,
     }));
   });
-  check('vehicles spawned', fleet.length === 3, JSON.stringify(fleet.map((f) => f.type)));
+  // Assert the fleet's COMPOSITION, not a magic count: adding a vehicle to the
+  // prototype map is a normal, expected change and must not fail this suite,
+  // whereas a missing type genuinely is a regression.
+  const types = fleet.map((f) => f.type);
+  const haveCars = types.filter((t) => t.startsWith('military_car')).length;
+  check(
+    'vehicles spawned',
+    fleet.length >= 3 && haveCars >= 3,
+    JSON.stringify(types),
+  );
   check(
     'four-seat car has four seats',
     fleet.some((f) => f.type === 'military_car' && f.seats === 4),

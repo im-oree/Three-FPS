@@ -126,6 +126,25 @@ export const DEFAULT_KEY_BINDINGS = {
   vehicleHorn: 'KeyH',
   /** Right the vehicle after a roll-over. */
   vehicleFlip: 'KeyR',
+  /**
+   * Flight controls. Collective (climb/descend) is the one axis with no
+   * on-foot equivalent, so it gets dedicated keys; everything else reuses
+   * the movement binds exactly as driving does:
+   *
+   *   W/S          cyclic pitch  (nose down / nose up)
+   *   A/D          cyclic roll   (bank left / right)
+   *   Q/E          pedals        (yaw left / right)
+   *   Space / Ctrl collective    (climb / descend)
+   *
+   * Yaw sits on Q/E because those are already the lean binds on foot — the
+   * same fingers, the same "rotate me" meaning. E is shared with vehicleEnter
+   * but the two can never be live at once: enter is only polled when NOT
+   * seated, and the pedals only when seated as pilot.
+   */
+  vehicleCollectiveUp: 'Space',
+  vehicleCollectiveDown: 'ControlLeft',
+  vehicleYawLeft: 'KeyQ',
+  vehicleYawRight: 'KeyE',
   debugToggle: 'F3',
   debugGizmos: 'F4', // Document C §3.6 socket/joint orientation axes
   pause: 'Escape',

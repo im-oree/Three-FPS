@@ -40,6 +40,7 @@ import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { buildMilitaryCarPattern } from './builders/MilitaryCarBuilder.js';
+import { buildHelicopterPattern } from './builders/HelicopterBuilder.js';
 
 const OUT_DIR = 'assets/models/vehicles';
 fs.mkdirSync(OUT_DIR, { recursive: true });
@@ -68,17 +69,35 @@ const CONTRACTS = {
     'Turret_Yaw', 'Turret_Pitch', 'Socket_Muzzle_Turret',
     'Socket_Exhaust',
   ],
+  utility_helicopter: [
+    'Root_Vehicle',
+    'Rotor_Main', 'Rotor_Tail',
+    'Blur_Main', 'Blur_Tail',
+    'Rotor_MainBlades', 'Rotor_TailBlades',
+    'Socket_Seat_Pilot', 'Socket_Seat_Copilot',
+    'Socket_Seat_CrewLeft', 'Socket_Seat_CrewRight',
+    'Socket_Door_Pilot', 'Socket_Door_Copilot',
+    'Socket_Door_CrewLeft', 'Socket_Door_CrewRight',
+    'Socket_Muzzle_DoorL', 'Socket_Muzzle_DoorR',
+    'Socket_Exhaust_L', 'Socket_Exhaust_R',
+    'Socket_RotorWash',
+  ],
 };
 
 /** Hard triangle ceilings. Exceeding one fails the build. */
 const TRI_BUDGET = {
   military_car: 3600,
   military_car_gunner: 4400,
+  // A helicopter is a bigger airframe than a car and carries eight rotor
+  // blades, so it gets more room -- but nothing like the 256 KB the old
+  // box-stacked builder produced.
+  utility_helicopter: 5200,
 };
 
 const VEHICLES = [
   { id: 'military_car', build: () => buildMilitaryCarPattern({ turret: false }) },
   { id: 'military_car_gunner', build: () => buildMilitaryCarPattern({ turret: true }) },
+  { id: 'utility_helicopter', build: () => buildHelicopterPattern({ doorGuns: true }) },
 ];
 
 function countTriangles(root) {
@@ -95,19 +114,37 @@ function countTriangles(root) {
   return { tris, meshes, materials: materials.size };
 }
 
-function checkContract(id, root) {
+function checkContract(id, names) {
   const required = CONTRACTS[id] ?? [];
-  const missing = required.filter((n) => !root.getObjectByName(n));
-  return missing;
+  return required.filter((n) => !names.has(n));
 }
 
 async function exportGLB(root, file) {
   const exporter = new GLTFExporter();
   const buffer = await new Promise((resolve, reject) => {
-    exporter.parse(root, resolve, reject, { binary: true });
+    // onlyVisible defaults to TRUE, which silently drops every node whose
+    // .visible is false. Rotor blur discs ship hidden and are switched on at
+    // speed by the runtime, so the default quietly exported a helicopter with
+    // no blur geometry at all -- and the contract check passed, because it
+    // inspected the in-memory scene rather than the file.
+    exporter.parse(root, resolve, reject, { binary: true, onlyVisible: false });
   });
   fs.writeFileSync(file, Buffer.from(buffer));
   return fs.statSync(file).size;
+}
+
+/**
+ * Re-read the written .glb and list its node names.
+ *
+ * The contract MUST be verified against the exported file, not the scene
+ * graph it came from: the whole class of bug this gate exists to catch is
+ * "the runtime cannot find a node", and the runtime only ever sees the file.
+ */
+function nodeNamesInGLB(file) {
+  const buf = fs.readFileSync(file);
+  const jsonLen = buf.readUInt32LE(12);
+  const json = JSON.parse(buf.subarray(20, 20 + jsonLen).toString('utf8'));
+  return new Set((json.nodes ?? []).map((n) => n.name).filter(Boolean));
 }
 
 let failed = false;
@@ -118,11 +155,13 @@ for (const v of VEHICLES) {
   root.updateMatrixWorld(true);
 
   const counted = countTriangles(root);
-  const missing = checkContract(v.id, root);
   const budget = TRI_BUDGET[v.id] ?? Infinity;
 
   const file = path.join(OUT_DIR, `${v.id}.glb`);
   const bytes = await exportGLB(root, file);
+
+  // Verify against what actually landed on disk.
+  const missing = checkContract(v.id, nodeNamesInGLB(file));
 
   const overBudget = counted.tris > budget;
   if (missing.length) {

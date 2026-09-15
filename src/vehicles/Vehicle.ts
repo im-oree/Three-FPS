@@ -10,6 +10,7 @@
 import * as THREE from 'three';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
 import { LandHandlingModel } from './handling/LandHandlingModel';
+import { AirHandlingModel } from './handling/AirHandlingModel';
 import {
   emptyInput,
   type VehicleDefinition,
@@ -36,8 +37,10 @@ export class Vehicle {
   readonly state: VehicleState;
   readonly seats: SeatOccupancy[];
 
-  /** Land vehicles only; null for air/sea until those models land. */
+  /** Land vehicles only; null for air/sea. */
   readonly land: LandHandlingModel | null = null;
+  /** Air vehicles only; null for land/sea. */
+  readonly air: AirHandlingModel | null = null;
 
   private readonly input: VehicleInput = emptyInput();
   /** Wheel groups in model order FL, FR, RL, RR. */
@@ -47,6 +50,12 @@ export class Vehicle {
   private turretYaw: THREE.Object3D | null = null;
   private turretPitch: THREE.Object3D | null = null;
   private exhaustNodes: THREE.Object3D[] = [];
+  private rotorMain: THREE.Object3D | null = null;
+  private rotorTail: THREE.Object3D | null = null;
+  private blurMain: THREE.Mesh | null = null;
+  private blurTail: THREE.Mesh | null = null;
+  private bladesMain: THREE.Object3D | null = null;
+  private bladesTail: THREE.Object3D | null = null;
   /** Turret aim, radians, relative to the chassis. */
   private turretYawAngle = 0;
   private turretPitchAngle = 0;
@@ -80,6 +89,9 @@ export class Vehicle {
     if (definition.land) {
       this.land = new LandHandlingModel(definition.land, physics);
     }
+    if (definition.air) {
+      this.air = new AirHandlingModel(definition.air, physics);
+    }
   }
 
   /**
@@ -99,6 +111,26 @@ export class Vehicle {
     this.turretYaw = find('Turret_Yaw');
     this.turretPitch = find('Turret_Pitch');
 
+    // Rotor groups and their blur discs. Named rather than indexed because an
+    // aircraft may have one rotor (jet: none) or two (helicopter).
+    this.rotorMain = find('Rotor_Main');
+    this.rotorTail = find('Rotor_Tail');
+    this.blurMain = find('Blur_Main') as THREE.Mesh | null;
+    this.blurTail = find('Blur_Tail') as THREE.Mesh | null;
+
+    // Object3D.clone() shares materials between clones, so every helicopter
+    // spawned from the same .glb pointed at ONE blur material. Each vehicle
+    // then wrote its own rotor opacity into it every frame and the last one
+    // to update won -- a parked aircraft held the disc at 0 while another was
+    // at full RPM. These two materials are per-instance animated state, so
+    // each instance needs its own copy.
+    for (const blur of [this.blurMain, this.blurTail]) {
+      if (!blur) continue;
+      blur.material = (blur.material as THREE.Material).clone();
+    }
+    this.bladesMain = find('Rotor_MainBlades');
+    this.bladesTail = find('Rotor_TailBlades');
+
     for (const { seat } of this.seats) {
       const node = find(seat.socket);
       if (node) this.seatNodes.set(seat.id, node);
@@ -116,6 +148,10 @@ export class Vehicle {
       this.land.reset(position, yaw);
       this.root.position.copy(this.land.position);
       this.root.quaternion.copy(this.land.quaternion);
+    } else if (this.air) {
+      this.air.reset(position, yaw);
+      this.root.position.copy(this.air.position);
+      this.root.quaternion.copy(this.air.quaternion);
     } else {
       this.root.position.copy(position);
       this.root.rotation.set(0, yaw, 0);
@@ -241,7 +277,47 @@ export class Vehicle {
       this.root.quaternion.copy(this.land.quaternion);
       this.applyWheelVisuals();
     }
+    if (this.air) {
+      this.air.step(dt, this.input, this.state);
+      this.root.position.copy(this.air.position);
+      this.root.quaternion.copy(this.air.quaternion);
+      this.applyRotorVisuals();
+    }
     this.applyTurretVisuals();
+  }
+
+  /**
+   * Spin the rotors and cross-fade to blur discs.
+   *
+   * Four discrete blades turning at flight RPM alias badly at 60 Hz — they
+   * appear to rotate slowly backwards, or freeze. Every flight sim solves this
+   * the same way: fade the blades out and a translucent disc in as RPM rises.
+   * The crossover is deliberately wide so neither pops.
+   */
+  private applyRotorVisuals(): void {
+    if (!this.air) return;
+    const spin = this.air.rotorSpin;
+    const angle = this.air.rotorAngle;
+
+    if (this.rotorMain) this.rotorMain.rotation.y = angle;
+    // The tail rotor turns several times faster than the main, as on the
+    // real aircraft, and about its own local X.
+    if (this.rotorTail) this.rotorTail.rotation.x = angle * 4.6;
+
+    // Below `solid` the blades alone are drawn; above `disc` only the blur.
+    const solid = 0.25;
+    const disc = 0.62;
+    const blend = THREE.MathUtils.clamp((spin - solid) / (disc - solid), 0, 1);
+
+    if (this.bladesMain) this.bladesMain.visible = blend < 1;
+    if (this.bladesTail) this.bladesTail.visible = blend < 1;
+
+    for (const b of [this.blurMain, this.blurTail]) {
+      if (!b) continue;
+      b.visible = blend > 0;
+      const mat = b.material as THREE.Material & { opacity: number };
+      mat.opacity = blend * 0.55;
+    }
   }
 
   /**

@@ -62,9 +62,10 @@ const result = await page.evaluate(async (payload) => {
   sun.castShadow = true;
   sun.shadow.mapSize.set(1024, 1024);
   const sc = sun.shadow.camera;
-  sc.left = -6; sc.right = 6; sc.top = 6; sc.bottom = -6; sc.far = 40;
+  // Fit the shadow frustum to the MODEL, not a fixed +-6 m box. A 13.6 m
+  // helicopter fell outside the hard-coded frustum and rendered with its
+  // tail shadow sliced off square.
   scene.add(sun);
-
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(40, 40),
     new THREE.MeshStandardMaterial({ color: 0x8d8a7e, roughness: 1 }),
@@ -79,13 +80,38 @@ const result = await page.evaluate(async (payload) => {
   const centre = box.getCenter(new THREE.Vector3());
   const radius = Math.max(size.x, size.y, size.z);
 
+  // Now that the model's extent is known, size the shadow frustum to it.
+  const shadowHalf = radius * 0.8;
+  sc.left = -shadowHalf; sc.right = shadowHalf;
+  sc.top = shadowHalf; sc.bottom = -shadowHalf;
+  sc.far = radius * 6 + 20;
+  sun.position.copy(centre).add(
+    new THREE.Vector3(radius * 0.6, radius * 1.1, radius * 0.5),
+  );
+  sun.target.position.copy(centre);
+  scene.add(sun.target);
+  sc.updateProjectionMatrix();
+
   const cam = new THREE.PerspectiveCamera(38, 900 / 620, 0.1, 200);
   const shots = {};
+  // VIEW LABELS ARE DIRECTIONS THE CAMERA SITS IN, and the model faces -Z.
+  //
+  // The first version of this table had them backwards: `side: [0,0,1]` puts
+  // the camera behind the vehicle, so the file called "side" showed the rear
+  // and "rear34" showed the front. Reviewing a model against reference is
+  // worthless if the filenames lie about what you are looking at, so these
+  // are now derived from the -Z forward convention explicitly.
   const views = {
-    side: [0, 0.22, 1],
-    front: [0, 0.18, -1],
-    threequarter: [0.85, 0.34, -0.85],
-    rear34: [0.8, 0.30, 0.8],
+    // Camera on +X, looking across the flank.
+    side: [1, 0.18, 0],
+    // Camera ahead of the nose, i.e. on -Z.
+    front: [0, 0.16, -1],
+    // Camera behind the tail, on +Z.
+    rear: [0, 0.18, 1],
+    // Front three-quarter: ahead and to the right.
+    front34: [0.85, 0.32, -0.85],
+    // Rear three-quarter: behind and to the right.
+    rear34: [0.85, 0.30, 0.85],
     top: [0.01, 1, 0.01],
   };
   for (const [label, dir] of Object.entries(views)) {

@@ -37,6 +37,21 @@ const EXIT_CLEARANCE = 0.9;
 
 const PLAYER = 'player';
 
+/** Collective lever travel per second while a climb/descend key is held. */
+const COLLECTIVE_RATE = 0.85;
+/**
+ * Hands-off collective. Slightly above the 1/maxThrust*g ratio needed for a
+ * true hover so an unattended helicopter drifts gently up rather than sinking
+ * into the terrain, which reads as "still flying" instead of "crashing".
+ */
+const HOVER_COLLECTIVE = 0.62;
+/** How fast the lever eases back to HOVER_COLLECTIVE when released. */
+const COLLECTIVE_SETTLE = 1.8;
+
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
 export interface VehicleSystemDeps {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
@@ -70,6 +85,9 @@ export class VehicleSystem {
   private enterCooldown = 0;
   /** Set when the player asked to get out while still moving too fast. */
   private exitRequested = false;
+
+  /** Pilot collective lever position, persisted between frames. */
+  private collective = HOVER_COLLECTIVE;
 
   constructor(deps: VehicleSystemDeps) {
     this.deps = deps;
@@ -178,7 +196,9 @@ export class VehicleSystem {
 
     const mouse = input.getMouseDelta();
 
-    if (seat.role === 'driver') {
+    if (seat.role === 'driver' && vehicle.definition.domain === 'air') {
+      this.readPilotInput(input, vehicle, dt);
+    } else if (seat.role === 'driver') {
       // Driving reuses the on-foot movement binds so a player who rebinds
       // "left" gets a steering change too.
       const fwd = (input.isActionDown('moveForward') ? 1 : 0)
@@ -212,6 +232,57 @@ export class VehicleSystem {
     // Free-look seats pass the raw mouse to the camera instead.
     this.input.aimYaw = mouse.x;
     this.input.aimPitch = mouse.y;
+  }
+
+  /**
+   * Flight controls for the pilot seat.
+   *
+   * Two things here are deliberate and easy to get wrong.
+   *
+   * First, pitch is INVERTED relative to driving: W is "nose down", because a
+   * helicopter accelerates forward by tipping its rotor disc forward. Mapping
+   * W to "nose up" would make the aircraft brake and climb when the player
+   * expects to go faster.
+   *
+   * Second, collective is a HELD position, not an impulse. Releasing both
+   * keys must not drop the collective to zero or the aircraft falls out of
+   * the sky every time the player stops pressing; instead it settles toward
+   * the hover setting so a hands-off helicopter roughly holds its height.
+   */
+  private readPilotInput(
+    input: InputManager,
+    vehicle: Vehicle,
+    dt: number,
+  ): void {
+    const pitch = (input.isActionDown('moveForward') ? 1 : 0)
+      - (input.isActionDown('moveBackward') ? 1 : 0);
+    const roll = (input.isActionDown('moveLeft') ? 1 : 0)
+      - (input.isActionDown('moveRight') ? 1 : 0);
+    const yaw = (input.isActionDown('vehicleYawLeft') ? 1 : 0)
+      - (input.isActionDown('vehicleYawRight') ? 1 : 0);
+    const lift = (input.isActionDown('vehicleCollectiveUp') ? 1 : 0)
+      - (input.isActionDown('vehicleCollectiveDown') ? 1 : 0);
+
+    // Track the collective between frames so it behaves like a lever.
+    if (lift !== 0) {
+      this.collective = clamp(this.collective + lift * COLLECTIVE_RATE * dt, 0, 1);
+    } else {
+      // Ease back to the hover setting rather than cutting power.
+      const toward = HOVER_COLLECTIVE - this.collective;
+      this.collective += toward * Math.min(1, COLLECTIVE_SETTLE * dt);
+    }
+
+    this.input.pitch = pitch;
+    this.input.roll = roll;
+    this.input.yaw = yaw;
+    this.input.collective = this.collective;
+    // Land-only channels stay neutral so a stale value cannot leak across
+    // domains if the player swaps from a car into a helicopter.
+    this.input.throttle = 0;
+    this.input.steer = 0;
+    this.input.brake = 0;
+    this.input.handbrake = false;
+    vehicle.setInput(this.input);
   }
 
   // --- Enter / exit --------------------------------------------------------
@@ -257,6 +328,9 @@ export class VehicleSystem {
     this.riding = vehicle;
     this.ridingSeat = seat;
     this.enterCooldown = 0.35;
+    // Start every flight from the hover setting, never from whatever the
+    // previous pilot left the lever on.
+    this.collective = HOVER_COLLECTIVE;
 
     // Park the player: they stop moving, stop colliding and stop drawing.
     this.deps.player.setVehicleSuspended(true);
