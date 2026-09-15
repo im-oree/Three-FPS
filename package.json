@@ -47,7 +47,8 @@
     "verify:combat": "node tools/verify/server-combat.mjs",
     "generate:previews": "node tools/generateMapPreviews.mjs",
     "verify:previews": "node tools/generateMapPreviews.mjs --verify",
-    "verify:menu": "node tools/verify/acceptance-menu.mjs"
+    "verify:menu": "node tools/verify/acceptance-menu.mjs",
+    "verify:ai": "node tools/verify/acceptance-ai.mjs"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.20.0",

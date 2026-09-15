@@ -332,4 +332,63 @@ const { check, report } = makeCheck();
   check('a shut-down server does not keep ticking', !server.isRunning);
 }
 
+// --- terrain is part of the server's world ----------------------------------
+// Regression: sculpted levels (Firing Range, Prototype) have no ground slab --
+// their floor is a heightfield that only the CLIENT used to load. The server
+// therefore had nothing solid underfoot and every player, human and bot,
+// silently fell through the map. These lock the floor in place.
+{
+  const fs = await import('node:fs');
+  const raw = JSON.parse(fs.readFileSync('assets/collision/firingrange.json', 'utf8'));
+
+  check('a sculpted level bakes its terrain into the server collision file',
+    raw.terrain != null && Array.isArray(raw.terrain.heights),
+    raw.terrain ? `${raw.terrain.ncols}x${raw.terrain.nrows} heightfield` : 'no terrain');
+
+  check('the baked heightfield is the size it claims to be',
+    raw.terrain.heights.length === (raw.terrain.nrows + 1) * (raw.terrain.ncols + 1),
+    `${raw.terrain.heights.length} heights`);
+
+  // A bare GameServer has no level fetcher (it is injected, so the same code
+  // serves the browser and the backend). Supply the disk one, exactly as
+  // server/index.mjs does.
+  const server = new GameServer({
+    levelFetcher: async (levelId) => JSON.parse(
+      fs.readFileSync(`assets/collision/${levelId}.json`, 'utf8'),
+    ),
+  });
+  server.startMatch('firingrange');
+  await server.whenLevelReady();
+
+  check('the server loads the terrain with the level',
+    server.collision.hasTerrain, `${server.collision.boxCount} boxes + terrain`);
+
+  // The documented spawn must be standable, not mid-air.
+  const spawn = raw.spawn;
+  const ground = server.collision.terrainHeightAt(spawn[0], spawn[2]);
+  check('there is ground under the level spawn point',
+    ground !== null && Math.abs(ground - spawn[1]) < 1.5,
+    ground === null ? 'outside the field' : `ground y=${ground.toFixed(2)} vs spawn y=${spawn[1]}`);
+
+  // The real symptom: simulate a player and make sure they stop falling.
+  const id = 'p_terrain';
+  server.world.addPlayer(id);
+  const player = server.world.getPlayer(id);
+  player.px = spawn[0]; player.py = spawn[1] + 2; player.pz = spawn[2];
+  for (let i = 0; i < 120; i += 1) server.update(1 / 60);
+
+  check('a player dropped onto terrain lands instead of falling through',
+    player.grounded && player.py > -1,
+    `y=${player.py.toFixed(2)} grounded=${player.grounded}`);
+
+  // A ray fired into a hill must stop in the dirt, or bots would shoot
+  // through terrain that blocks a human.
+  const intoGround = server.collision.raycast([spawn[0], spawn[1] + 8, spawn[2]], [0, -1, 0], 50);
+  check('a ray fired at the ground hits the terrain',
+    intoGround !== null && intoGround.surface === 'dirt',
+    intoGround ? `hit ${intoGround.surface} at ${intoGround.distance.toFixed(2)} m` : 'no hit');
+
+  server.shutdown();
+}
+
 report('SERVER CORE');

@@ -114,6 +114,22 @@ try {
   check('the backend streams snapshots', snapshot.snapshot.tick > 0,
     `tick=${snapshot.snapshot.tick}`);
 
+  // --- the backend has a FLOOR ----------------------------------------------
+  // Regression: rooms used to be built with `new GameServer()` and no level
+  // fetcher, so a dedicated backend loaded no collision at all. Combined with
+  // terrain living only on the client, every player on a sculpted map fell
+  // out of the world. Prototype is one of those maps, so a player who is
+  // still near spawn height after a second of real gravity proves both
+  // halves are wired.
+  // Players ride in `playerState`, not the entity list (entities are props,
+  // vehicles and killstreaks).
+  await new Promise((r) => setTimeout(r, 1200));
+  const me = host.received.filter((m) => m.t === 'playerState').at(-1)?.state;
+  const lastTick = host.received.filter((m) => m.t === 'snapshot').at(-1).snapshot.tick;
+  check('a player on the backend stands on the ground instead of falling',
+    me !== undefined && me.pos[1] > -5,
+    me ? `y=${me.pos[1].toFixed(2)} after ${lastTick} ticks` : 'no playerState received');
+
   // --- a second player joins the SAME room ----------------------------------
   const guest = await connect(base);
   guest.send({ t: 'joinRoom', roomId: joined.room.id });

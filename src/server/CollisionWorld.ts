@@ -35,21 +35,81 @@ export interface RayHit {
   readonly boxIndex: number;
 }
 
+/**
+ * A terrain heightfield, in the same format the client feeds to Rapier.
+ *
+ * Levels built on sculpted ground (Firing Range, Prototype) have no ground
+ * slab at all — their floor IS this field. It used to be loaded only by the
+ * client's LevelLoader, which meant the SERVER had no ground on those maps
+ * and every player, human or bot, fell through the world the moment physics
+ * moved server-side. Same data, same convention, both sides.
+ */
+export interface Heightfield {
+  readonly nrows: number;
+  readonly ncols: number;
+  readonly scale: { readonly x: number; readonly y: number; readonly z: number };
+  /** Column-major: index = col * (nrows + 1) + row. See TerrainHeightfieldBuilder. */
+  readonly heights: readonly number[];
+  readonly surface: string;
+}
+
 /** A tiny gap kept between the capsule and geometry so contact is stable. */
 const SKIN = 0.001;
 
 export class CollisionWorld {
   private boxes: Box[] = [];
+  private terrain: Heightfield | null = null;
 
   get boxCount(): number { return this.boxes.length; }
 
-  load(boxes: readonly Box[]): void {
+  /** True when this level's floor is sculpted terrain rather than a slab. */
+  get hasTerrain(): boolean { return this.terrain !== null; }
+
+  /** Read-only view of the geometry, for systems that need the map's bounds
+   *  (AI navigation builds its grid from exactly this). */
+  get allBoxes(): readonly Box[] { return this.boxes; }
+
+  load(boxes: readonly Box[], terrain: Heightfield | null = null): void {
     this.boxes = [...boxes];
+    this.terrain = terrain;
   }
 
   clear(): void {
     this.boxes.length = 0;
+    this.terrain = null;
   }
+
+  /**
+   * Ground height at a world point, or null when outside the field.
+   *
+   * Bilinear across the same quad the renderer draws, so the server agrees
+   * with what the player sees to well under a centimetre.
+   */
+  terrainHeightAt(x: number, z: number): number | null {
+    const field = this.terrain;
+    if (!field) return null;
+    const { nrows, ncols, scale, heights } = field;
+    // Field is centred on the origin and spans `scale` metres.
+    const u = (x / scale.x + 0.5) * ncols;
+    const v = (z / scale.z + 0.5) * nrows;
+    if (!(u >= 0 && u <= ncols && v >= 0 && v <= nrows)) return null;
+
+    const c0 = Math.min(ncols - 1, Math.floor(u));
+    const r0 = Math.min(nrows - 1, Math.floor(v));
+    const fu = u - c0;
+    const fv = v - r0;
+    const stride = nrows + 1;
+    const h00 = heights[c0 * stride + r0];
+    const h10 = heights[(c0 + 1) * stride + r0];
+    const h01 = heights[c0 * stride + r0 + 1];
+    const h11 = heights[(c0 + 1) * stride + r0 + 1];
+    const top = h00 + (h10 - h00) * fu;
+    const bottom = h01 + (h11 - h01) * fu;
+    return (top + (bottom - top) * fv) * scale.y;
+  }
+
+  /** Surface name of the terrain, for footstep and hit audio. */
+  get terrainSurface(): string { return this.terrain?.surface ?? 'dirt'; }
 
   /**
    * Sweep an axis-aligned capsule (approximated by its bounding box) along one
@@ -90,8 +150,39 @@ export class CollisionWorld {
         else if (delta < 0 && maxZ > box.maxZ) allowed = Math.max(allowed, box.maxZ - minZ + SKIN);
       }
     }
+    // Terrain is the floor on sculpted levels. Only downward motion is
+    // clamped by it: it is a surface to stand on, not a ceiling. Sampling
+    // the capsule's centre and its four extremes keeps a body from sinking
+    // a corner into a slope it is walking across.
+    if (this.terrain && axis === 1 && delta < 0) {
+      const ground = this.highestTerrainUnder(px, pz, radius);
+      if (ground !== null && py + delta < ground) {
+        allowed = Math.max(allowed, ground - py);
+      }
+    }
+
     // A sweep must never push the body the way it was not going.
     return delta > 0 ? Math.max(0, allowed) : Math.min(0, allowed);
+  }
+
+  /**
+   * Highest terrain height under a capsule's footprint.
+   *
+   * Five samples rather than one: a single centre sample lets the downhill
+   * edge of the body clip into a slope, which reads as the feet sinking into
+   * the hill on anything steeper than a gentle rise.
+   */
+  private highestTerrainUnder(px: number, pz: number, radius: number): number | null {
+    if (!this.terrain) return null;
+    let best: number | null = null;
+    const offsets: readonly [number, number][] = [
+      [0, 0], [-radius, 0], [radius, 0], [0, -radius], [0, radius],
+    ];
+    for (const [ox, oz] of offsets) {
+      const h = this.terrainHeightAt(px + ox, pz + oz);
+      if (h !== null && (best === null || h > best)) best = h;
+    }
+    return best;
   }
 
   /**
@@ -155,6 +246,12 @@ export class CollisionWorld {
         && minY < box.maxY && maxY > box.minY
         && minZ < box.maxZ && maxZ > box.minZ) return false;
     }
+    // Buried in the hillside is not a valid pose. A small tolerance keeps a
+    // body resting exactly on a slope from reporting itself stuck.
+    if (this.terrain) {
+      const ground = this.highestTerrainUnder(px, pz, radius);
+      if (ground !== null && py < ground - 0.05) return false;
+    }
     return true;
   }
 
@@ -203,7 +300,80 @@ export class CollisionWorld {
         boxIndex: i,
       };
     }
+
+    // Terrain, if this level has any. Bullets must stop in the dirt and line
+    // of sight must be blocked by a ridge, or a bot could shoot through a
+    // hill that a player cannot.
+    const ground = this.raycastTerrain(origin, dir, best ? best.distance : maxDistance);
+    if (ground && (!best || ground.distance < best.distance)) best = ground;
+
     return best;
+  }
+
+  /**
+   * March a ray against the heightfield.
+   *
+   * Fixed-step sampling with a bisection refinement: the field is smooth and
+   * the step is well under a cell, so this cannot tunnel through a ridge, and
+   * refining only after a crossing keeps it cheap enough for the AI's
+   * per-tick raycast budget.
+   */
+  private raycastTerrain(origin: Vec3, dir: Vec3, maxDistance: number): RayHit | null {
+    if (!this.terrain) return null;
+    const [ox, oy, oz] = origin;
+    const [dx, dy, dz] = dir;
+
+    const STEP = 0.5;
+    const cellX = this.terrain.scale.x / this.terrain.ncols;
+    const cellZ = this.terrain.scale.z / this.terrain.nrows;
+    const step = Math.min(STEP, Math.max(0.25, Math.min(cellX, cellZ) * 0.5));
+
+    let previous = 0;
+    let previousAbove = true;
+    const startGround = this.terrainHeightAt(ox, oz);
+    if (startGround !== null) previousAbove = oy >= startGround;
+
+    for (let t = step; t <= maxDistance; t += step) {
+      const h = this.terrainHeightAt(ox + dx * t, oz + dz * t);
+      if (h === null) { previous = t; continue; }
+      const above = oy + dy * t >= h;
+      if (above !== previousAbove) {
+        // Crossed the surface between `previous` and `t`: bisect to refine.
+        let lo = previous, hi = t;
+        for (let i = 0; i < 12; i += 1) {
+          const mid = (lo + hi) * 0.5;
+          const hm = this.terrainHeightAt(ox + dx * mid, oz + dz * mid);
+          if (hm === null) break;
+          if ((oy + dy * mid >= hm) === previousAbove) lo = mid; else hi = mid;
+        }
+        const hit = (lo + hi) * 0.5;
+        if (hit < 0 || hit > maxDistance) return null;
+        return {
+          distance: hit,
+          point: [ox + dx * hit, oy + dy * hit, oz + dz * hit],
+          normal: this.terrainNormalAt(ox + dx * hit, oz + dz * hit),
+          surface: this.terrain.surface,
+          boxIndex: -1,
+        };
+      }
+      previous = t;
+      previousAbove = above;
+    }
+    return null;
+  }
+
+  /** Terrain normal by central difference, for ricochets and decals. */
+  private terrainNormalAt(x: number, z: number): Vec3 {
+    const e = 0.5;
+    const hL = this.terrainHeightAt(x - e, z) ?? 0;
+    const hR = this.terrainHeightAt(x + e, z) ?? 0;
+    const hD = this.terrainHeightAt(x, z - e) ?? 0;
+    const hU = this.terrainHeightAt(x, z + e) ?? 0;
+    const nx = hL - hR;
+    const nz = hD - hU;
+    const ny = 2 * e;
+    const length = Math.hypot(nx, ny, nz) || 1;
+    return [nx / length, ny / length, nz / length];
   }
 
   /** Is there clear line of sight between two points? */

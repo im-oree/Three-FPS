@@ -107,17 +107,44 @@ for (const level of LEVELS) {
     }
   }
 
+  // --- terrain -------------------------------------------------------------
+  // Sculpted levels have no ground slab: the heightfield IS their floor. It
+  // used to be loaded only by the client, so the server had nothing solid
+  // underfoot and every player fell out of the world once movement moved
+  // server-side. Inline it here so both sides load one file.
+  let terrain = null;
+  if (level.terrainCollision) {
+    const terrainFile = path.join(ROOT, level.terrainCollision.replace(/^\//, ''));
+    if (fs.existsSync(terrainFile)) {
+      const raw = JSON.parse(fs.readFileSync(terrainFile, 'utf8'));
+      terrain = {
+        nrows: raw.nrows,
+        ncols: raw.ncols,
+        scale: raw.scale,
+        heights: raw.heights,
+        surface: level.groundSurface,
+      };
+    } else {
+      console.warn(`  ! ${level.id}: terrainCollision missing at ${terrainFile}`);
+    }
+  }
+
   const payload = {
     levelId: level.id,
     spawn: level.spawn.map(round),
     spawnYaw: level.spawnYaw,
     killPlaneY: level.killPlaneY ?? -25,
     boxes,
+    ...(terrain ? { terrain } : {}),
   };
   const outFile = path.join(OUT_DIR, `${level.id}.json`);
   fs.writeFileSync(outFile, JSON.stringify(payload));
   totalBoxes += boxes.length;
-  summary.push({ level: level.id, boxes: boxes.length, kb: Math.round(fs.statSync(outFile).size / 1024) });
+  summary.push({
+    level: level.id, boxes: boxes.length,
+    terrain: terrain ? `${terrain.ncols}x${terrain.nrows}` : '-',
+    kb: Math.round(fs.statSync(outFile).size / 1024),
+  });
 }
 
 console.table(summary);

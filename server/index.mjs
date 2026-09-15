@@ -24,6 +24,7 @@ import { build } from 'esbuild';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import fsp from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -53,7 +54,24 @@ await build({
 });
 const { RoomManager, Protocol } = await import(`file://${bundle}`);
 
-const rooms = new RoomManager();
+/**
+ * Collision geometry, read from the baked files on disk.
+ *
+ * This is the backend half of LevelStore's injected fetcher (the browser half
+ * is an HTTP fetch). Without it a room has no floor: the terrain-based maps
+ * carry their ground in the same file, so a server missing this drops every
+ * player through the world.
+ */
+const collisionDir = path.join(ROOT, 'assets/collision');
+const diskLevelFetcher = async (levelId) => {
+  // Reject anything that is not a plain level id before it reaches the path:
+  // this argument arrives from a client.
+  if (!/^[a-z0-9_]+$/i.test(levelId)) throw new Error(`bad level id "${levelId}"`);
+  const file = path.join(collisionDir, `${levelId}.json`);
+  return JSON.parse(await fsp.readFile(file, 'utf8'));
+};
+
+const rooms = new RoomManager(diskLevelFetcher);
 const log = (...args) => console.log(`[backend]`, ...args);
 
 /**

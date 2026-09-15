@@ -15,6 +15,7 @@
  * tools/verify/server-purity.mjs.
  */
 import { GameServer } from './GameServer';
+import type { LevelFetcher } from './LevelStore';
 import type { RoomInfo, PlayerId, ServerTransport } from '../net/Protocol';
 
 export interface RoomOptions {
@@ -31,7 +32,7 @@ const DEFAULT_MAX_PLAYERS = 12;
 const EMPTY_ROOM_GRACE_SECONDS = 30;
 
 export class Room {
-  readonly server = new GameServer();
+  readonly server: GameServer;
   /** Seconds this room has been empty. Reset whenever anyone is present. */
   private emptyFor = 0;
 
@@ -41,7 +42,16 @@ export class Room {
     readonly levelId: string,
     readonly maxPlayers: number,
     readonly isPrivate: boolean,
-  ) {}
+    /**
+     * How this room reads collision geometry. Injected because it is the one
+     * environment-specific line: the browser fetches, the backend reads disk.
+     * A room created WITHOUT one has no floor at all — players fall out of
+     * the world — so the manager always supplies it.
+     */
+    levelFetcher?: LevelFetcher,
+  ) {
+    this.server = new GameServer(levelFetcher ? { levelFetcher } : {});
+  }
 
   get playerCount(): number { return this.server.playerCount; }
   get isFull(): boolean { return this.playerCount >= this.maxPlayers; }
@@ -82,6 +92,9 @@ export class RoomManager {
   private readonly rooms = new Map<string, Room>();
   private nextRoomNumber = 0;
 
+  /** Shared by every room this manager creates. See Room's constructor. */
+  constructor(private readonly levelFetcher?: LevelFetcher) {}
+
   get count(): number { return this.rooms.size; }
   get all(): readonly Room[] { return [...this.rooms.values()]; }
 
@@ -103,7 +116,9 @@ export class RoomManager {
       Math.min(options.maxPlayers ?? DEFAULT_MAX_PLAYERS, DEFAULT_MAX_PLAYERS),
     );
     const name = options.name.slice(0, 40).trim() || `Room ${id}`;
-    const room = new Room(id, name, options.levelId, maxPlayers, options.private ?? false);
+    const room = new Room(
+      id, name, options.levelId, maxPlayers, options.private ?? false, this.levelFetcher,
+    );
     this.rooms.set(id, room);
     return room;
   }

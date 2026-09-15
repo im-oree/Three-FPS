@@ -8,7 +8,7 @@
  * passed in here, which is the only environment-specific line.
  */
 import type { Vec3 } from '../net/Protocol';
-import type { Box } from './CollisionWorld';
+import type { Box, Heightfield } from './CollisionWorld';
 
 export interface LevelCollision {
   readonly levelId: string;
@@ -16,6 +16,8 @@ export interface LevelCollision {
   readonly spawnYaw: number;
   readonly killPlaneY: number;
   readonly boxes: readonly Box[];
+  /** Sculpted ground, on levels whose floor is terrain rather than a slab. */
+  readonly terrain: Heightfield | null;
 }
 
 /** Supplies the raw JSON for a level id. Injected, so this stays portable. */
@@ -88,6 +90,39 @@ export class LevelStore {
       spawnYaw: typeof data.spawnYaw === 'number' ? data.spawnYaw : 0,
       killPlaneY: typeof data.killPlaneY === 'number' ? data.killPlaneY : -25,
       boxes,
+      terrain: this.validateTerrain(levelId, (data as { terrain?: unknown }).terrain),
+    };
+  }
+
+  /**
+   * Validate the heightfield, if the level has one.
+   *
+   * The grid size is checked against the array length rather than trusted:
+   * a transposed or truncated field is the classic heightfield bug, and it
+   * would show up as players sinking into the ground far from here.
+   */
+  private validateTerrain(levelId: string, raw: unknown): Heightfield | null {
+    if (raw === undefined || raw === null) return null;
+    const t = raw as Partial<Heightfield>;
+    const { nrows, ncols, scale, heights } = t;
+    if (typeof nrows !== 'number' || typeof ncols !== 'number'
+      || !Array.isArray(heights) || !scale) {
+      throw new Error(`level "${levelId}": terrain is malformed`);
+    }
+    const expected = (nrows + 1) * (ncols + 1);
+    if (heights.length !== expected) {
+      throw new Error(
+        `level "${levelId}": terrain has ${heights.length} heights, expected ${expected}`,
+      );
+    }
+    if (heights.some((h) => typeof h !== 'number' || !Number.isFinite(h))) {
+      throw new Error(`level "${levelId}": terrain has a non-finite height`);
+    }
+    return {
+      nrows, ncols,
+      scale: { x: scale.x, y: scale.y ?? 1, z: scale.z },
+      heights,
+      surface: typeof t.surface === 'string' ? t.surface : 'dirt',
     };
   }
 }

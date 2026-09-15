@@ -39,6 +39,9 @@ import { CollisionWorld } from './CollisionWorld';
 import { LevelStore, type LevelFetcher } from './LevelStore';
 import { MovementSystem } from './systems/MovementSystem';
 import { CombatSystem } from './systems/CombatSystem';
+import { AISystem } from './systems/AISystem';
+import { registerBuiltinCapabilities } from './ai/registerCapabilities';
+import type { AgentOptions } from './ai/AgentController';
 
 /**
  * Longest real interval a single update() call will simulate. Beyond this the
@@ -96,7 +99,42 @@ export class GameServer {
     // movement must have consumed this tick's input before combat runs.
     this.combat = new CombatSystem(this.collision);
     this.addSystem(this.combat);
+    // AI runs last: it reads the world the other systems just produced and
+    // queues input for the NEXT tick, exactly like a network client whose
+    // packet arrives between frames. Registering it here rather than leaving
+    // it to the caller keeps the in-process server and the hosted backend
+    // from booting with different system sets.
+    registerBuiltinCapabilities();
+    this.ai = new AISystem(this.collision);
+    this.addSystem(this.ai);
   }
+
+  /** Bots. Public so a room can fill empty slots. */
+  readonly ai: AISystem;
+
+  /**
+   * Add a bot to the match.
+   *
+   * A bot is a PLAYER: it goes through world.addPlayer like any client, gets
+   * a spawn point, health and a loadout, and appears in snapshots. The only
+   * difference is where its input comes from. Nothing downstream of
+   * queueInput can tell the difference, which is the whole contract.
+   */
+  addBot(name?: string, options: AgentOptions = {}): PlayerId {
+    const id = `bot:${name ?? this.nextBotIndex()}`;
+    this.world.addPlayer(id, options.loadout);
+    this.ai.addAgent(id, options);
+    return id;
+  }
+
+  /** Remove a bot and its agent together. */
+  removeBot(id: PlayerId): void {
+    this.ai.removeAgent(id);
+    this.world.removePlayer(id);
+  }
+
+  private botCounter = 0;
+  private nextBotIndex(): number { this.botCounter += 1; return this.botCounter; }
 
   // --- lifecycle -----------------------------------------------------------
 
@@ -244,8 +282,9 @@ export class GameServer {
     if (!this.levels) return;
     const cached = this.levels.peek(levelId);
     if (cached) {
-      this.collision.load(cached.boxes);
+      this.collision.load(cached.boxes, cached.terrain);
       this.world.setSpawnPoints([{ pos: cached.spawn, yaw: cached.spawnYaw }]);
+      this.ai.buildNavigation();
       return;
     }
     // Until the real geometry lands, a floor: without one, every player
@@ -256,8 +295,11 @@ export class GameServer {
     this.levelLoad = this.levels.load(levelId).then((data) => {
       // The match may have ended or changed level while this was in flight.
       if (this.levelId !== levelId) return;
-      this.collision.load(data.boxes);
+      this.collision.load(data.boxes, data.terrain);
       this.world.setSpawnPoints([{ pos: data.spawn, yaw: data.spawnYaw }]);
+      // Navigation is derived from the collision that just landed, so it can
+      // never describe a different world than the one players collide with.
+      this.ai.buildNavigation();
     }).catch((error: unknown) => {
       console.warn(`[server] level "${levelId}" collision failed to load:`, error);
     });
