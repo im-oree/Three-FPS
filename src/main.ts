@@ -17,6 +17,7 @@ import bindShakeTriggers from './camera/ShakeTriggers';
 import explosionEffect, { EXPLOSION_PRESETS } from './vfx/ExplosionEffect';
 import vehicleShowcase from './vfx/VehicleShowcase';
 import killstreakManager from './killstreaks/KillstreakManager';
+import { DEFAULT_KILLSTREAK_LOADOUT } from './killstreaks/definitions';
 import UAVKillstreakController from './killstreaks/controllers/UAVKillstreakController';
 import AirstrikeKillstreakController from './killstreaks/controllers/AirstrikeKillstreakController';
 import AttackHelicopterKillstreakController from './killstreaks/controllers/AttackHelicopterKillstreakController';
@@ -656,6 +657,12 @@ killstreakManager.attach({
   },
   getLevelDefinition: () => levelLoader.current,
 });
+// Restore the player's saved killstreak loadout. Without this the menu's
+// choice only took effect while the menu was open -- the manager fell back
+// to DEFAULT_KILLSTREAK_LOADOUT on every boot.
+killstreakManager.setLoadout(settingsStore.get<string[]>(
+  'loadout.killstreaks', [...DEFAULT_KILLSTREAK_LOADOUT],
+));
 killstreakManager.start();
 groundTargeting.attach(levelLoader.scene, physics);
 
@@ -1462,6 +1469,9 @@ Object.assign((window as unknown as { __OPERATOR__: Record<string, unknown> })._
   // Document V: the harness drives the vehicle system headlessly to prove
   // entering, driving and exiting actually work.
   vehicleSystem, teleportPads,
+  // Killstreak behaviour harness: reads the shared hittable registry to prove
+  // the gunship is destructible by the same path as everything else.
+  ballistics,
 });
 // ---------------------------------------------------------------------------
 // End TEMPORARY block.

@@ -29,6 +29,7 @@ import * as THREE from 'three';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import fs from 'node:fs';
 import { buildHelicopterPattern } from './builders/HelicopterBuilder.js';
+import { buildGunshipPattern } from './builders/GunshipBuilder.js';
 import { buildUAVPattern } from './builders/UAVBuilder.js';
 import { buildMissilePattern } from './builders/MissileBuilder.js';
 import { buildJetPattern } from './builders/JetBuilder.js';
@@ -48,6 +49,10 @@ const CONTRACTS = {
     'Root_Vehicle', 'Bone_MainRotorHub', 'Bone_TailRotorHub',
     'Socket_Pilot', 'Socket_Muzzle_R', 'Socket_Muzzle_L',
     'Socket_Hardpoint_R', 'Socket_Hardpoint_L',
+    // Own airframe: rotor groups the animator drives directly, plus the
+    // blur discs that replace the blades at speed.
+    'Rotor_Main', 'Rotor_Tail', 'Blur_Main', 'Blur_Tail',
+    'Rotor_MainBlades', 'Rotor_TailBlades',
   ],
   uav_drone: [
     'Root_Vehicle', 'Bone_PropHub', 'Socket_CameraGimbal', 'Socket_Exhaust',
@@ -74,7 +79,7 @@ const DIR_FOR = (id) => (
 );
 
 const vehicles = [
-  ['attack_helicopter', () => buildHelicopterPattern().root],
+  ['attack_helicopter', () => buildGunshipPattern().root],
   ['uav_drone', () => buildUAVPattern().root],
   ['guided_missile', () => buildMissilePattern().root],
   ['fighter_jet', () => buildJetPattern().root],
@@ -86,17 +91,22 @@ const vehicles = [
 
 let failed = false;
 
+/**
+ * Node names present in a written .glb.
+ *
+ * The contract must be checked against the FILE, not the scene graph it came
+ * from: the runtime only ever sees the file, and the export step itself can
+ * drop nodes (see onlyVisible below).
+ */
+function nodeNamesInGLB(file) {
+  const buf = fs.readFileSync(file);
+  const jsonLen = buf.readUInt32LE(12);
+  const json = JSON.parse(buf.subarray(20, 20 + jsonLen).toString('utf8'));
+  return new Set((json.nodes ?? []).map((n) => n.name).filter(Boolean));
+}
+
 for (const [id, build] of vehicles) {
   const root = build();
-
-  // Validate the node contract before export — a missing hub or socket is far
-  // cheaper to catch here than as a silent no-op at runtime.
-  const missing = CONTRACTS[id].filter((name) => !root.getObjectByName(name));
-  if (missing.length) {
-    console.error(`[generateVehicleModels] ${id} MISSING: ${missing.join(', ')}`);
-    failed = true;
-    continue;
-  }
 
   let meshes = 0;
   root.traverse((o) => { if (o.isMesh) meshes += 1; });
@@ -106,15 +116,31 @@ for (const [id, build] of vehicles) {
   box.getSize(size);
 
   const exporter = new GLTFExporter();
-  exporter.parse(root, (gltf) => {
-    const path = `${DIR_FOR(id)}/${id}.glb`;
-    fs.writeFileSync(path, Buffer.from(gltf));
-    console.log(
-      `[generateVehicleModels] ${path} — ${meshes} parts, `
-      + `${size.x.toFixed(1)} x ${size.y.toFixed(1)} x ${size.z.toFixed(1)} m, `
-      + `${(gltf.byteLength ?? gltf.length) / 1024 | 0} KiB`,
-    );
-  }, (err) => { console.error(err); process.exit(1); }, { binary: true });
+  // onlyVisible defaults to TRUE and silently drops every node whose .visible
+  // is false -- which is exactly how rotor blur discs ship. Without this the
+  // exported gunship has no blur geometry and the runtime's cross-fade fades
+  // to nothing.
+  await new Promise((resolve) => {
+    exporter.parse(root, (gltf) => {
+      const path = `${DIR_FOR(id)}/${id}.glb`;
+      fs.writeFileSync(path, Buffer.from(gltf));
+
+      // Validate the node contract against what actually landed on disk.
+      const missing = CONTRACTS[id].filter((name) => !nodeNamesInGLB(path).has(name));
+      if (missing.length) {
+        console.error(`[generateVehicleModels] ${id} MISSING: ${missing.join(', ')}`);
+        failed = true;
+      }
+
+      console.log(
+        `[generateVehicleModels] ${path} — ${meshes} parts, `
+        + `${size.x.toFixed(1)} x ${size.y.toFixed(1)} x ${size.z.toFixed(1)} m, `
+        + `${(gltf.byteLength ?? gltf.length) / 1024 | 0} KiB`,
+      );
+      resolve();
+    }, (err) => { console.error(err); process.exit(1); },
+    { binary: true, onlyVisible: false });
+  });
 }
 
 if (failed) process.exit(1);

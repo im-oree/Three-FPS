@@ -34,7 +34,8 @@
     "generate:firingrange": "npm run generate:firingrange:props && npm run generate:firingrange:shell && npm run generate:firingrange:manifest",
     "validate:cinematics": "node tools/verify/validate-cinematics.mjs",
     "verify:acceptance:docn": "node tools/verify/acceptance-docn.mjs",
-    "verify:shots:docn": "node tools/verify/docn-shots.mjs"
+    "verify:shots:docn": "node tools/verify/docn-shots.mjs",
+    "verify:gunship": "node tools/verify/acceptance-gunship.mjs"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.20.0",

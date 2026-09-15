@@ -1,16 +1,25 @@
 /**
  * AttackHelicopterKillstreakController.ts — Document H §2.3 / Document I §5.
  *
- * Spawns the helicopter, flies a waypoint patrol with banked turns, acquires
- * radar-visible targets with a line-of-sight check, and engages them through
- * the SHARED BallisticsSystem damage path — proving any entity, not just the
- * player, can drive the same pipeline.
+ * Spawns the gunship, flies a CONTINUOUS ORBIT that follows the player who
+ * called it, acquires targets preferring those near that player, and engages
+ * them through the SHARED BallisticsSystem damage path — proving any entity,
+ * not just the player, can drive the same pipeline.
  *
- * SCOPE BOUNDARY: the patrol/acquire/engage logic here is deliberately simple
- * and is explicitly a PLACEHOLDER for a future AI document's behaviour tree.
- * What is real and load-bearing today is the seam: the helicopter is a
- * genuine registered hittable that can be shot down, and its lifecycle is
- * driven entirely by the generic killstreak framework.
+ * FLIGHT MODEL
+ * ------------
+ * The previous version flew between four fixed waypoints computed once at
+ * activation. Two consequences, both visible in play: the aircraft stopped
+ * dead the moment it reached a corner it could not quite touch, and because
+ * the corners were baked from the spawn position it drifted permanently out
+ * of the fight as the player moved on.
+ *
+ * This one integrates an ORBIT ANGLE instead of chasing waypoints. The orbit
+ * centre eases toward the owner continuously, so the gunship covers the
+ * player without ever being stapled to them, and there is no waypoint to
+ * arrive at and stall on. Engagement pulls the orbit radius in rather than
+ * abandoning the circle, so the aircraft keeps moving while it shoots — a
+ * hovering gunship is both trivially shootable and reads as broken.
  */
 import * as THREE from 'three';
 import eventBus from '../../core/EventBus';
@@ -24,6 +33,8 @@ import {
 const _target = new THREE.Vector3();
 const _dir = new THREE.Vector3();
 const _muzzle = new THREE.Vector3();
+const _desired = new THREE.Vector3();
+const _owner = new THREE.Vector3();
 
 interface HeliTarget {
   object: THREE.Object3D;
@@ -33,8 +44,12 @@ interface HeliTarget {
 export class AttackHelicopterKillstreakController extends KillstreakControllerInterface {
   private model: THREE.Object3D | null = null;
   private animator: VehicleAnimator | null = null;
-  private readonly waypoints: THREE.Vector3[] = [];
-  private waypointIndex = 0;
+  /** Centre of the orbit; eases toward the owner every frame. */
+  private readonly orbitCentre = new THREE.Vector3();
+  /** Current angle around that centre, radians. Integrated, never snapped. */
+  private orbitAngle = 0;
+  /** Smoothed orbit radius, pulled in when engaging. */
+  private orbitRadius = HELICOPTER.PATROL_RADIUS;
   private scanTimer = 0;
   private fireTimer = 0;
   private podToggle = false;
@@ -50,25 +65,47 @@ export class AttackHelicopterKillstreakController extends KillstreakControllerIn
     this.elapsed = 0;
     this.health = HELICOPTER.HEALTH;
 
-    // A square patrol loop around the spawn point. A level may later override
-    // this via metadata; the fallback is deliberately always valid.
-    const centre = context.getPlayerPosition().clone();
-    const r = HELICOPTER.PATROL_RADIUS;
-    const h = HELICOPTER.ENGAGE_ALTITUDE;
-    this.waypoints.length = 0;
-    for (const [dx, dz] of [[1, 1], [1, -1], [-1, -1], [-1, 1]]) {
-      this.waypoints.push(new THREE.Vector3(centre.x + dx * r, h, centre.z + dz * r));
-    }
-    this.waypointIndex = 0;
+    // Start the orbit centred on the caller and enter the circle from
+    // whichever side the player is facing away from, so the gunship sweeps
+    // INTO view rather than materialising in front of them.
+    this.orbitCentre.copy(context.getPlayerPosition());
+    this.orbitCentre.y = HELICOPTER.ENGAGE_ALTITUDE;
+    this.orbitAngle = Math.random() * Math.PI * 2;
+    this.orbitRadius = HELICOPTER.PATROL_RADIUS;
 
     void context.assetLoader.loadModel('vehicles/attack_helicopter.glb').then((model) => {
       if (!this.context) return;
       this.model = model;
-      model.position.copy(this.waypoints[0]);
+      model.position.set(
+        this.orbitCentre.x + Math.cos(this.orbitAngle) * this.orbitRadius,
+        HELICOPTER.ENGAGE_ALTITUDE,
+        this.orbitCentre.z + Math.sin(this.orbitAngle) * this.orbitRadius,
+      );
+      // Drive the real rotor groups. The Bone_* aliases still exist for
+      // compatibility but they are children of these, so spinning the group
+      // spins everything mounted on it.
       this.animator = new VehicleAnimator(model, [
-        { nodeName: 'Bone_MainRotorHub', axis: 'y', radiansPerSecond: 26 },
-        { nodeName: 'Bone_TailRotorHub', axis: 'y', radiansPerSecond: 48 },
+        { nodeName: 'Rotor_Main', axis: 'y', radiansPerSecond: 26 },
+        { nodeName: 'Rotor_Tail', axis: 'x', radiansPerSecond: 48 },
       ]);
+
+      // A killstreak gunship is always at full RPM, so show the blur discs
+      // and hide the discrete blades outright -- four/five blades spinning at
+      // 26 rad/s strobe badly at 60 Hz.
+      for (const name of ['Blur_Main', 'Blur_Tail']) {
+        const blur = model.getObjectByName(name) as THREE.Mesh | undefined;
+        if (!blur) continue;
+        blur.visible = true;
+        const mat = blur.material as THREE.Material & { opacity: number };
+        // clone(): this material is per-instance animated state and the .glb
+        // hands every clone the same one.
+        blur.material = mat.clone();
+        (blur.material as THREE.Material & { opacity: number }).opacity = 0.55;
+      }
+      for (const name of ['Rotor_MainBlades', 'Rotor_TailBlades']) {
+        const blades = model.getObjectByName(name);
+        if (blades) blades.visible = false;
+      }
       this.animator.snapToFullSpeed();
       context.scene.add(model);
 
@@ -112,40 +149,85 @@ export class AttackHelicopterKillstreakController extends KillstreakControllerIn
       this.acquireTarget();
     }
 
-    if (this.engaging) this.engage(dt);
-    else this.patrol(dt);
+    // A dead target must not keep the gunship circling a corpse.
+    if (this.engaging && !this.engaging.object.parent) this.engaging = null;
+
+    this.fly(dt);
+    if (this.engaging) this.shoot(dt);
   }
 
-  private patrol(dt: number): void {
-    if (!this.model) return;
-    const wp = this.waypoints[this.waypointIndex];
-    const toWp = _dir.copy(wp).sub(this.model.position);
-    const distance = toWp.length();
-    if (distance < 4) {
-      this.waypointIndex = (this.waypointIndex + 1) % this.waypoints.length;
-      return;
+  /**
+   * One flight routine for both states.
+   *
+   * Splitting patrol and engage into separate movement functions is what let
+   * the old controller stall: each had its own idea of where the aircraft
+   * should be and neither guaranteed progress. Here the orbit always
+   * advances; engaging only biases the centre and tightens the radius.
+   */
+  private fly(dt: number): void {
+    if (!this.model || !this.context) return;
+
+    // 1. The orbit centre chases the owner, or the target while engaging.
+    _owner.copy(this.context.getPlayerPosition());
+    if (this.engaging) {
+      this.engaging.object.getWorldPosition(_target);
+      // Bias toward the target but stay anchored to the player, so the
+      // gunship never wanders the whole map after one distant contact.
+      _desired.lerpVectors(_owner, _target, HELICOPTER.ENGAGE_CENTRE_BIAS);
+    } else {
+      _desired.copy(_owner);
     }
-    toWp.normalize();
-    this.model.position.addScaledVector(toWp, HELICOPTER.PATROL_SPEED * dt);
-    this.faceAlong(toWp, dt, -0.25);
+    _desired.y = HELICOPTER.ENGAGE_ALTITUDE;
+
+    // Frame-rate independent easing. Deliberately slow: the gunship should
+    // follow the player's general area, not track them like a camera.
+    const follow = 1 - Math.exp(-HELICOPTER.FOLLOW_RATE * dt);
+    this.orbitCentre.lerp(_desired, follow);
+
+    // 2. Tighten the orbit when engaging so the guns are in range.
+    const wantRadius = this.engaging
+      ? HELICOPTER.ENGAGE_STANDOFF : HELICOPTER.PATROL_RADIUS;
+    this.orbitRadius += (wantRadius - this.orbitRadius)
+      * (1 - Math.exp(-HELICOPTER.RADIUS_RATE * dt));
+
+    // 3. Advance the orbit. Angular rate derives from linear speed so the
+    //    aircraft flies at a constant airspeed regardless of radius --
+    //    a fixed angular rate makes a tight orbit crawl and a wide one race.
+    this.orbitAngle += (HELICOPTER.PATROL_SPEED / Math.max(6, this.orbitRadius)) * dt;
+
+    const nextX = this.orbitCentre.x + Math.cos(this.orbitAngle) * this.orbitRadius;
+    const nextZ = this.orbitCentre.z + Math.sin(this.orbitAngle) * this.orbitRadius;
+    _dir.set(nextX - this.model.position.x, 0, nextZ - this.model.position.z);
+
+    // 4. Move toward the orbit point, capped at the aircraft's top speed, so
+    //    a sudden centre jump cannot teleport it.
+    const step = HELICOPTER.PATROL_SPEED * dt;
+    const travel = _dir.length();
+    if (travel > 1e-4) {
+      this.model.position.addScaledVector(_dir.normalize(), Math.min(step, travel));
+    }
+
+    // 5. Ease altitude separately; terrain and the orbit are independent.
+    const targetY = HELICOPTER.ENGAGE_ALTITUDE;
+    this.model.position.y += (targetY - this.model.position.y)
+      * (1 - Math.exp(-1.5 * dt));
+
+    // 6. Point the nose where it is going, or at the target while engaging,
+    //    and bank into the turn.
+    if (this.engaging) {
+      this.engaging.object.getWorldPosition(_target);
+      _dir.copy(_target).sub(this.model.position).normalize();
+      this.faceAlong(_dir, dt, -0.12);
+    } else if (travel > 1e-4) {
+      this.faceAlong(_dir, dt, -0.28);
+    }
   }
 
-  private engage(dt: number): void {
+  /** Trigger discipline, independent of where the aircraft is flying. */
+  private shoot(dt: number): void {
     if (!this.model || !this.engaging) return;
     this.engaging.object.getWorldPosition(_target);
-
-    // Hold station above and short of the target rather than flying into it.
-    const hover = _target.clone();
-    hover.y = HELICOPTER.ENGAGE_ALTITUDE;
-    const toHover = _dir.copy(hover).sub(this.model.position);
-    if (toHover.length() > HELICOPTER.ENGAGE_STANDOFF) {
-      toHover.normalize();
-      this.model.position.addScaledVector(toHover, HELICOPTER.PATROL_SPEED * dt);
-    }
-
-    // Nose onto the target so the pods point the right way.
-    const aim = _dir.copy(_target).sub(this.model.position).normalize();
-    this.faceAlong(aim, dt, -0.1);
+    if (this.model.position.distanceTo(_target) > HELICOPTER.ENGAGE_RANGE) return;
 
     this.fireTimer -= dt;
     if (this.fireTimer > 0) return;
@@ -182,13 +264,23 @@ export class AttackHelicopterKillstreakController extends KillstreakControllerIn
   }
 
   /**
-   * Pick the nearest radar-visible hittable with clear line of sight. Uses the
-   * same registry the UAV reads and the same physics the player's bullets use.
+   * Pick a target, preferring threats NEAR THE OWNER.
+   *
+   * Nearest-to-the-aircraft was the obvious rule and the wrong one: it made
+   * the gunship peel off after whatever happened to drift under its nose,
+   * which is the opposite of what a player expects from a streak they called
+   * to cover themselves. The score blends both distances, weighted toward the
+   * owner, and only falls back to far contacts when nothing is close.
+   *
+   * Uses the same hittable registry the UAV reads and the same physics query
+   * the player's bullets use.
    */
   private acquireTarget(): void {
     if (!this.model || !this.context) return;
     let best: HeliTarget | null = null;
-    let bestDistance: number = HELICOPTER.ENGAGE_RANGE;
+    let bestScore = Infinity;
+
+    _owner.copy(this.context.getPlayerPosition());
 
     for (const entry of ballistics.hittables) {
       const meta = entry.metadata as { radarVisible?: boolean; surfaceType?: string };
@@ -197,15 +289,22 @@ export class AttackHelicopterKillstreakController extends KillstreakControllerIn
       if (!visible) continue;
 
       entry.object.getWorldPosition(_target);
-      const distance = this.model.position.distanceTo(_target);
-      if (distance >= bestDistance) continue;
+      const fromHeli = this.model.position.distanceTo(_target);
+      if (fromHeli >= HELICOPTER.ENGAGE_RANGE) continue;
+
+      const fromOwner = _owner.distanceTo(_target);
+      if (fromOwner > HELICOPTER.MAX_OWNER_DISTANCE) continue;
+
+      const score = fromHeli + fromOwner * HELICOPTER.OWNER_PROXIMITY_WEIGHT;
+      if (score >= bestScore) continue;
 
       // Line of sight, via the same Rapier query the player's shots use.
+      // Checked last because it is by far the most expensive test.
       _dir.copy(_target).sub(this.model.position).normalize();
-      const hit = this.context.physics.castRayStatic(this.model.position, _dir, distance - 1.2);
+      const hit = this.context.physics.castRayStatic(this.model.position, _dir, fromHeli - 1.2);
       if (hit) continue; // blocked by geometry
 
-      bestDistance = distance;
+      bestScore = score;
       best = { object: entry.object, takeDamage: entry.metadata.takeDamage };
     }
     this.engaging = best;

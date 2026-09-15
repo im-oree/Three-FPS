@@ -1214,6 +1214,11 @@ export const KILLSTREAK = {
   MAX_CONCURRENT: 2,
   /** Fired-and-forget streaks still block re-entry for this long. */
   MIN_ACTIVATION_GAP: 0.4,
+  /**
+   * How many streaks a loadout equips, of however many exist. The HUD renders
+   * whatever the manager hands it, so raising this needs no UI change.
+   */
+  SLOTS: 3,
 } as const;
 
 /** UAV recon orbit + radar ping cadence (Document I §4). */
@@ -1253,6 +1258,31 @@ export const HELICOPTER = {
   MINIGUN_FIRE_RATE_RPM: 1800,
   MINIGUN_DAMAGE: 9,
   HEALTH: 500,
+  /**
+   * How fast the orbit centre eases toward the player, per second. Low on
+   * purpose: the gunship should cover the player's area, not be welded above
+   * their head. At 0.35 it closes ~30% of the gap each second, so a sprinting
+   * player pulls it along without it ever appearing to chase.
+   */
+  FOLLOW_RATE: 0.35,
+  /** How fast the orbit radius eases between patrol and engage widths. */
+  RADIUS_RATE: 0.8,
+  /**
+   * When engaging, how far the orbit centre shifts from the owner toward the
+   * target (0 = ignore the target, 1 = abandon the owner). 0.55 leans into
+   * the fight while keeping the aircraft tethered to the player who called
+   * it, which is the behaviour the streak is supposed to provide.
+   */
+  ENGAGE_CENTRE_BIAS: 0.55,
+  /**
+   * Target scoring. A contact this far from the owner is treated as
+   * equivalent to one at the owner's feet twice as far from the aircraft --
+   * the gunship prefers threats NEAR ITS PLAYER, and only ranges further out
+   * when nothing is close.
+   */
+  OWNER_PROXIMITY_WEIGHT: 1.8,
+  /** Contacts beyond this from the owner are ignored entirely. */
+  MAX_OWNER_DISTANCE: 120,
 } as const;
 
 /** Throwables (Document F). Shared across all three tactical devices. */

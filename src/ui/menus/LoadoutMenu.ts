@@ -20,6 +20,11 @@ import { SKINS } from '../../customization/SkinManager';
 import settingsStore from '../../core/SettingsStore';
 import equipmentManager from '../../equipment/EquipmentManager';
 import { ALL_THROWABLES } from '../../equipment/definitions';
+import killstreakManager from '../../killstreaks/KillstreakManager';
+import { KILLSTREAK } from '../../utils/Constants';
+import {
+  ALL_KILLSTREAKS, DEFAULT_KILLSTREAK_LOADOUT,
+} from '../../killstreaks/definitions';
 import { button, div, el, uiSound } from '../dom';
 import type SkinManager from '../../customization/SkinManager';
 import type { AssetLoader } from '../../core/AssetLoader';
@@ -143,7 +148,10 @@ export class LoadoutMenu implements Screen {
     }
     host.appendChild(list);
 
-    if (slot === 'secondary') this.buildTacticalRow(host);
+    if (slot === 'secondary') {
+      this.buildTacticalRow(host);
+      this.buildKillstreakRow(host);
+    }
     host.appendChild(div('section-heading', 'Finish'));
     const row = div('skin-row');
     for (const skin of SKINS) {
@@ -183,6 +191,71 @@ export class LoadoutMenu implements Screen {
       row.appendChild(b);
     }
     host.appendChild(row);
+  }
+
+  /**
+   * Killstreak selection: four exist, three are equipped.
+   *
+   * Modelled as a toggle set rather than three independent dropdowns, because
+   * the real constraint is "choose a subset of a fixed size" and a dropdown
+   * per slot lets the player pick the same streak three times. Clicking an
+   * equipped streak removes it; clicking an unequipped one takes the oldest
+   * slot, so the list always holds exactly KILLSTREAK.SLOTS entries and the
+   * player never has to deselect before selecting.
+   */
+  private buildKillstreakRow(host: HTMLElement): void {
+    host.appendChild(div('section-heading', 'Killstreaks (pick 3)'));
+    const equipped = this.getEquippedKillstreaks();
+
+    const row = div('btn-row');
+    for (const streak of ALL_KILLSTREAKS) {
+      const slot = equipped.indexOf(streak.id);
+      const isEquipped = slot >= 0;
+      // Show the slot number so the mapping to the 1/2/3 activation keys is
+      // visible at a glance -- the order matters at runtime.
+      const label = isEquipped
+        ? `${slot + 1}. ${streak.iconLabel}`
+        : streak.iconLabel;
+
+      const b = button(label, 'btn btn--small', () => {
+        const next = [...this.getEquippedKillstreaks()];
+        const at = next.indexOf(streak.id);
+        if (at >= 0) {
+          // Deselecting would leave a gap in a fixed-size loadout, so instead
+          // swap in the first streak that is NOT equipped. The set always
+          // holds exactly KILLSTREAK.SLOTS entries, which is what the HUD and
+          // the 1/2/3 activation keys assume.
+          const replacement = ALL_KILLSTREAKS
+            .find((k) => !next.includes(k.id));
+          if (!replacement) return;   // nothing to swap to
+          next[at] = replacement.id;
+        } else {
+          if (next.length >= KILLSTREAK.SLOTS) next.shift();
+          next.push(streak.id);
+        }
+        this.setEquippedKillstreaks(next);
+        this.rebuild();
+      });
+      if (isEquipped) b.classList.add('btn--active');
+      b.title = `${streak.displayName} — ${streak.killsRequired} kills`;
+      row.appendChild(b);
+    }
+    host.appendChild(row);
+  }
+
+  private getEquippedKillstreaks(): string[] {
+    const stored = settingsStore.get<string[]>(
+      'loadout.killstreaks', [...DEFAULT_KILLSTREAK_LOADOUT],
+    );
+    // Drop ids that no longer exist, so removing a streak from the game
+    // cannot leave a saved loadout pointing at nothing.
+    const valid = stored.filter((id) => ALL_KILLSTREAKS.some((k) => k.id === id));
+    return valid.length ? valid : [...DEFAULT_KILLSTREAK_LOADOUT];
+  }
+
+  private setEquippedKillstreaks(ids: string[]): void {
+    settingsStore.set('loadout.killstreaks', ids);
+    killstreakManager.setLoadout(ids);
   }
 
   // --- 3D preview ----------------------------------------------------------
