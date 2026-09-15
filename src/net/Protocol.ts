@@ -102,7 +102,15 @@ export type C2S =
    * player's menu cannot freeze everyone else's match. The client must never
    * assume the world stopped.
    */
-  | { readonly t: 'requestPause'; readonly paused: boolean };
+  | { readonly t: 'requestPause'; readonly paused: boolean }
+  // --- rooms ---------------------------------------------------------------
+  // A room is one match with its own GameServer. In-process there is exactly
+  // one; on a hosted backend there are many. The client speaks the same
+  // messages either way, so "host a game" is not a separate code path.
+  | { readonly t: 'createRoom'; readonly name: string; readonly levelId: string; readonly maxPlayers?: number; readonly private?: boolean }
+  | { readonly t: 'joinRoom'; readonly roomId: string }
+  | { readonly t: 'leaveRoom' }
+  | { readonly t: 'listRooms' };
 
 export interface LoadoutSpec {
   readonly primaryId: string;
@@ -174,7 +182,22 @@ export type S2C =
   | { readonly t: 'killstreakState'; readonly slots: readonly KillstreakSlotState[] }
   | { readonly t: 'playerState'; readonly state: PlayerPublicState }
   /** The server confirming whether the world is actually running. */
-  | { readonly t: 'simulationState'; readonly running: boolean; readonly reason: string };
+  | { readonly t: 'simulationState'; readonly running: boolean; readonly reason: string }
+  | { readonly t: 'roomJoined'; readonly room: RoomInfo; readonly playerId: PlayerId }
+  | { readonly t: 'roomLeft'; readonly reason: string }
+  | { readonly t: 'roomList'; readonly rooms: readonly RoomInfo[] }
+  | { readonly t: 'roomUpdated'; readonly room: RoomInfo };
+
+/** Everything a lobby needs to show about a room, and nothing more. */
+export interface RoomInfo {
+  readonly id: string;
+  readonly name: string;
+  readonly levelId: string;
+  readonly playerCount: number;
+  readonly maxPlayers: number;
+  readonly inProgress: boolean;
+  readonly private: boolean;
+}
 
 export interface KillstreakSlotState {
   readonly id: string;

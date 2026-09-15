@@ -8,6 +8,8 @@
     "dev": "vite",
     "build": "vite build && node tools/copyAssets.mjs",
     "preview": "vite preview",
+    "start": "node server/index.mjs",
+    "backend": "node server/index.mjs",
     "typecheck": "tsc --noEmit",
     "verify:setup": "bash tools/verify/bootstrap.sh",
     "verify:probe": "node tools/verify/probe-webgl.mjs",
@@ -38,19 +40,22 @@
     "verify:gunship": "node tools/verify/acceptance-gunship.mjs",
     "verify:purity": "node tools/verify/server-purity.mjs",
     "verify:server": "node tools/verify/server-core.mjs",
-    "verify:session": "node tools/verify/acceptance-session.mjs"
+    "verify:session": "node tools/verify/acceptance-session.mjs",
+    "verify:backend": "node tools/verify/backend-smoke.mjs"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.20.0",
     "simplex-noise": "^4.0.3",
-    "three": "0.170.0"
+    "three": "0.170.0",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@sparticuz/chromium": "153.0.0",
     "@types/three": "0.170.0",
     "puppeteer-core": "25.10.0",
     "typescript": "5.9.3",
-    "vite": "7.3.6"
+    "vite": "7.3.6",
+    "esbuild": "^0.25.0"
   },
   "engines": {
     "node": ">=20.19.0"
