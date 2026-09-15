@@ -35,7 +35,10 @@
     "validate:cinematics": "node tools/verify/validate-cinematics.mjs",
     "verify:acceptance:docn": "node tools/verify/acceptance-docn.mjs",
     "verify:shots:docn": "node tools/verify/docn-shots.mjs",
-    "verify:gunship": "node tools/verify/acceptance-gunship.mjs"
+    "verify:gunship": "node tools/verify/acceptance-gunship.mjs",
+    "verify:purity": "node tools/verify/server-purity.mjs",
+    "verify:server": "node tools/verify/server-core.mjs",
+    "verify:session": "node tools/verify/acceptance-session.mjs"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.20.0",

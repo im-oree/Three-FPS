@@ -110,6 +110,7 @@ import ThirdPersonBody from './character/ThirdPersonBody';
 import PerspectiveController from './player/PerspectiveController';
 import PerspectiveSync from './animation/PerspectiveSync';
 import type { ResolvedAnimationDescriptor, AnimationTarget } from './animation/AnimationBlender';
+import { createLocalSession, type GameSession } from './net/GameSession';
 
 const canvas = document.getElementById('game-canvas') as HTMLCanvasElement | null;
 if (!canvas) throw new Error('[main] #game-canvas element missing from index.html');
@@ -1150,6 +1151,33 @@ const hud = new HUDManager({
 // The HUD ticks even while paused so a hit marker cannot freeze mid-flash.
 engine.registerAlwaysUpdatable(hud);
 
+// --- authoritative session -------------------------------------------------
+// The server is driven from the ALWAYS-updatables list, never the gated one.
+// Engine's gated list only ticks in PLAYING, which would make pausing stop
+// the simulation -- correct for a solo game, wrong for a multiplayer one, and
+// the requirement is that the game behaves as multiplayer even when one
+// player is in it. The server decides whether a pause request is honoured
+// (solo: yes; with others present: no) and reports back; the client renders
+// that answer instead of assuming it.
+let session: GameSession | null = null;
+let simulationRunning = true;
+
+const sessionReady = createLocalSession({
+  onSimulationState: (running, reason) => {
+    simulationRunning = running;
+    eventBus.emit('net:simulationState', { running, reason });
+  },
+  onMatchEnded: (reason) => { eventBus.emit('net:matchEnded', { reason }); },
+}).then((s) => {
+  session = s;
+  return s;
+});
+void sessionReady;
+
+engine.registerAlwaysUpdatable({
+  update: (dt: number) => { session?.update(dt); },
+});
+
 // --- screens ---------------------------------------------------------------
 const ui = new UIManager();
 let activeLevelId = LEVELS[0].id;
@@ -1184,6 +1212,10 @@ const enterMatch = (): void => {
   inputContexts.reset();
   void audioManager.resume();
   engine.inputManager.requestPointerLock(canvas);
+  // The server owns match state; the client asks to join and resets its own
+  // presentation. Every authoritative reset (entities, pools, effect queues)
+  // happens server-side in response to this.
+  session?.client.joinMatch(activeLevelId);
   gameStateManager.setState(GameState.PLAYING);
 };
 
@@ -1204,6 +1236,11 @@ const quitToMenu = (): void => {
   killstreakTablet.forceLower();
   if (cinematicCamera.isActive || cinematicCamera.isDetached) cinematicCamera.cancel();
   inputContexts.reset();
+  // Leaving the match ends it server-side too, which runs the authoritative
+  // cleanup (entities pooled, players dropped, effect queues drained). Quit
+  // used to unwind only the client's half, so server-owned state would have
+  // ridden back into the next session.
+  session?.client.leaveMatch();
   levelLoader.unloadCurrentLevel();
   audioManager.stopAll();
   document.exitPointerLock?.();
@@ -1265,9 +1302,14 @@ window.addEventListener('keydown', (e) => {
   const state = gameStateManager.getState();
   if (state === GameState.PLAYING) {
     document.exitPointerLock?.();
+    // Ask -- do not assume. The menu still opens either way (a player can
+    // always reach settings and quit), but whether the WORLD stops is the
+    // server's call. In a populated match it keeps running behind the menu.
+    session?.client.requestPause(true);
     gameStateManager.setState(GameState.PAUSED);
   } else if (state === GameState.PAUSED && ui.openOverlays.length === 0) {
     engine.inputManager.requestPointerLock(canvas);
+    session?.client.requestPause(false);
     gameStateManager.setState(GameState.PLAYING);
   }
 });
@@ -1276,6 +1318,7 @@ window.addEventListener('keydown', (e) => {
 // the player keeps taking damage behind a window they cannot see.
 eventBus.on('input:pointerlock:lost', () => {
   if (gameStateManager.getState() === GameState.PLAYING) {
+    session?.client.requestPause(true);
     gameStateManager.setState(GameState.PAUSED);
   }
 });
@@ -1451,6 +1494,15 @@ interface OperatorTestHook {
 };
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.orientationGizmos = orientationGizmos;
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.droppedMags = droppedMags;
+// Expose the session once it resolves, so tests can inspect the authoritative
+// side directly rather than inferring it from what the client happens to render.
+void sessionReady.then((s) => {
+  const hook = (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__;
+  hook.session = s;
+  hook.gameClient = s.client;
+  hook.gameServer = s.server;
+  hook.isSimulationRunning = () => simulationRunning;
+});
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.animationEngine = animationEngine;
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.cheatsStore = cheatsStore;
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.playerHealth = playerHealth;
