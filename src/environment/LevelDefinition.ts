@@ -66,8 +66,11 @@ export interface LevelDefinition {
   readonly killstreakAirspace?: {
     readonly centerXZ: readonly [number, number];
     readonly radius: number;
-    /** Weapon-release altitude (cruise/egress are offset above this). */
+    /** Weapon-release altitude (cruise/egress are offset above this). The
+     *  guided-missile handoff also starts here — this is its steering room. */
     readonly arrivalAltitude: number;
+    /** UAV drone orbit height override (defaults to UAV_KILLSTREAK.ORBIT_HEIGHT). */
+    readonly uavOrbitHeight?: number;
   };
   /**
    * Document L: prop-built level shell — a real .glb (ground + perimeter +
@@ -82,6 +85,8 @@ export interface LevelDefinition {
   readonly propPoolSizes?: Record<string, number>;
   /** Document K §5: equirect HDRI (background + IBL) for prop-built levels. */
   readonly hdri?: string;
+  /** IBL gain for the HDRI (scene.environmentIntensity); defaults to 1.0. */
+  readonly hdriIntensity?: number;
   /**
    * Document L §4.3: player reset threshold. If the player's Y ever falls
    * below this (bug, exploit, collision gap), they're teleported to spawn.
@@ -240,8 +245,8 @@ const SHIPMENT: LevelDefinition = {
   ambientSoundKey: 'ambient_warehouse',
   skyColor: 0x5f686f,
   fogDensity: 0.005,
-  hemiIntensity: 1.3,
-  sunIntensity: 2.5,
+  hemiIntensity: 0.8,
+  sunIntensity: 1.6,
   // CoD4 spawn ring: corners/edges all rush the intersection; the mock
   // single-spawn contract places the player on the SW corner diagonal.
   spawn: [-20, 0, 20],
@@ -252,11 +257,14 @@ const SHIPMENT: LevelDefinition = {
   groundColor: 0x3c3f41,
   boxes: [],
   dummies: [[0, 0, 0], [-14, 0, 14], [14, 0, -14]],
-  killstreakAirspace: { centerXZ: [0, 0], radius: 60, arrivalAltitude: 48 },
+  killstreakAirspace: { centerXZ: [0, 0], radius: 85, arrivalAltitude: 140, uavOrbitHeight: 55 },
   shellFile: '/assets/models/environment/shipment_shell.glb',
   propManifest: '/assets/environment-meta/shipment_props.json',
   propPoolSizes: { oil_barrel: 24, oil_barrel_explosive: 8 },
   hdri: '/assets/hdri/overcast_dockyard.hdr',
+  // Neutral albedos blew out under ambient+hemi+sun+full IBL; retuned so
+  // asphalt/concrete stay dockyard-dark while painted containers still pop.
+  hdriIntensity: 0.65,
   killPlaneY: -25,
 };
 

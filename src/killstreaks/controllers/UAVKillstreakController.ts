@@ -53,7 +53,10 @@ export class UAVKillstreakController extends KillstreakControllerInterface {
   private place(): void {
     if (!this.model) return;
     const r = UAV_KILLSTREAK.ORBIT_RADIUS;
-    const h = UAV_KILLSTREAK.ORBIT_HEIGHT;
+    // Level airspace may raise/lower the orbit (Shipment's built-up bowl
+    // reads too low at the warehouse default).
+    const h = this.context?.getLevelDefinition()?.killstreakAirspace?.uavOrbitHeight
+      ?? UAV_KILLSTREAK.ORBIT_HEIGHT;
     this.model.position.set(
       this.orbitCentre.x + Math.cos(this.angle) * r,
       h,

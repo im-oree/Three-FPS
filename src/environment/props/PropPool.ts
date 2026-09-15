@@ -436,12 +436,14 @@ export class PropPool {
     for (const [propTypeId, pending] of this.pendingInstancedBounds) {
       if (pending.positions.length === 0) continue;
       const box = new THREE.Box3();
-      for (const p of pending.positions) {
-        box.expandByPoint(p);
-        box.expandByScalar(instancedReach(pending.def));
-        box.min.y = Math.min(box.min.y, p.y);
-        box.max.y = Math.max(box.max.y, p.y + colliderTopY(pending.def.collider, 1));
-      }
+      const reach = instancedReach(pending.def);
+      // Accumulate POINT extents first, then apply the prop's reach exactly
+      // ONCE — applying it per point inflates the box by reach plural
+      // times (the runaway 65 m "container" sphere from the first pass).
+      for (const p of pending.positions) box.expandByPoint(p);
+      box.min.x -= reach; box.max.x += reach;
+      box.min.z -= reach; box.max.z += reach;
+      box.max.y += colliderTopY(pending.def.collider, 1);
       const sphere = box.getBoundingSphere(new THREE.Sphere());
       this.cullingHandles.push(this.culling.registerSphere(pending.mesh, sphere, {
         id: `prop:${propTypeId}`,

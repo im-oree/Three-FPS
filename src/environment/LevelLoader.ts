@@ -260,6 +260,12 @@ export class LevelLoader {
       if (COLLECTION_PREFIX.test(node.name)) collisionNodes.push(node);
     });
     for (const node of collisionNodes) {
+      // Collision nodes are COLLISION ONLY — force-hide them here. (The
+      // glTF round trip cannot carry "material.visible = false": the
+      // exporter strips the flag and the loader rebuilds a DEFAULT WHITE
+      // material, so invisible collision boxes were rendering as white
+      // sheets over the ground/walls — the "map going white" bug.)
+      node.visible = false;
       const box = new THREE.Box3().setFromObject(node);
       const tag = node.name === 'COL_GroundPlane' || node.name.startsWith('COL_Ground')
         ? def.groundSurface
@@ -281,15 +287,33 @@ export class LevelLoader {
     // Global culling: every non-collision top-level shell node (ground,
     // wall visuals, distant skyline) gets auto-derived world bounds. The
     // shell is huge, so this is frustum-only — no distance band.
+    // NOTE: the exporter wraps authored nodes in single-child wrapper
+    // groups ('ShipmentShell' etc.) — unwrap those chains first or every
+    // registration collapses into one sphere around the entire map.
     if (this.builderDeps.culling) {
-      for (const child of shell.children) {
-        if (COLLECTION_PREFIX.test(child.name)) continue;
-        this.cullingHandles.push(
-          this.builderDeps.culling.register(child, {
-            id: `shell:${child.name}`,
-            margin: 2,
-          }),
-        );
+      const unwrap = (node: THREE.Object3D): THREE.Object3D => {
+        let n = node;
+        while (
+          !(n as THREE.Mesh).isMesh
+          && n.children.length === 1
+          && !(n.children[0] as THREE.Mesh).isMesh
+        ) {
+          n = n.children[0];
+        }
+        return n;
+      };
+      for (const rawChild of shell.children) {
+        const node = unwrap(rawChild);
+        const targets = (node as THREE.Mesh).isMesh ? [node] : node.children;
+        for (const child of targets) {
+          if (COLLECTION_PREFIX.test(child.name)) continue;
+          this.cullingHandles.push(
+            this.builderDeps.culling.register(child, {
+              id: `shell:${child.name}`,
+              margin: 2,
+            }),
+          );
+        }
       }
     }
     eventBus.emit('level:shellLoaded', { levelId: def.id, collisionNodes: collisionNodes.length });
@@ -313,7 +337,7 @@ export class LevelLoader {
   private async applyHDRI(def: LevelDefinition): Promise<void> {
     if (!this.builderDeps || !def.hdri) return;
     this.hdriSky = new HDRISkyManager(this.builderDeps.renderer, this.scene);
-    await this.hdriSky.apply(def.hdri, 1.0);
+    await this.hdriSky.apply(def.hdri, def.hdriIntensity ?? 1.0);
   }
 
   private buildDummies(def: LevelDefinition): void {

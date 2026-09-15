@@ -69,7 +69,9 @@ function buildShipmentShell() {
   })) collisionRoot.add(c);
 
   const skyline = buildDistantSkyline({
-    innerRadius: MAP_WIDTH / 2 + 14, count: 30, minHeight: 4, maxHeight: 13,
+    // Lower + hazier silhouettes: tall nearby slabs read as hard triangles
+    // over the wall from eye height; low and farther out, they stay haze.
+    innerRadius: MAP_WIDTH / 2 + 22, count: 30, minHeight: 2, maxHeight: 5,
   });
   root.add(skyline); // visual root ONLY
 

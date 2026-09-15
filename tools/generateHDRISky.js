@@ -61,7 +61,11 @@ function generateSkyHDR({
         const dot = dx * sd[0] + dy * sd[1] + dz * sd[2];
         if (dot > 0) {
           const disc = Math.pow(dot, 1200) * sunIntensity;
-          const glow = Math.pow(dot, 12) * 0.35;
+          // Tight overcast halo + a whisper of broad glow — the old
+          // pow(dot,12)*0.35 term painted a giant pale wedge across the sky
+          // in the sun's azimuth sector (screenshot-visible "pyramid" bug).
+          const halo = Math.pow(dot, 96) * 1.1;
+          const glow = Math.pow(dot, 4) * 0.07 + halo;
           r += sunColor[0] * (disc + glow);
           g += sunColor[1] * (disc + glow);
           b += sunColor[2] * (disc + glow);
@@ -90,9 +94,18 @@ function writeRadianceHDR({ width, height, data }, filePath) {
     'ascii',
   );
   const pixels = Buffer.alloc(width * height * 4);
+  let nanCount = 0; let over64 = 0; let maxV = 0; let maxE = 0;
   for (let i = 0; i < width * height; i += 1) {
     const r = data[i * 3], g = data[i * 3 + 1], b = data[i * 3 + 2];
     const v = Math.max(r, g, b);
+    if (Number.isNaN(v)) {
+      nanCount += 1;
+      pixels.fill(0, i * 4, i * 4 + 4);
+      data[i * 3] = 0; data[i * 3 + 1] = 0; data[i * 3 + 2] = 0;
+      continue;
+    }
+    if (v > 64) over64 += 1;
+    if (v > maxV) maxV = v;
     if (v < 1e-32) {
       pixels.fill(0, i * 4, i * 4 + 4);
       continue;
@@ -109,7 +122,8 @@ function writeRadianceHDR({ width, height, data }, filePath) {
     void mantissa;
   }
   fs.writeFileSync(filePath, Buffer.concat([header, pixels]));
-  console.log('wrote', filePath, `(${width}x${height})`);
+  console.log('wrote', filePath, `(${width}x${height})`,
+    { nan: nanCount, over64, maxV: Math.round(maxV * 100) / 100, maxE });
 }
 
 // --- overcast dockyard sky (matches shipment.json's sunDirection) ----------

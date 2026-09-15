@@ -13,9 +13,33 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 // ---------------- Shared shell material palette (distinct from props) ------
+
+/** Node-safe chainlink lattice: diagonal wires on a 128px tile; used as an
+ *  alphaMap (green channel) with alphaTest so the fence is REAL holes. */
+function buildChainlinkAlphaMap() {
+  const size = 128, spacing = 16, half = spacing / 2;
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const d1 = Math.abs(((x + y) % spacing) - half);
+      const d2 = Math.abs(((x + (size - y)) % spacing) - half);
+      const wire = (d1 <= 1 || d2 <= 1) ? 255 : 0;
+      const i = (y * size + x) * 4;
+      data[i] = wire; data[i + 1] = wire; data[i + 2] = wire; data[i + 3] = 255;
+    }
+  }
+  const tex = new THREE.DataTexture(data, size, size);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(8, 1.4);
+  tex.needsUpdate = true;
+  return tex;
+}
+
 export const ShellMaterials = {
+  // Asphalt albedo lives low on purpose: full sun + IBL lifts authored
+  // mid-grey to near-white after ACES; this tone-maps back to dark asphalt.
   asphalt: new THREE.MeshStandardMaterial({
-    color: 0x3c3f41, roughness: 0.96, metalness: 0.02, flatShading: true,
+    color: 0x212427, roughness: 0.96, metalness: 0.02, flatShading: true,
   }),
   asphaltSeam: new THREE.MeshStandardMaterial({
     color: 0x2f3234, roughness: 0.96, metalness: 0.02, flatShading: true,
@@ -29,18 +53,24 @@ export const ShellMaterials = {
   rebarMetal: new THREE.MeshStandardMaterial({
     color: 0x2a2c2e, roughness: 0.6, metalness: 0.6, flatShading: true,
   }),
+  // Haze-faded: silhouettes should melt toward the overcast sky instead of
+  // reading as hard dark triangles hanging over the perimeter wall.
   distantSilhouette: new THREE.MeshStandardMaterial({
-    color: 0x23262b, roughness: 1, metalness: 0, flatShading: true,
+    color: 0xa2a8ad, roughness: 1, metalness: 0, flatShading: true,
   }),
   distantContainerA: new THREE.MeshStandardMaterial({
-    color: 0x3a2b28, roughness: 1, metalness: 0, flatShading: true,
+    color: 0xa49f99, roughness: 1, metalness: 0, flatShading: true,
   }),
   distantContainerB: new THREE.MeshStandardMaterial({
-    color: 0x21313a, roughness: 1, metalness: 0, flatShading: true,
+    color: 0xa3acb4, roughness: 1, metalness: 0, flatShading: true,
   }),
   fenceChainlink: new THREE.MeshStandardMaterial({
     color: 0x9aa2a6, roughness: 0.5, metalness: 0.4, flatShading: true,
-    transparent: true, opacity: 0.42, side: THREE.DoubleSide,
+    // Real holes: procedural lattice alphaMap + alphaTest, NOT a flat alpha
+    // quad — at grazing angles an alpha-blended pane reads as a dirty grey
+    // wedge hanging over the wall; cut-out holes read as chainlink.
+    alphaMap: buildChainlinkAlphaMap(),
+    alphaTest: 0.45, transparent: false, side: THREE.DoubleSide,
   }),
   invisible: new THREE.MeshBasicMaterial({ visible: false }),
 };
@@ -145,19 +175,22 @@ export function buildPerimeterWallSegment({
     );
     group.add(post);
   }
-  const fence = new THREE.Mesh(
-    new THREE.PlaneGeometry(length, fenceHeight), ShellMaterials.fenceChainlink,
-  );
-  fence.position.y = wallHeight + fenceHeight / 2;
-  group.add(fence);
-  // Diagonal wire scores, cheap chainlink read from mid distance.
-  const scoreGeo = new THREE.PlaneGeometry(length, 0.018);
-  for (let k = 0; k < 4; k += 1) {
-    const score = new THREE.Mesh(scoreGeo, ShellMaterials.rebarMetal);
-    score.position.set(0, wallHeight + 0.3 + k * 0.42, 0.006);
-    score.rotation.y = 0;
-    group.add(score);
+  // Open wire-rail topper: horizontal STRANDS as real geometry. (A flat
+  // alpha-blended or cut-out pane reads as a dirty grey wedge at grazing
+  // angles and glTF has no alphaMap channel to export real holes.)
+  const strandCount = 8;
+  const strandGeo = new THREE.CylinderGeometry(0.012, 0.012, length, 4);
+  strandGeo.rotateZ(Math.PI / 2);
+  const strandGeos = [];
+  for (let k = 0; k < strandCount; k += 1) {
+    const g = strandGeo.clone();
+    g.translate(0, wallHeight + 0.2 + k * ((fenceHeight - 0.25) / (strandCount - 1)), 0);
+    strandGeos.push(g);
   }
+  const strands = new THREE.Mesh(
+    mergeGeometries(strandGeos, false), ShellMaterials.rebarMetal,
+  );
+  group.add(strands);
   const topRail = new THREE.Mesh(
     new THREE.CylinderGeometry(0.024, 0.024, length, 6), ShellMaterials.rebarMetal,
   );

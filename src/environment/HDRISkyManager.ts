@@ -11,6 +11,7 @@ import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 export class HDRISkyManager {
   private readonly pmrem: THREE.PMREMGenerator;
   private envMap: THREE.Texture | null = null;
+  private bgMap: THREE.Texture | null = null;
   private appliedPath: string | null = null;
 
   constructor(
@@ -23,8 +24,8 @@ export class HDRISkyManager {
 
   /** Apply the HDRI as background + environment; cached per path. */
   async apply(hdriPath: string, intensity = 1.0): Promise<void> {
-    if (this.appliedPath === hdriPath && this.envMap) {
-      this.scene.background = this.envMap;
+    if (this.appliedPath === hdriPath && this.envMap && this.bgMap) {
+      this.scene.background = this.bgMap;
       this.scene.environment = this.envMap;
       return;
     }
@@ -32,19 +33,26 @@ export class HDRISkyManager {
     const env = this.pmrem.fromEquirectangular(hdr).texture;
     this.clearSceneBindings();
     this.envMap?.dispose();
+    this.bgMap?.dispose();
     this.envMap = env;
+    this.bgMap = hdr;   // kept alive: it IS the visible sky
     this.appliedPath = hdriPath;
-    this.scene.background = env;
+    // Background = the RAW equirect texture; environment = the PMREM.
+    // Using the PMREM for BOTH smeared the tight sun disc into a giant pale
+    // wedge filling a quarter of the sky (PMREM mip blur is a lighting
+    // convolution, not a skybox).
+    this.scene.background = hdr;
     this.scene.environment = env;
     const legacyScene = this.scene as THREE.Scene & { environmentIntensity?: number };
     if ('environmentIntensity' in legacyScene) legacyScene.environmentIntensity = intensity;
-    hdr.dispose();
   }
 
   clear(): void {
     this.clearSceneBindings();
     this.envMap?.dispose();
     this.envMap = null;
+    this.bgMap?.dispose();
+    this.bgMap = null;
     this.appliedPath = null;
   }
 

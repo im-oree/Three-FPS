@@ -67,7 +67,10 @@ export class TabletLiveMap {
   constructor(culling: FrustumCullingManager | null = null) {
     this.capture = new LiveMinimapCapture(culling);
     this.target = new THREE.WebGLRenderTarget(384, 384);
-    this.target.texture.colorSpace = THREE.NoColorSpace;
+    // sRGB end-to-end: the capture writes display-encoded values into the
+    // RT (NoColorSpace stored LINEAR, which the tablet screen material then
+    // displayed as-is → the whole map washed out to a white sheet).
+    this.target.texture.colorSpace = THREE.SRGBColorSpace;
   }
 
   /** Applied when a level loads; defaults serve levels without explicit bounds. */

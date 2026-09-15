@@ -230,6 +230,21 @@ export class FrustumCullingManager {
   get isEnabled(): boolean {
     return this.enabled;
   }
+
+  /** Debug/verification: per-entry snapshot (id, sphere, visibility). */
+  debugDump(): Array<{ id: string; visible: boolean; center: [number, number, number]; radius: number; maxDistance: number }> {
+    return this.entries.map((e) => ({
+      id: e.id,
+      visible: e.visible,
+      center: [
+        Math.round(e.sphere.center.x * 10) / 10,
+        Math.round(e.sphere.center.y * 10) / 10,
+        Math.round(e.sphere.center.z * 10) / 10,
+      ],
+      radius: Math.round(e.sphere.radius * 10) / 10,
+      maxDistance: e.maxDistance,
+    }));
+  }
 }
 
 export default FrustumCullingManager;

@@ -50,16 +50,21 @@ console.log(JSON.stringify(report, null, 1));
 // is visible; swinging to stare at the corner wall must hide the bulk of
 // the prop field (and the HotZone for the sway-skip path). Orientation only
 // (camera stays at spawn); the union recomputes next frame.
-await page.evaluate(() => {
-  window.__OPERATOR__.playerController.debugSetOrientation(Math.PI * 0.75, 0); // SW: away from map center
-});
-await sleep(500);
+const aimAndWait = async (yaw) => {
+  await page.evaluate((y) => {
+    window.__OPERATOR__.playerController.debugSetOrientation(y, 0);
+  }, yaw);
+  // RAF-gated wait: headless frames stall right after load, so poll the
+  // camera itself instead of sleeping a fixed amount.
+  await page.waitForFunction((y) => Math.abs(
+    window.__OPERATOR__.engine.sceneManager.getCamera().rotation.y - y) < 0.02,
+    { timeout: 30000 }, yaw);
+  await sleep(250); // one more frame: culling ticks right before render
+};
+await aimAndWait(Math.PI * 0.75); // SW: away from map center
 const cullingAway = await page.evaluate(() =>
   window.__OPERATOR__.engine.sceneManager.culling.getStats());
-await page.evaluate(() => {
-  window.__OPERATOR__.playerController.debugSetOrientation(-Math.PI / 4, 0);
-});
-await sleep(500);
+await aimAndWait(-Math.PI / 4);   // back to the map center
 const cullingCenter = await page.evaluate(() =>
   window.__OPERATOR__.engine.sceneManager.culling.getStats());
 console.log('culling facing-away:', JSON.stringify(cullingAway));
