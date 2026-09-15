@@ -23,10 +23,11 @@
  */
 import * as THREE from 'three';
 import eventBus from '../core/EventBus';
-import { FISTS_GUARD, HANDS, JOINT_RECOIL, RIG_POSES, SPRING_PROFILES } from '../utils/Constants';
+import { FISTS_GUARD, FOOTSTEP, HANDS, JOINT_RECOIL, RIG_POSES, SPRING_PROFILES, WEAPON_SHAKE } from '../utils/Constants';
 import type { AssetLoader } from '../core/AssetLoader';
 import type { WeaponViewmodel, ArmRigCommand } from './WeaponViewmodel';
 import type { JointChain } from '../character/JointIK';
+import type { IKSolution } from './WeaponIK';
 import { applyJointSolution } from '../character/JointIK';
 import { JointSpring } from '../character/JointSpring';
 
@@ -62,12 +63,19 @@ export class HandsRig {
   private readonly springWristL = new JointSpring(SPRING_PROFILES.jointWrist);
 
   private recoilScale = 1;
+  /** Set once bindToCharacter() hands us the shared skeleton's arms. */
+  private externallyOwned = false;
   private locomotion: LocomotionInput = {
     state: 'IDLE', isTacticalSprinting: false, speed: 0, isGrounded: true, adsWeight: 0,
   };
   private guardWeight = 0;
   private guardTarget = 0;
   private stridePhase = 0;
+  /** Locomotion weapon-shake oscillator phase (figure-8). */
+  private shakePhase = 0;
+  /** Decaying 0..1 fire-shake envelope and its oscillator phase. */
+  private fireShake = 0;
+  private fireShakePhase = 0;
   private armed = false;
 
   private readonly euler = new THREE.Euler();
@@ -78,7 +86,57 @@ export class HandsRig {
   async load(): Promise<void> {
     await this.loadFrom(HANDS.rigPath);
     // §8.3: joint-distributed recoil on every shot.
-    eventBus.on('weapon:fired', () => this.kickRecoil());
+    eventBus.on('weapon:fired', () => { this.kickRecoil(); this.addFireShake(); });
+  }
+
+  /**
+   * UNIFIED CHARACTER MODE — bind this rig's spring/IK machinery to the arms
+   * of the ONE shared character skeleton instead of loading a separate pair of
+   * floating viewmodel arms.
+   *
+   * This is the architectural fix for two problems at once:
+   *   (1) the first-person view showed disembodied arms with no torso or legs;
+   *   (2) the third-person body held NO weapon, because the weapon lived under
+   *       a camera-parented rig the body never saw.
+   *
+   * With one rig there is exactly one set of arms, one weapon, and one set of
+   * animations — so the two perspectives are incapable of disagreeing. Every
+   * procedural layer (sway, breathing, joint recoil, pose blends, free-swing)
+   * keeps working unchanged, because they only ever addressed the chain by
+   * name and this supplies the same named chain.
+   */
+  /** TEST seam: the live arm chains, for harnesses to sample bone poses. */
+  get chainsForTest(): Record<'R' | 'L', JointChain | null> {
+    return this.chains;
+  }
+
+  bindToCharacter(root: THREE.Group, chains: { R: JointChain | null; L: JointChain | null }): void {
+    this.armed = false;
+    // Drop the standalone arms asset if load() built one — the character's
+    // own arms replace it entirely (never render both).
+    if (this.root && this.root !== root) this.root.parent?.remove(this.root);
+    this.root = root;
+    this.restQuat.clear();
+    this.chains.R = chains.R;
+    this.chains.L = chains.L;
+    this.wristR = chains.R?.wristPivot ?? null;
+    for (const side of ['R', 'L'] as const) {
+      const chain = chains[side];
+      if (!chain) continue;
+      for (const pivot of [chain.shoulderPivot, chain.upperArmPivot, chain.elbowPivot, chain.wristPivot]) {
+        this.restQuat.set(pivot, pivot.quaternion.clone());
+      }
+    }
+    if (!this.chains.R || !this.chains.L) {
+      throw new Error('[HandsRig] character rig is missing arm chains');
+    }
+    this.externallyOwned = true;
+    this.armed = true;
+  }
+
+  /** True when the arms belong to the shared character rig (not a local asset). */
+  get isCharacterBound(): boolean {
+    return this.externallyOwned;
   }
 
   private async loadFrom(path: string): Promise<void> {
@@ -150,6 +208,10 @@ export class HandsRig {
 
   attach(viewmodel: WeaponViewmodel): void {
     if (!this.root) return;
+    // Character-bound arms already live in the world under the shared rig at
+    // the capsule's transform. Re-parenting them to the camera is exactly the
+    // "floating detached arms" bug this mode exists to remove.
+    if (this.externallyOwned) return;
     this.root.position.set(HANDS.RIG_OFFSET.x, HANDS.RIG_OFFSET.y, HANDS.RIG_OFFSET.z);
     this.root.quaternion.identity();
     viewmodel.addBaseLayer(this.root);
@@ -187,6 +249,17 @@ export class HandsRig {
    * IK command lands later in applyArmCommand(). Baked clips own their joints
    * via the ownership query, so nothing fights the mixer (§7.4).
    */
+  /**
+   * True when the running clip animates the SHOULDER joints (not just the
+   * elbow/wrist). Set by the viewmodel from the clip's own track list, so this
+   * is data-driven rather than a hardcoded clip-name check.
+   */
+  private clipDrivesShoulder = false;
+
+  setClipDrivesShoulder(value: boolean): void {
+    this.clipDrivesShoulder = value;
+  }
+
   update(dt: number, ownership: ClipOwnership, oneShotRunning: boolean): void {
     if (!this.armed || !this.chains.R || !this.chains.L) return;
 
@@ -201,13 +274,22 @@ export class HandsRig {
     }
 
     // --- apply spring deltas as LOCAL rotations on the pose pivots ---------
-    // The shoulder pivots are pure procedural (never IK-owned), so they take
-    // the full pose delta; elbow/wrist springs layer over whatever the mixer
-    // + IK produced (right side) or the baked clip produced (owned side).
-    this.applySpring(this.chains.R!.shoulderPivot, this.springShoulderR.value, 1);
-    this.applySpring(this.chains.L!.shoulderPivot, this.springShoulderL.value, 1);
+    // Elbow/wrist springs layer over whatever the mixer + IK produced (right
+    // side) or the baked clip produced (owned side).
     const rightOwned = ownership === 'R' || ownership === 'both' || ownership === 'wristR';
     const leftOwned = ownership === 'L' || ownership === 'both';
+    // SHOULDERS: normally pure procedural, so they take the full pose delta.
+    // The exception is a clip that OWNS the chain and animates the shoulder
+    // itself — the mantle climb does exactly that, because a pull-up is driven
+    // from the shoulder, not the wrist. Writing the spring on top of it
+    // silently cancelled the clip's shoulder track and the arms never left
+    // their rest pose. Ownership means ownership: all the way up the chain.
+    if (!(rightOwned && this.clipDrivesShoulder)) {
+      this.applySpring(this.chains.R!.shoulderPivot, this.springShoulderR.value, 1);
+    }
+    if (!(leftOwned && this.clipDrivesShoulder)) {
+      this.applySpring(this.chains.L!.shoulderPivot, this.springShoulderL.value, 1);
+    }
     if (!rightOwned) {
       this.applySpring(this.chains.R!.elbowPivot, this.springElbowR.value, 1);
       this.applySpring(this.chains.R!.wristPivot, this.springWristR.value, 1);
@@ -217,6 +299,43 @@ export class HandsRig {
       this.applySpring(this.chains.L!.wristPivot, this.springWristL.value, 1);
     }
     void oneShotRunning;
+  }
+
+  /**
+   * Stride-synced weapon shake for WALK / SPRINT / TAC_SPRINT.
+   *
+   * Amplitude and frequency both scale with the measured horizontal speed, so
+   * the weapon settles naturally as the player slows instead of switching
+   * between discrete canned states.
+   */
+  private applyLocomotionShake(dt: number, adsSuppress: number): void {
+    const loc = this.locomotion;
+    if (!loc.isGrounded) return;
+    const profile = loc.isTacticalSprinting
+      ? WEAPON_SHAKE.TAC_SPRINT
+      : loc.state === 'SPRINT'
+        ? WEAPON_SHAKE.SPRINT
+        : loc.state === 'WALK'
+          ? WEAPON_SHAKE.WALK
+          : null;
+    if (!profile) return;
+    const intensity = Math.min(1, loc.speed / WEAPON_SHAKE.SPEED_REFERENCE) * adsSuppress;
+    if (intensity <= 0.001) return;
+    this.shakePhase += dt * profile.FREQUENCY_HZ * Math.PI * 2 * Math.max(0.35, intensity);
+    const pitch = Math.sin(this.shakePhase) * profile.PITCH_RAD * intensity;
+    // Half frequency on the lateral axis is what makes the tip trace a
+    // figure-8 rather than a lifeless straight line.
+    const yaw = Math.cos(this.shakePhase * 0.5) * profile.YAW_RAD * intensity;
+    const roll = Math.sin(this.shakePhase * 0.5) * profile.ROLL_RAD * intensity;
+    this.springShoulderR.addTarget(pitch, yaw, roll);
+    this.springShoulderL.addTarget(pitch * 0.8, -yaw * 0.6, -roll * 0.8);
+    this.springElbowR.addTarget(pitch * profile.ELBOW_SCALE, 0, 0);
+    this.springWristR.addTarget(pitch * profile.WRIST_SCALE, yaw * 0.5, 0);
+  }
+
+  /** Kick the hands on every shot (called from the weapon:fired handler). */
+  addFireShake(amount = 1): void {
+    this.fireShake = Math.min(1, this.fireShake + amount);
   }
 
   /** Feed this frame's pose targets into the springs (§8.1/8.2/8.8/§9). */
@@ -239,14 +358,44 @@ export class HandsRig {
     // left shoulder mirrors with opposite lateral component
     this.springShoulderL.addTarget(sx * adsSuppress, sy * adsSuppress * 0.6, -sz * adsSuppress);
 
+    // --- locomotion weapon shake: the sense of carrying weight -------------
+    // Static sprint/tac-sprint POSES alone read as a stiff mannequin holding a
+    // prop. Real running jolts the weapon every footfall, so the rig gets a
+    // stride-synced figure-8 (sin on pitch, cos at HALF frequency on yaw —
+    // the classic bob relationship) whose amplitude scales with actual speed
+    // and is suppressed when aiming down sights.
+    this.applyLocomotionShake(dt, adsSuppress);
+
+    // --- fire shake: recoil felt in the HANDS, not just the camera ---------
+    this.fireShake = Math.max(0, this.fireShake - dt / WEAPON_SHAKE.FIRE_DECAY_SECONDS);
+    if (this.fireShake > 0) {
+      const k = this.fireShake * this.fireShake; // ease-out: snappy then settles
+      this.fireShakePhase += dt * WEAPON_SHAKE.FIRE_FREQUENCY_HZ * Math.PI * 2;
+      const p = this.fireShakePhase;
+      this.springShoulderR.addTarget(
+        Math.sin(p) * WEAPON_SHAKE.FIRE_PITCH_RAD * k,
+        Math.cos(p * 0.7) * WEAPON_SHAKE.FIRE_YAW_RAD * k,
+        0,
+      );
+      this.springWristR.addTarget(
+        Math.sin(p * 1.3) * WEAPON_SHAKE.FIRE_WRIST_RAD * k, 0, 0,
+      );
+    }
+
     // --- tactical sprint: LEFT hand RELEASES (Document A §9/§10) -----------
     // (the viewmodel simultaneously drops the left IK command; the free arm
     // swings stride-synced like a real sprinting arm)
     if (loc.isTacticalSprinting && ownership !== 'L' && ownership !== 'both') {
+      // Document E §2 tac-sprint: the released arm swings stride-synced and
+      // COUNTER-PHASE to the weapon bob — the shared distance-based stride
+      // phase (same FOOTSTEP table WeaponPoseOffsets consumes) locks the two
+      // oscillators so the arm pumps opposite the shoulder/gun, never in
+      // phase. Free-running time-based oscillators drift together, which
+      // reads wrong the instant they sync up.
       const swing = RIG_POSES.FREE_SWING;
-      this.stridePhase += dt * swing.FREQUENCY_HZ * Math.PI * 2 * Math.max(0.2, loc.speed / swing.SPEED_REF);
+      this.stridePhase += (loc.speed * dt / FOOTSTEP.STRIDE_SPRINT_METERS) * Math.PI * 2;
       const amp = swing.AMPLITUDE_RAD * Math.min(1, loc.speed / swing.SPEED_REF);
-      this.springShoulderL.addTarget(Math.sin(this.stridePhase) * amp * 0.6, 0, 0);
+      this.springShoulderL.addTarget(-Math.sin(this.stridePhase) * amp * 0.6, 0, 0);
       this.springElbowL.addTarget(-Math.abs(Math.cos(this.stridePhase)) * amp * 0.9, 0, 0);
     }
 
@@ -255,9 +404,12 @@ export class HandsRig {
     if (this.guardWeight > 0.001) {
       const w = this.guardWeight;
       this.springShoulderR.addTarget(FISTS_GUARD.SHOULDER_R.x * w, FISTS_GUARD.SHOULDER_R.y * w, FISTS_GUARD.SHOULDER_R.z * w);
-      this.springElbowR.addTarget(FISTS_GUARD.ELBOW_R.x * w, 0, 0);
+      this.springElbowR.addTarget(FISTS_GUARD.ELBOW_R.x * w, 0, FISTS_GUARD.ELBOW_R.z * w);
       this.springShoulderL.addTarget(FISTS_GUARD.SHOULDER_L.x * w, FISTS_GUARD.SHOULDER_L.y * w, FISTS_GUARD.SHOULDER_L.z * w);
-      this.springElbowL.addTarget(FISTS_GUARD.ELBOW_L.x * w, 0, 0);
+      this.springElbowL.addTarget(FISTS_GUARD.ELBOW_L.x * w, 0, FISTS_GUARD.ELBOW_L.z * w);
+      // Roll the wrists inward so the knuckles face the target.
+      this.springWristR.addTarget(FISTS_GUARD.WRIST_R.x * w, FISTS_GUARD.WRIST_R.y * w, FISTS_GUARD.WRIST_R.z * w);
+      this.springWristL.addTarget(FISTS_GUARD.WRIST_L.x * w, FISTS_GUARD.WRIST_L.y * w, FISTS_GUARD.WRIST_L.z * w);
     }
     if (this.isFists(loc) && ownership === 'none') {
       const swing = RIG_POSES.FISTS_SWING;
@@ -292,8 +444,43 @@ export class HandsRig {
    */
   applyArmCommand(command: ArmRigCommand | null): void {
     if (!command?.active) return;
-    if (command.right && this.chains.R) applyJointSolution(this.chains.R, command.right.solution, command.weight);
-    if (command.left && this.chains.L) applyJointSolution(this.chains.L, command.left.solution, command.weight);
+    this.applyChainCommand('R', command.right, command.weight);
+    this.applyChainCommand('L', command.left, command.weight);
+  }
+
+  /**
+   * Apply one chain's IK solution, preserving a baked clip's authored motion.
+   *
+   * When a clip owns the chain (`additive`), the mixer has already written the
+   * clip's pose into the pivots. We capture that pose as a DELTA from rest,
+   * apply the IK solution (which puts the hand on the weapon), then re-apply
+   * the delta on top. The result: the reload/inspect motion plays while the
+   * weapon stays gripped, instead of the arm snapping back to rest and the
+   * gun appearing to sink out of view.
+   */
+  private applyChainCommand(
+    side: 'R' | 'L',
+    entry: { solution: IKSolution; additive: boolean } | null,
+    weight: number,
+  ): void {
+    const chain = this.chains[side];
+    if (!entry || !chain) return;
+    if (!entry.additive) {
+      applyJointSolution(chain, entry.solution, weight);
+      return;
+    }
+    const pivots = [chain.upperArmPivot, chain.elbowPivot, chain.wristPivot];
+    const deltas = pivots.map((pivot) => {
+      const rest = this.restQuat.get(pivot);
+      if (!rest) return null;
+      // delta = rest⁻¹ * current  (the clip's contribution in local space)
+      return rest.clone().invert().multiply(pivot.quaternion.clone());
+    });
+    applyJointSolution(chain, entry.solution, weight);
+    pivots.forEach((pivot, i) => {
+      const delta = deltas[i];
+      if (delta) pivot.quaternion.multiply(delta);
+    });
   }
 }
 

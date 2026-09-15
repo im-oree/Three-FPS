@@ -9,11 +9,11 @@ export function buildShotgunPattern() {
   const root = new THREE.Group();
   root.name = 'Root_Weapon';
 
-  const receiverColor = 0x2a2622, woodColor = 0x4f3420, metalColor = 0x1c1c1c;
+  const receiverColor = 0x5d544b, woodColor = 0x845735, metalColor = 0x505050;
 
   root.add(box([0.055, 0.09, 0.30], receiverColor, [0, 0, -0.02], [0, 0, 0], 'Receiver'));
   root.add(cyl(0.014, 0.62, metalColor, [0, 0.02, -0.50], [Math.PI / 2, 0, 0], 8, 'Barrel'));
-  root.add(cyl(0.011, 0.48, metalColor, [0, -0.025, -0.42], [Math.PI / 2, 0, 0], 8, 'TubeMagazine'));
+  root.add(cyl(0.011, 0.48, metalColor, [0, -0.025, -0.42], [Math.PI / 2, 0, 0], 8, 'Bone_Magazine'));
   root.add(box([0.05, 0.10, 0.26], woodColor, [0, -0.01, 0.24], [0, 0, 0], 'Stock'));
   const pump = box([0.05, 0.06, 0.14], woodColor, [0, -0.035, -0.36], [0, 0, 0], 'Bone_Pump');
   root.add(pump);

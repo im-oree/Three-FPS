@@ -18,6 +18,7 @@
  * hard clip swap, so walking-while-aiming blends correctly.
  */
 import eventBus from '../core/EventBus';
+import characterState, { Traversal } from '../character/CharacterStateSystem';
 import { ANIMATION } from '../utils/Constants';
 import { PlayerState } from '../player/PlayerState';
 import type { WeaponViewmodel } from '../weapons/WeaponViewmodel';
@@ -185,7 +186,15 @@ export class AnimationStateMachine {
     let baseClip: string | null = null;
     let baseCrossfade: number = ANIMATION.CROSSFADE_DEFAULT_SECONDS;
 
-    if (context.weaponAction === 'SWITCHING') {
+    // Traversal outranks every weapon action: the hands are on the ledge, so
+    // the mantle/vault clip owns both chains. Read straight from the state
+    // authority rather than a local mirror.
+    const traversal = characterState.traversal;
+    if (traversal === Traversal.MANTLE) {
+      oneShotClip = 'mantle_climb';
+    } else if (traversal === Traversal.VAULT) {
+      oneShotClip = 'vault_over';
+    } else if (context.weaponAction === 'SWITCHING') {
       oneShotClip = SwitchWeaponState.getClipName(context);
     } else if (context.weaponAction === 'RELOADING') {
       oneShotClip = ReloadState.getClipName(context);

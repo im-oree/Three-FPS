@@ -18,18 +18,26 @@
  *    switch executes the instant the blocking action completes (§5).
  */
 import eventBus from '../core/EventBus';
+import inputContexts from '../core/InputContextStack';
+import characterState, { WeaponAction, Aim } from '../character/CharacterStateSystem';
 import type { InputManager } from '../core/InputManager';
 import settingsStore from '../core/SettingsStore';
 import type { PlayerCamera } from '../player/PlayerCamera';
 import { PlayerState, type PlayerStateValue } from '../player/PlayerState';
+import loadoutManager from '../customization/LoadoutManager';
 import { ANIMATION, BOOT_LOADOUT, CAMERA, CAMERA_FEEL, SETTINGS_KEYS, WEAPON } from '../utils/Constants';
 import { getProfile } from './WeaponProfile';
 import ballistics from './BallisticsSystem';
 import { Rifle } from './definitions/Rifle';
 import { Pistol } from './definitions/Pistol';
 import { Shotgun } from './definitions/Shotgun';
+import { SMG } from './definitions/SMG';
+import { Sniper } from './definitions/Sniper';
+import { RocketLauncher } from './definitions/RocketLauncher';
 import { Fists } from './definitions/Fists';
 import FireModeSystem from './FireModeSystem';
+import { CyclingActionSystem } from './CyclingActionSystem';
+import scopeSystem from './ScopeSystem';
 import ReloadSystem from './ReloadSystem';
 import WeaponBase from './WeaponBase';
 import type { WeaponViewmodel } from './WeaponViewmodel';
@@ -52,12 +60,23 @@ export class WeaponManager {
     new WeaponBase(Rifle),
     new WeaponBase(Pistol),
     new WeaponBase(Shotgun),
+    // Document D roster.
+    new WeaponBase(SMG),
+    new WeaponBase(Sniper),
+    new WeaponBase(RocketLauncher),
     new WeaponBase(Fists),
   ];
-  private loadout: string[] = [...BOOT_LOADOUT];
+  /**
+   * Document 5 §7.3: the equipped set comes from the player's saved LOADOUT,
+   * not a hardcoded pairing. BOOT_LOADOUT remains the fallback for a first
+   * run with nothing stored.
+   */
+  private loadout: string[] = [...loadoutManager.bootOrder];
   activeIndex = 0;
   private readonly fireMode = new FireModeSystem();
   private readonly reload = new ReloadSystem();
+  /** Document D §2.1: shared by the shotgun's pump and the sniper's bolt. */
+  readonly cycling = new CyclingActionSystem();
   private adsActive = false;
   private adsLatched = false; // toggle-ADS mode latch
   private switching = false;
@@ -79,7 +98,14 @@ export class WeaponManager {
   private clock = 0;
 
   constructor(private readonly deps: WeaponManagerDeps) {
+    if (this.loadout.length === 0) this.loadout = [...BOOT_LOADOUT];
     this.activeIndex = this.inventoryIndex(this.loadout[0]);
+    // Re-read the loadout whenever the player changes it in the menu, so the
+    // next match starts with what they actually picked.
+    eventBus.on('loadout:changed', () => {
+      this.loadout = [...loadoutManager.bootOrder];
+      this.activeIndex = this.inventoryIndex(this.loadout[0]);
+    });
     // §8: starting tac sprint mid-reload cancels it (no completion event).
     eventBus.on('player:tacSprintStart', () => {
       if (this.reload.isReloading) this.reload.cancel();
@@ -112,6 +138,14 @@ export class WeaponManager {
     return this.inventory[this.activeIndex];
   }
 
+  /** A new match hands the player full magazines and full reserves. */
+  refillAllAmmo(): void {
+    for (const weapon of this.inventory) {
+      weapon.currentMagazineAmmo = weapon.def.magazineSize;
+      weapon.currentReserveAmmo = weapon.def.startingReserveAmmo;
+    }
+  }
+
   get isADSActive(): boolean {
     return this.adsActive;
   }
@@ -133,6 +167,8 @@ export class WeaponManager {
 
   update(dt: number): void {
     this.clock += dt;
+    // Document D §2.1: advance any in-flight pump/bolt cycle.
+    this.cycling.update(dt);
     const { input } = this.deps;
     const movementState = this.deps.getMovementState();
     const tacSprinting = this.deps.getTacticalSprinting();
@@ -143,7 +179,10 @@ export class WeaponManager {
     // --- fire input with Document 2.5 movement gating ------------------------
     // Base gate: reloading/switching always block; SPRINT states resolve via
     // the §4.2/§4.3 cancel rules below; SLIDE/AIR/LANDING/CROUCH all allow.
-    const rawFireDown = input.isActionDown('fire');
+    // Document I §6.5: while another context owns input (tablet raised,
+    // steering the missile, ground-targeting) fire never reaches weapons at
+    // all — the same click that designates on the tablet map must not shoot.
+    const rawFireDown = inputContexts.gameplayOwnsInput && input.isActionDown('fire');
     const fireDown = rawFireDown && !this.switching && !this.reload.isReloading;
     let firePressed = fireDown && !this.prevFireDown;
     this.prevFireDown = fireDown;
@@ -214,8 +253,31 @@ export class WeaponManager {
     if (this.wasPressedThisFrame('reload')) this.requestReload(tacSprinting);
     if (this.wasPressedThisFrame('weaponSlot1')) this.switchToSlot(0, tacSprinting);
     if (this.wasPressedThisFrame('weaponSlot2')) this.switchToSlot(1, tacSprinting);
-    const wheel = input.getWheelDelta();
-    if (wheel !== 0 && !this.switching && !tacSprinting) this.cycle(wheel > 0 ? 1 : -1);
+    if (this.wasPressedThisFrame('weaponSlot3')) this.switchToSlot(2, tacSprinting);
+    if (this.wasPressedThisFrame('weaponSlot4')) this.switchToSlot(3, tacSprinting);
+    if (this.wasPressedThisFrame('weaponSlot5')) this.switchToSlot(4, tacSprinting);
+    if (this.wasPressedThisFrame('weaponSlot6')) this.switchToSlot(5, tacSprinting);
+    if (this.wasPressedThisFrame('weaponSlot7')) this.switchToSlot(6, tacSprinting);
+    // Weapon switching/reload are gameplay-context actions: while the tablet
+    // or the missile owns input the wheel cycles the TABLET, so weapons must
+    // not consume it here (it would also switch guns under the tablet).
+    const wheel = inputContexts.gameplayOwnsInput ? input.getWheelDelta() : 0;
+    if (wheel !== 0 && !this.switching && !tacSprinting) {
+      // Document D §6.5: while scoped through a variable optic the wheel
+      // adjusts MAGNIFICATION instead of cycling weapons — swapping guns
+      // mid-shot with the same gesture would be indefensible.
+      if (scopeSystem.isScoped) {
+        // Wheel delta is +1 when scrolling DOWN; zooming in should be up.
+        scopeSystem.adjustZoom(wheel > 0 ? -1 : 1);
+        this.applyScopeFov();
+      } else {
+        this.cycle(wheel > 0 ? 1 : -1);
+      }
+    }
+    // Breath hold: the sprint key, while scoped (Document C §8.5).
+    scopeSystem.setHoldingBreath(
+      scopeSystem.isScoped && input.isActionDown('sprint'),
+    );
     if (this.wasPressedThisFrame('inspect')) this.tryInspect(movementState, tacSprinting);
     // §8: inspect cancels instantly on movement/fire/ADS input.
     if (this.inspectHoldTimer > 0 && movementState !== PlayerState.IDLE) this.inspectHoldTimer = 0;
@@ -277,6 +339,11 @@ export class WeaponManager {
     if (this.switching || this.reload.isReloading) return false;
     if (movementState === PlayerState.SPRINT && this.deps.getTacticalSprinting()) return false;
     if (!weapon.canFireNow(this.clock)) return false;
+    // Document D §2.1: a manually-cycled weapon refuses to fire until the
+    // pump/bolt has been racked. The gate consumes the chambered round.
+    if (weapon.def.requiresManualCycle && !this.cycling.onFireAttempt().allowed) {
+      return false;
+    }
     weapon.consumeRound();
     weapon.markFired(this.clock);
     this.lastShotClock = this.clock;
@@ -300,7 +367,21 @@ export class WeaponManager {
       isADS: this.adsActive,
       isJumping: AIRBORNE.includes(movementState),
     });
+    // Rack the action AFTER the shot has gone out (§2.1). If the magazine is
+    // now empty there is nothing to chamber, so let the reload handle it.
+    if (weapon.def.requiresManualCycle && weapon.currentMagazineAmmo > 0) {
+      this.cycling.begin(weapon);
+    }
     return true;
+  }
+
+  /** Re-apply the FOV modifier after a live magnification change. */
+  private applyScopeFov(): void {
+    const fov = scopeSystem.adsFovFor(CAMERA.DEFAULT_FOV);
+    if (fov === null) return;
+    this.deps.camera.applyFOVModifier(
+      'ads', fov, CAMERA_FEEL.ADS_FOV_LERP_SPEED, CAMERA_FEEL.ADS_FOV_PRIORITY,
+    );
   }
 
   private requestReload(tacSprinting: boolean): void {
@@ -323,6 +404,7 @@ export class WeaponManager {
       this.snapToReadyTimer = WEAPON.SPRINT_TO_READY_DURATION;
       return;
     }
+    if (!characterState.request({ channel: 'aim', to: Aim.ADS, source: 'WeaponManager.startADS' })) return;
     this.adsActive = true;
     // ADS zoom rides the Doc-2 FOV modifier stack at a priority above
     // sprint's, so both coexist and blending never pops (§6.4/§15 + §7.1).
@@ -334,9 +416,12 @@ export class WeaponManager {
     const adsFov = profile.magnification > 0 && this.activeWeapon.def.id !== 'fists'
       ? CAMERA.DEFAULT_FOV / Math.max(profile.magnification, 1 / CAMERA_FEEL.ADS_ONE_X_FEEL)
       : this.activeWeapon.def.adsZoomFOV;
+    // A magnified optic derives its FOV live from current magnification.
+    scopeSystem.setScoped(true);
+    const scopedFov = scopeSystem.adsFovFor(CAMERA.DEFAULT_FOV);
     this.deps.camera.applyFOVModifier(
       'ads',
-      adsFov,
+      scopedFov ?? adsFov,
       CAMERA_FEEL.ADS_FOV_LERP_SPEED,
       CAMERA_FEEL.ADS_FOV_PRIORITY,
     );
@@ -348,8 +433,10 @@ export class WeaponManager {
 
   stopADS(): void {
     if (!this.adsActive) return;
+    characterState.request({ channel: 'aim', to: Aim.HIP, source: 'WeaponManager.stopADS', force: true });
     this.adsActive = false;
     this.adsLatched = false;
+    scopeSystem.setScoped(false);
     this.deps.camera.clearFOVModifier('ads');
     eventBus.emit('weapon:adsStop', {
       weaponId: this.activeWeapon.def.id,
@@ -367,6 +454,10 @@ export class WeaponManager {
 
   switchTo(index: number): void {
     if (index === this.activeIndex || this.switching) return;
+    this.cycling.cancel();
+    // New optic: reset magnification to its base and refill the breath meter.
+    scopeSystem.setScoped(false);
+    scopeSystem.setProfile(getProfile(this.inventory[index].def.id));
     if (index < 0 || index >= this.inventory.length) return;
     if (this.adsActive) this.stopADS();
     if (this.reload.isReloading) this.reload.cancel(); // no ammo, no complete event
@@ -374,8 +465,15 @@ export class WeaponManager {
     this.bufferedFire = false;
     const from = this.activeWeapon;
     const to = this.inventory[index];
-    from.isSwitching = true;
-    to.isSwitching = true;
+    
+    
+    // Ask the authority FIRST. Committing switching=true before the request
+    // meant a rejection left the manager permanently stuck mid-switch: every
+    // later switchTo() bailed on `this.switching`, so the weapon could never
+    // be changed again (fists became unreachable).
+    if (!characterState.request({
+      channel: 'weaponAction', to: WeaponAction.SWITCHING, source: 'WeaponManager.switchTo',
+    })) return;
     this.switching = true;
     this.switchTarget = index;
     this.switchElapsed = 0;
@@ -397,12 +495,15 @@ export class WeaponManager {
   }
 
   private finishSwitch(): void {
-    const from = this.activeWeapon;
-    from.isSwitching = false;
     this.activeIndex = this.switchTarget;
-    this.activeWeapon.isSwitching = false;
+    
     this.switching = false;
     this.switchJustCompleted = true;
+    characterState.setFact('weaponId', this.activeWeapon.def.id);
+    characterState.request({
+      channel: 'weaponAction', to: WeaponAction.NONE,
+      source: 'WeaponManager.finishSwitch', force: true,
+    });
     eventBus.emit('weapon:switchComplete', { weaponId: this.activeWeapon.def.id });
   }
 

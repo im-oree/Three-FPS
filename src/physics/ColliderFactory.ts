@@ -67,6 +67,11 @@ export class ColliderFactory {
     if (collider) this.physics.world.removeRigidBody(collider.parent() as RAPIER.RigidBody);
   }
 
+  /** Surface tag for a collider handle (footstep/impact audio lookups). */
+  surfaceOf(handle: number): string | null {
+    return this.byHandle.get(handle)?.surfaceType ?? null;
+  }
+
   topYOf(handle: number): number {
     return this.byHandle.get(handle)?.topY ?? -Infinity;
   }

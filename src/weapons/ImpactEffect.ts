@@ -9,6 +9,19 @@
  * Fixed pool of EFFECTS.POOL_SIZE instances; zero allocations at hit time.
  */
 import * as THREE from 'three';
+
+/** Any of the three shapes emitters use for a world position. */
+export type VectorLike =
+  | THREE.Vector3
+  | readonly number[]
+  | { x: number; y: number; z: number };
+
+function toVector(value: VectorLike): THREE.Vector3 {
+  if (value instanceof THREE.Vector3) return value;
+  if (Array.isArray(value)) return new THREE.Vector3(value[0], value[1], value[2]);
+  const o = value as { x: number; y: number; z: number };
+  return new THREE.Vector3(o.x ?? 0, o.y ?? 0, o.z ?? 0);
+}
 import type { AssetLoader } from '../core/AssetLoader';
 import eventBus from '../core/EventBus';
 import { EFFECTS } from '../utils/Constants';
@@ -42,7 +55,7 @@ export class ImpactEffect {
       for (let i = 0; i < EFFECTS.POOL_SIZE; i += 1) this.pool.push(this.createInstance());
     });
     eventBus.on('combat:hit', (payload) =>
-      this.trigger(payload as { point: THREE.Vector3 | number[]; normal: THREE.Vector3 | number[]; surfaceType: string }),
+      this.trigger(payload as { point: VectorLike; normal: VectorLike; surfaceType: string }),
     );
   }
 
@@ -72,14 +85,17 @@ export class ImpactEffect {
     return { group, particles, decal, decalMaterial, life: 0, active: false };
   }
 
-  trigger(payload: { point: THREE.Vector3 | number[]; normal: THREE.Vector3 | number[]; surfaceType: string }): void {
+  trigger(payload: { point: VectorLike; normal: VectorLike; surfaceType: string }): void {
     if (!this.dustTex) return;
     const instance = this.pool.find((p) => !p.active);
     if (!instance) return;
     instance.active = true;
     instance.life = EFFECTS.IMPACT_LIFETIME_SECONDS;
-    const point = payload.point instanceof THREE.Vector3 ? payload.point : new THREE.Vector3(...payload.point);
-    const normal = payload.normal instanceof THREE.Vector3 ? payload.normal : new THREE.Vector3(...payload.normal);
+    // Accept a Vector3, a [x,y,z] array, OR a plain {x,y,z} object. Emitters
+    // across the codebase use all three, and spreading a plain object threw
+    // "Spread syntax requires ...iterable" straight out of the event handler.
+    const point = toVector(payload.point);
+    const normal = toVector(payload.normal);
     const isDummy = payload.surfaceType === 'dummy';
     const tex = isDummy ? this.sparkTex ?? this.dustTex : this.dustTex;
     const tint = isDummy ? EFFECTS.IMPACT_COLOR_DUMMY : EFFECTS.IMPACT_COLOR_GENERIC;

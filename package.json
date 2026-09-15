@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "OPERATOR — a Call of Duty-style 3D first-person shooter built on Three.js + Vite (Document 1: foundation & core engine).",
+  "description": "OPERATOR \u2014 a Call of Duty-style 3D first-person shooter built on Three.js + Vite (Document 1: foundation & core engine).",
   "scripts": {
     "dev": "vite",
     "build": "vite build && node tools/copyAssets.mjs",
@@ -14,10 +14,23 @@
     "verify": "node tools/verify/verify.mjs",
     "verify:acceptance": "node tools/verify/acceptance-doc2.mjs",
     "verify:acceptance:doc1": "node tools/verify/acceptance-doc1.mjs",
-    "verify:acceptance:doc2": "node tools/verify/acceptance-doc2.mjs"
+    "verify:acceptance:doc2": "node tools/verify/acceptance-doc2.mjs",
+    "verify:acceptance:docc": "node tools/verify/acceptance-docc.mjs",
+    "verify:acceptance:docd": "node tools/verify/acceptance-docd.mjs",
+    "verify:acceptance:tps": "node tools/verify/acceptance-tps.mjs",
+    "verify:state": "node tools/verify/state-authority.mjs",
+    "generate:audio": "node tools/generateAudio.mjs",
+    "verify:acceptance:doc5": "node tools/verify/acceptance-doc5.mjs",
+    "generate:skins": "node tools/generateSkinTextures.js",
+    "validate:weapons": "node tools/validateWeaponModel.js --all",
+    "generate:vehicles": "node tools/generateVehicleModels.js",
+    "generate:explosionfx": "node tools/generateExplosionTextures.js",
+    "generate:icons": "node tools/generateKillstreakIcons.js",
+    "validate:cinematics": "node tools/verify/validate-cinematics.mjs"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.20.0",
+    "simplex-noise": "^4.0.3",
     "three": "0.170.0"
   },
   "devDependencies": {

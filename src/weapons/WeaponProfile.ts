@@ -20,7 +20,13 @@ export interface GripFineTuneOffset {
   readonly rotationEuler: readonly [number, number, number];
 }
 
-export type GripStyle = 'twoHanded' | 'oneHanded' | 'fistsOnly';
+/**
+ * Document D §7.5 adds 'shoulderMounted': the primary hand still IK-solves to
+ * Socket_Grip normally, but Socket_ShoulderRest is locked against the
+ * shoulder rather than IK-solved, since a rigid tube resting on a shoulder
+ * needs correct root placement, not joint-chain bending.
+ */
+export type GripStyle = 'twoHanded' | 'oneHanded' | 'fistsOnly' | 'shoulderMounted';
 
 /** The WeaponProfile schema. */
 export interface WeaponProfile {
@@ -47,6 +53,17 @@ export interface WeaponProfile {
   readonly magnification: number;
   /** §6.5/§8.5: scoped weapons get breath sway + Shift breath-hold. */
   readonly hasScopeShake: boolean;
+  /** Document D §6.5: live zoom range for opticType 'variableScope'. */
+  readonly minMagnification?: number;
+  readonly maxMagnification?: number;
+  /** Seconds the shooter can suppress scope sway (Document C §8.5). */
+  readonly breathHoldMaxDuration?: number;
+  /** Document D §2.1: clip + part node racked between shots. */
+  readonly cycleClipName?: string;
+  /** Document D §4.6: beats for ONE shell-insert loop iteration. */
+  readonly shellInsertEvents?: readonly ReloadEvent[];
+  /** Document D §3.5: how far the weapon drops on sprint (1 = rifle default). */
+  readonly sprintPoseIntensity?: number;
   readonly gripStyle: GripStyle;
   /** Keys into the SWAY feel tables (data authors only). */
   readonly swayProfile: string;
@@ -76,6 +93,18 @@ const PISTOL_RELOAD_EMPTY_EVENTS: readonly ReloadEvent[] = [
   { atProgress: 0.85, event: 'chamber_round' },
 ];
 /** Shotgun: shells in, then chamber + pump (Document A §8.7). */
+/**
+ * Document D §7.7: the launcher breach-loads ONE round, so tactical and empty
+ * reloads are the same motion — a single `round_loaded` beat instead of the
+ * rifle's detach/attach/chamber trio.
+ */
+const LAUNCHER_RELOAD_EVENTS: readonly ReloadEvent[] = [
+  { atProgress: 0.7, event: 'round_loaded' },
+];
+/** Document D §4.6: one shell per loop iteration. */
+const SHOTGUN_SHELL_INSERT_EVENTS: readonly ReloadEvent[] = [
+  { atProgress: 0.55, event: 'shell_inserted' },
+];
 const SHOTGUN_RELOAD_TACTICAL_EVENTS: readonly ReloadEvent[] = [
   { atProgress: 0.5, event: 'magazine_attach' },
   { atProgress: 0.82, event: 'chamber_round' },
@@ -130,8 +159,83 @@ export const WEAPON_PROFILES: Record<string, WeaponProfile> = {
     gripStyle: 'twoHanded',
     swayProfile: 'rifle_default',
     breathingProfile: 'rifle_default',
+    cycleClipName: 'shotgun_pump_cycle',
+    shellInsertEvents: SHOTGUN_SHELL_INSERT_EVENTS,
     reloadTacticalEvents: SHOTGUN_RELOAD_TACTICAL_EVENTS,
     reloadEmptyEvents: SHOTGUN_RELOAD_EMPTY_EVENTS,
+  },
+
+
+  // --- Document D §5: SMG — lightest two-handed, red dot, snappiest ADS ----
+  smg: {
+    weaponId: 'smg',
+    modelPath: 'weapons/smg.glb',
+    gripFineTuneOffset: NO_FINETUNE,
+    gripSecondaryFineTuneOffset: NO_FINETUNE,
+    hipRestPosition: [0.16, -0.15, -0.40],
+    hipRestRotationEuler: [0, 0, 0],
+    adsCameraOffset: [0, 0.1, -0.111],
+    opticType: 'reflexDot',
+    eyeRelief: 0.055,
+    // A red dot is 1x: Document C §8.3's small "focus" reduction only.
+    magnification: 1,
+    hasScopeShake: false,
+    gripStyle: 'twoHanded',
+    swayProfile: 'smg_twitchy',
+    breathingProfile: 'smg_default',
+    // Lightest two-handed weapon, so it dips least on sprint (§5.4).
+    sprintPoseIntensity: 0.75,
+    // §5.3: deliberately REUSES the rifle's reload event table — the point of
+    // Document C's weapon-agnostic ReloadSystem.
+    reloadTacticalEvents: RIFLE_RELOAD_TACTICAL_EVENTS,
+    reloadEmptyEvents: RIFLE_RELOAD_EMPTY_EVENTS,
+  },
+
+  // --- Document D §6: bolt-action sniper with a true variable scope --------
+  sniper: {
+    weaponId: 'sniper',
+    modelPath: 'weapons/sniper.glb',
+    gripFineTuneOffset: NO_FINETUNE,
+    gripSecondaryFineTuneOffset: NO_FINETUNE,
+    hipRestPosition: [0.19, -0.18, -0.50],
+    hipRestRotationEuler: [0, 0, 0],
+    adsCameraOffset: [0, 0.1, -0.111],
+    opticType: 'variableScope',
+    // Longest eye relief of the roster — a real scope sits well off the eye.
+    eyeRelief: 0.12,
+    magnification: 4,
+    minMagnification: 4,
+    maxMagnification: 10,
+    hasScopeShake: true,
+    breathHoldMaxDuration: 4.0,
+    gripStyle: 'twoHanded',
+    swayProfile: 'sniper_heavy',
+    breathingProfile: 'sniper_scoped',
+    sprintPoseIntensity: 1.25,
+    cycleClipName: 'sniper_bolt_cycle',
+    reloadTacticalEvents: RIFLE_RELOAD_TACTICAL_EVENTS,
+    reloadEmptyEvents: RIFLE_RELOAD_EMPTY_EVENTS,
+  },
+
+  // --- Document D §7: shoulder-mounted projectile launcher -----------------
+  rocket_launcher: {
+    weaponId: 'rocket_launcher',
+    modelPath: 'weapons/rocket_launcher.glb',
+    gripFineTuneOffset: NO_FINETUNE,
+    gripSecondaryFineTuneOffset: NO_FINETUNE,
+    hipRestPosition: [0.20, -0.14, -0.46],
+    hipRestRotationEuler: [0, 0, 0],
+    adsCameraOffset: [0, 0.1, -0.111],
+    opticType: 'ironSights',
+    eyeRelief: 0.08,
+    magnification: 1,
+    hasScopeShake: false,
+    gripStyle: 'shoulderMounted',
+    swayProfile: 'launcher_heavy',
+    breathingProfile: 'launcher_default',
+    sprintPoseIntensity: 1.3,
+    reloadTacticalEvents: LAUNCHER_RELOAD_EVENTS,
+    reloadEmptyEvents: LAUNCHER_RELOAD_EVENTS,
   },
 
   pistol: {

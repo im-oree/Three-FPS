@@ -113,7 +113,20 @@ export class PlayerCharacterController {
       if (halfY === undefined) return false; // unknown shape → treat as solid
       return t.y + halfY <= feetY + PLAYER.MAX_STEP_HEIGHT;
     };
-    this.controller.computeColliderMovement(this.collider, desired, undefined, undefined, exclude);
+    // EXCLUDE_DYNAMIC: dynamic bodies (shell casings — and later any dynamic
+    // prop) must NEVER displace the player. Previously a casing ejected while
+    // ADS spawned INSIDE the capsule (the ADS pose centers the ejection port on
+    // the eye), the KCC treated it as solid, and every shot shoved the player
+    // ~0.25 m in a random direction with velocity untouched. Player-vs-dynamic
+    // interaction stays SOLID for nothing in this game — the physics solver
+    // still pushes the cosmetic debris around appropriately on its side.
+    this.controller.computeColliderMovement(
+      this.collider,
+      desired,
+      RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC,
+      undefined,
+      exclude,
+    );
     const mv = this.controller.computedMovement();
     const corrected = new THREE.Vector3(mv.x, 0, mv.z);
     // Read collision identities SYNCHRONOUSLY (the record's wasm memory is
@@ -146,6 +159,17 @@ export class PlayerCharacterController {
     return best;
   }
 
+  /**
+   * What surface is directly under the player (Document 4/5: footstep and
+   * landing audio). Returns the ColliderFactory surface tag of whatever the
+   * downward ray hits, or null when airborne.
+   */
+  groundSurfaceAt(origin: THREE.Vector3, maxDistance = 2.2): string | null {
+    const hit = this.physics.castRayStatic(origin, new THREE.Vector3(0, -1, 0), maxDistance);
+    if (!hit) return null;
+    return this.factory.surfaceOf(hit.collider.handle);
+  }
+
   /** Upward capsule-footprint probe (headroom for stand-up checks). */
   raycastUp(origin: THREE.Vector3, distance: number): CollisionHit | null {
     const up = new THREE.Vector3(0, 1, 0);
@@ -162,6 +186,20 @@ export class PlayerCharacterController {
       }
     }
     return best;
+  }
+
+  /**
+   * Arbitrary-direction static probe (FPS/TPS Spec §2 vault raycasts).
+   * Single ray, not a footprint sweep: the traversal probes deliberately
+   * sample precise points (torso height, above the lip, the landing pad)
+   * rather than a capsule envelope, so a footprint spread would smear the
+   * exact ledge geometry the Bezier is built from.
+   */
+  raycastHorizontal(origin: THREE.Vector3, direction: THREE.Vector3, maxDistance: number): CollisionHit | null {
+    const dir = direction.clone().normalize();
+    const hit = this.physics.castRayStatic(origin, dir, maxDistance);
+    if (!hit || hit.toi <= INSIDE_EPSILON) return null;
+    return { point: hit.point, normal: hit.normal, distance: hit.toi };
   }
 
   /** Centre + rim sample points of the capsule footprint. */

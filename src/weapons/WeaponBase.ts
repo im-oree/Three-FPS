@@ -6,6 +6,9 @@
  * Pattern choice (spec §6.1): a base class consumed by composition —
  * WeaponManager owns one WeaponBase per equipped slot.
  */
+import characterState, { WeaponAction } from '../character/CharacterStateSystem';
+import cheatsStore, { CheatId } from '../core/CheatsStore';
+import statusEffects from '../player/ActiveStatusEffects';
 import { SPREAD } from '../utils/Constants';
 import { clamp, lerp } from '../utils/MathUtils';
 import type { PlayerStateValue } from '../player/PlayerState';
@@ -56,7 +59,12 @@ export interface WeaponDefinition {
   damageFalloffStartDistance: number;
   damageFalloffEndDistance: number;
   fireRateRPM: number;
-  fireMode: 'auto' | 'semi' | 'burst';
+  /**
+   * Document D §2: 'manualCycle' (pump/bolt) and 'projectile' (launcher) join
+   * the original three. Both are additive branches in FireModeSystem and
+   * BallisticsSystem respectively — no existing mode changed behaviour.
+   */
+  fireMode: 'auto' | 'semi' | 'burst' | 'manualCycle' | 'projectile';
   burstCount: number | null;
   burstDelaySeconds: number | null;
   magazineSize: number;
@@ -78,15 +86,48 @@ export interface WeaponDefinition {
   /** Hands-first phase: no projectile, no ammo — a short-range hit ray. */
   melee?: boolean;
   meleeRangeMeters?: number;
+
+  // --- Document D §2.1: manually-cycled actions (shotgun pump, sniper bolt) --
+  /** Requires racking between shots; gated by CyclingActionSystem. */
+  requiresManualCycle?: boolean;
+  /** Seconds the cycle takes. */
+  cycleDurationSeconds?: number;
+
+  // --- Document D §4: multi-pellet hitscan (shotgun) ------------------------
+  /** >1 spawns this many independently-jittered rays per trigger pull. */
+  pelletCount?: number;
+  /** Cone half-angle for pellet jitter, degrees. */
+  pelletSpreadConeDeg?: number;
+  damagePerPelletNear?: number;
+  damagePerPelletFar?: number;
+
+  // --- Document D §4.6: per-shell reload ------------------------------------
+  reloadStyle?: 'magazine' | 'perShell' | 'singleRound';
+  reloadShellInsertDuration?: number;
+
+  // --- Document D §2.2 / §7: projectile ballistics (rocket launcher) --------
+  projectileSpeed?: number;
+  projectileGravityScale?: number;
+  projectileDrag?: number;
+  projectileMaxLifetime?: number;
+  blastRadius?: number;
+  blastDamage?: number;
+  blastFalloffCurve?: 'linear' | 'quadratic';
 }
 
 export class WeaponBase {
   readonly def: WeaponDefinition;
   currentMagazineAmmo: number;
   currentReserveAmmo: number;
-  /** Set by ReloadSystem / WeaponManager while those actions are in flight. */
-  isReloading = false;
-  isSwitching = false;
+  /**
+   * Reload/switch status is NOT stored here. The CharacterStateSystem is the
+   * single authority for what the character is doing; a local copy would drift
+   * (it has before). These are derived reads — see tools/verify/state-authority.mjs.
+   */
+  get busyWithAction(): boolean {
+    const a = characterState.weaponAction;
+    return a === WeaponAction.RELOADING || a === WeaponAction.SWITCHING;
+  }
   private lastFiredAt = -Infinity;
 
   constructor(def: WeaponDefinition) {
@@ -101,12 +142,14 @@ export class WeaponBase {
 
   consumeRound(): void {
     if (this.def.melee) return; // fists never consume rounds
+    // Infinite-ammo cheat: the magazine never depletes on fire.
+    if (cheatsStore.get(CheatId.INFINITE_STUFF)) return;
     this.currentMagazineAmmo = Math.max(0, this.currentMagazineAmmo - 1);
   }
 
   canFire(): boolean {
-    if (this.def.melee) return !this.isReloading && !this.isSwitching;
-    return this.currentMagazineAmmo > 0 && !this.isReloading && !this.isSwitching;
+    if (this.def.melee) return !this.busyWithAction;
+    return this.currentMagazineAmmo > 0 && !this.busyWithAction;
   }
 
   canFireNow(currentTime: number): boolean {
@@ -120,7 +163,10 @@ export class WeaponBase {
   /** Moves reserve ammo into the magazine; returns rounds actually added. */
   refillMagazine(): number {
     const need = this.def.magazineSize - this.currentMagazineAmmo;
-    const taken = Math.min(need, this.currentReserveAmmo);
+    // Infinite-ammo cheat: reserves are bottomless, so a reload always fills.
+    const taken = cheatsStore.get(CheatId.INFINITE_STUFF)
+      ? need
+      : Math.min(need, this.currentReserveAmmo);
     this.currentMagazineAmmo += taken;
     this.currentReserveAmmo -= taken;
     return taken;
@@ -158,6 +204,9 @@ export class WeaponBase {
         break;
     }
     if (isJumping && !isADS) degrees = Math.max(degrees, this.def.hipfireSpreadJumpingDeg);
+    // Document F §6.3: being flashed genuinely widens your cone — you cannot
+    // aim while blinded. Additive degrees, from the same generic effect list.
+    degrees += statusEffects.additive('spreadPenalty');
     return degrees;
   }
 
