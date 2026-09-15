@@ -101,7 +101,50 @@ async function main() {
     // Let props settle and textures upload.
     await new Promise((r) => setTimeout(r, 1200));
 
-    const framed = await page.evaluate((levelId) => {
+    // Frame from the BAKED COLLISION, which is the ground truth for where
+    // the map can actually be played.
+    //
+    // Two earlier approaches failed, each on a different map. Framing from
+    // worldExtents made prototype a postage stamp (it declares 260 m but its
+    // airfield sits in the middle third). Framing from rendered prop bounds
+    // then over-cropped warehouse, because scenery meshes cluster inside the
+    // walls and the walls themselves are part of the floor slab. The
+    // collision boxes have neither problem: they are exactly the solids a
+    // player can touch, they already exclude decor, and they are on disk, so
+    // no extra work happens in the browser.
+    //
+    // The floor slab is dropped (it spans the whole world), and outliers are
+    // cut at the 90th percentile by distance from centre -- measured on
+    // prototype, the real structures end at 130 m and two distant boundary
+    // walls sit at 258 m, so the gap is unambiguous.
+    const collisionPath = path.join(ROOT, 'assets/collision', `${id}.json`);
+    let bounds = null;
+    if (fs.existsSync(collisionPath)) {
+      const solids = JSON.parse(fs.readFileSync(collisionPath, 'utf8')).boxes
+        .filter((b) => (b.maxY - b.minY) > 0.5);
+      if (solids.length >= 6) {
+        const ranked = solids
+          .map((b) => ({
+            b,
+            d: Math.max(
+              Math.abs((b.minX + b.maxX) / 2),
+              Math.abs((b.minZ + b.maxZ) / 2),
+            ),
+          }))
+          .sort((a, z) => a.d - z.d)
+          .slice(0, Math.max(6, Math.ceil(solids.length * 0.9)))
+          .map((entry) => entry.b);
+
+        bounds = {
+          minX: Math.min(...ranked.map((b) => b.minX)),
+          maxX: Math.max(...ranked.map((b) => b.maxX)),
+          minZ: Math.min(...ranked.map((b) => b.minZ)),
+          maxZ: Math.max(...ranked.map((b) => b.maxZ)),
+        };
+      }
+    }
+
+    const framed = await page.evaluate((precomputed) => {
       const op = window.__OPERATOR__;
       const level = op.levelLoader.currentDefinition ?? {};
       const extents = level.worldExtents ?? {
@@ -109,7 +152,18 @@ async function main() {
         halfWidth: level.groundHalfSize ?? 40,
         halfHeight: level.groundHalfSize ?? 40,
       };
-      const reach = Math.max(extents.halfWidth, extents.halfHeight);
+
+      const box = precomputed ?? {
+        minX: extents.centerX - extents.halfWidth,
+        maxX: extents.centerX + extents.halfWidth,
+        minZ: extents.centerZ - extents.halfHeight,
+        maxZ: extents.centerZ + extents.halfHeight,
+      };
+
+      const centerX = (box.minX + box.maxX) / 2;
+      const centerZ = (box.minZ + box.maxZ) / 2;
+      // Breathing room so nothing touches the frame edge.
+      const reach = Math.max((box.maxX - box.minX) / 2, (box.maxZ - box.minZ) / 2) * 1.15;
 
       // Three-quarter aerial on the diagonal: shows building faces AND the
       // layout. Straight down reads as a blueprint, not a map.
@@ -117,18 +171,18 @@ async function main() {
       const yaw = (35 * Math.PI) / 180;
       const distance = reach * 2.25;
       return {
-        reach,
+        reach: Math.round(reach),
         distance: Math.round(distance),
-        far: reach * 14,
+        far: Math.max(reach * 14, 1200),
         pos: [
-          extents.centerX + Math.sin(yaw) * Math.cos(pitch) * distance,
+          centerX + Math.sin(yaw) * Math.cos(pitch) * distance,
           Math.sin(pitch) * distance + reach * 0.12,
-          extents.centerZ + Math.cos(yaw) * Math.cos(pitch) * distance,
+          centerZ + Math.cos(yaw) * Math.cos(pitch) * distance,
         ],
-        look: [extents.centerX, 0, extents.centerZ],
+        look: [centerX, 0, centerZ],
         skyColor: level.skyColor ?? 0x2a3240,
       };
-    }, id);
+    }, bounds);
 
     // Render the preview OURSELVES into an offscreen target and read the
     // pixels back, instead of screenshotting the page.
