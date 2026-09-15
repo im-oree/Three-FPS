@@ -35,6 +35,9 @@ import {
 } from '../net/Protocol';
 import { ServerWorld } from './ServerWorld';
 import type { ServerSystem } from './ServerSystem';
+import { CollisionWorld } from './CollisionWorld';
+import { LevelStore, type LevelFetcher } from './LevelStore';
+import { MovementSystem } from './systems/MovementSystem';
 
 /**
  * Longest real interval a single update() call will simulate. Beyond this the
@@ -52,8 +55,18 @@ interface Connection {
   joined: boolean;
 }
 
+export interface GameServerOptions {
+  /** Supplies baked collision data. Omit for a server with no geometry. */
+  readonly levelFetcher?: LevelFetcher;
+}
+
 export class GameServer {
   readonly world = new ServerWorld();
+  /** The authoritative collision geometry every system queries. */
+  readonly collision = new CollisionWorld();
+  private readonly levels: LevelStore | null;
+  /** Tracks the load in flight, so a fast re-join cannot race it. */
+  private levelLoad: Promise<void> | null = null;
 
   private readonly connections = new Map<PlayerId, Connection>();
   private readonly systems: ServerSystem[] = [];
@@ -68,6 +81,15 @@ export class GameServer {
    * player opening a menu must not stop everyone else's world.
    */
   private pausedBySolo = false;
+
+  constructor(options: GameServerOptions = {}) {
+    this.levels = options.levelFetcher ? new LevelStore(options.levelFetcher) : null;
+    // Movement is registered here rather than by the caller: a server that
+    // does not move players is not a server, and making it opt-in would let
+    // the backend and the browser boot with different system sets -- exactly
+    // the divergence this architecture exists to prevent.
+    this.addSystem(new MovementSystem(this.collision));
+  }
 
   // --- lifecycle -----------------------------------------------------------
 
@@ -199,8 +221,43 @@ export class GameServer {
     this.levelId = levelId;
     this.running = true;
     this.broadcast({ t: 'matchLoading', levelId });
+    this.loadLevelCollision(levelId);
     for (const system of this.systems) system.onMatchStart?.(levelId);
   }
+
+  /**
+   * Load the level's geometry into the collision world.
+   *
+   * Asynchronous by necessity (the browser fetches it), but the match starts
+   * immediately: players spawn and the loop runs while geometry arrives. The
+   * alternative -- blocking the match on a fetch -- would mean a slow network
+   * stalls a hosted room for everyone already in it.
+   */
+  private loadLevelCollision(levelId: string): void {
+    if (!this.levels) return;
+    const cached = this.levels.peek(levelId);
+    if (cached) {
+      this.collision.load(cached.boxes);
+      this.world.setSpawnPoints([{ pos: cached.spawn, yaw: cached.spawnYaw }]);
+      return;
+    }
+    // Until the real geometry lands, a floor: without one, every player
+    // spawned during the fetch falls out of the world.
+    this.collision.load([{
+      minX: -200, minY: -1, minZ: -200, maxX: 200, maxY: 0, maxZ: 200, surface: 'concrete',
+    }]);
+    this.levelLoad = this.levels.load(levelId).then((data) => {
+      // The match may have ended or changed level while this was in flight.
+      if (this.levelId !== levelId) return;
+      this.collision.load(data.boxes);
+      this.world.setSpawnPoints([{ pos: data.spawn, yaw: data.spawnYaw }]);
+    }).catch((error: unknown) => {
+      console.warn(`[server] level "${levelId}" collision failed to load:`, error);
+    });
+  }
+
+  /** Resolves once any in-flight level load has settled. For tests. */
+  whenLevelReady(): Promise<void> { return this.levelLoad ?? Promise.resolve(); }
 
   /** End the match once the last player has gone. */
   private endMatchIfEmpty(): void {
@@ -231,6 +288,9 @@ export class GameServer {
   private resetAll(): void {
     for (const system of this.systems) system.reset?.();
     this.world.reset();
+    // Geometry is match-scoped too: leaving it loaded means the next match
+    // starts with the last map's walls until its own data arrives.
+    this.collision.clear();
     this.accumulator = 0;
     this.tick = 0;
     this.elapsed = 0;

@@ -22,6 +22,9 @@ import type {
   EntityId, EntityState, FxEvent, InputFrame, KillstreakSlotState,
   LoadoutSpec, PlayerId, PlayerPublicState, Vec3,
 } from '../net/Protocol';
+// Shared tuning: the server uses the SAME numbers the client always has, so
+// there is no second set of movement constants to drift out of sync.
+import { PLAYER } from '../utils/Constants';
 
 /** Mutable server-side entity. Only a projection of this crosses the wire. */
 export interface ServerEntity {
@@ -58,6 +61,24 @@ export interface ServerPlayer {
   vehicleId: EntityId | null;
   vehicleSeat: string | null;
   killstreakSlots: KillstreakSlotState[];
+
+  // --- movement state, owned by MovementSystem -----------------------------
+  // Velocity is authoritative: the client may predict it, but this is the
+  // copy that decides where the player actually is.
+  vx: number; vy: number; vz: number;
+  grounded: boolean;
+  crouching: boolean;
+  sprinting: boolean;
+  /** Current capsule height; interpolates between stand and crouch. */
+  height: number;
+  /** Seconds of coyote time left — a jump is still legal just after a ledge. */
+  coyote: number;
+  /** Set while a jump input is held, so holding does not re-trigger. */
+  jumpHeld: boolean;
+  /** Highest Y reached since leaving the ground, for fall damage. */
+  fallPeakY: number;
+  /** Last input sequence consumed, echoed back so the client can reconcile. */
+  lastProcessedSeq: number;
 }
 
 export interface SpawnPoint { pos: Vec3; yaw: number }
@@ -157,6 +178,15 @@ export class ServerWorld {
       pendingInput: [],
       vehicleId: null, vehicleSeat: null,
       killstreakSlots: [],
+      vx: 0, vy: 0, vz: 0,
+      grounded: false,
+      crouching: false,
+      sprinting: false,
+      height: PLAYER.STAND_HEIGHT,
+      coyote: 0,
+      jumpHeld: false,
+      fallPeakY: spawn.pos[1],
+      lastProcessedSeq: -1,
     });
     return spawn;
   }

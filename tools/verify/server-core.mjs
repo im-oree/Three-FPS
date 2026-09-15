@@ -10,54 +10,13 @@
  * TypeScript is compiled on the fly with esbuild (already a Vite dependency),
  * so there is no separate build step to keep in sync.
  */
-import { build } from 'esbuild';
-import { writeFileSync, mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-
-let passed = 0;
-let failed = 0;
-const check = (name, ok, detail = '') => {
-  if (ok) { passed += 1; console.log(`  PASS  ${name}${detail ? ` — ${detail}` : ''}`); }
-  else { failed += 1; console.log(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`); }
-};
-
-// --- compile the server + net layer into something Node can import ---------
-// Absolute paths: the entry file lives in a temp dir, so relative specifiers
-// would resolve against /tmp rather than the repo.
-const src = (p) => path.join(process.cwd(), p).replace(/\\/g, '/');
-const entry = `
-export { GameServer } from '${src('src/server/GameServer.ts')}';
-export { ServerWorld } from '${src('src/server/ServerWorld.ts')}';
-export { createLocalTransportPair } from '${src('src/net/LocalTransport.ts')}';
-export { GameClient } from '${src('src/net/GameClient.ts')}';
-export * as Protocol from '${src('src/net/Protocol.ts')}';
-`;
-const dir = mkdtempSync(path.join(tmpdir(), 'servercore-'));
-const entryFile = path.join(dir, 'entry.ts');
-writeFileSync(entryFile, entry);
-
-const outFile = path.join(dir, 'bundle.mjs');
-await build({
-  entryPoints: [entryFile],
-  outfile: outFile,
-  bundle: true,
-  format: 'esm',
-  platform: 'node',
-  target: 'node18',
-  absWorkingDir: process.cwd(),
-  logLevel: 'silent',
-});
+import { buildServerBundle, makeCheck, settle } from './server-harness.mjs';
 
 const { GameServer, createLocalTransportPair, GameClient, Protocol } =
-  await import(`file://${outFile}`);
+  await buildServerBundle();
+const { check, report } = makeCheck();
 
-// performance.now exists in Node 18+, but be explicit: the transport uses it.
-if (typeof performance === 'undefined') {
-  globalThis.performance = { now: () => Number(process.hrtime.bigint() / 1000000n) };
-}
 
-const settle = () => new Promise((r) => setTimeout(r, 5));
 
 // --- 1. handshake -----------------------------------------------------------
 {
@@ -373,5 +332,4 @@ const settle = () => new Promise((r) => setTimeout(r, 5));
   check('a shut-down server does not keep ticking', !server.isRunning);
 }
 
-console.log(`\nSERVER CORE: ${passed}/${passed + failed} checks passed`);
-process.exit(failed ? 1 : 0);
+report('SERVER CORE');

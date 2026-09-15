@@ -125,6 +125,26 @@ try {
   check('leaving the match clears server entities', quit.entities === 0,
     `${quit.entities} left`);
 
+  // --- the relay is actually feeding the server -----------------------------
+  const relay = await page.evaluate(async () => {
+    const op = window.__OPERATOR__;
+    op.gameStateManager.setState('PLAYING');
+    op.gameClient.joinMatch('prototype');
+    await new Promise((r) => setTimeout(r, 600));
+    const before = op.gameClient.acknowledgedSeq;
+    await new Promise((r) => setTimeout(r, 600));
+    return {
+      before,
+      after: op.gameClient.acknowledgedSeq,
+      boxes: op.gameServer.collision.boxCount,
+    };
+  });
+  check('the client streams input and the server acknowledges it',
+    relay.after > relay.before && relay.after > 0,
+    `ack ${relay.before} -> ${relay.after}`);
+  check('the server loaded the real level collision',
+    relay.boxes > 20, `${relay.boxes} collision boxes`);
+
   check('no page errors during the session', errors.length === 0,
     errors.slice(0, 2).join(' | ') || 'clean');
 } catch (err) {

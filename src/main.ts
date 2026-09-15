@@ -111,6 +111,8 @@ import PerspectiveController from './player/PerspectiveController';
 import PerspectiveSync from './animation/PerspectiveSync';
 import type { ResolvedAnimationDescriptor, AnimationTarget } from './animation/AnimationBlender';
 import { createLocalSession, type GameSession } from './net/GameSession';
+import { InputRelay } from './net/InputRelay';
+import { httpLevelFetcher } from './server/LevelStore';
 
 const canvas = document.getElementById('game-canvas') as HTMLCanvasElement | null;
 if (!canvas) throw new Error('[main] #game-canvas element missing from index.html');
@@ -1162,20 +1164,29 @@ engine.registerAlwaysUpdatable(hud);
 let session: GameSession | null = null;
 let simulationRunning = true;
 
+let inputRelay: InputRelay | null = null;
+
 const sessionReady = createLocalSession({
   onSimulationState: (running, reason) => {
     simulationRunning = running;
     eventBus.emit('net:simulationState', { running, reason });
   },
   onMatchEnded: (reason) => { eventBus.emit('net:matchEnded', { reason }); },
-}).then((s) => {
+}, { levelFetcher: httpLevelFetcher() }).then((s) => {
   session = s;
+  // The relay reports INTENT every frame; the server decides the outcome.
+  inputRelay = new InputRelay(s.client, engine.inputManager, playerController);
   return s;
 });
 void sessionReady;
 
 engine.registerAlwaysUpdatable({
-  update: (dt: number) => { session?.update(dt); },
+  update: (dt: number) => {
+    // Input only flows while actually playing -- a player in a menu is not
+    // steering. The SERVER still ticks regardless, which is the whole point.
+    if (gameStateManager.getState() === GameState.PLAYING) inputRelay?.update(dt);
+    session?.update(dt);
+  },
 });
 
 // --- screens ---------------------------------------------------------------

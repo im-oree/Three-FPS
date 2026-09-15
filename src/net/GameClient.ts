@@ -200,6 +200,8 @@ export class GameClient {
 
   /** How many inputs are still unacknowledged — the prediction backlog. */
   get pendingInputs(): number { return this.inputSeq - Math.max(0, this.lastAckSeq); }
+  /** Highest input sequence the server has confirmed consuming. */
+  get acknowledgedSeq(): number { return this.lastAckSeq; }
 
   get uptimeSeconds(): number {
     return this.connectedAt ? (performance.now() - this.connectedAt) / 1000 : 0;

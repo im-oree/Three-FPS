@@ -21,6 +21,7 @@ import { GameClient, type GameClientEvents } from './GameClient';
 import { createLocalTransportPair } from './LocalTransport';
 import { WebSocketTransport } from './WebSocketTransport';
 import type { C2S, S2C, ClientTransport, ServerTransport } from './Protocol';
+import type { LevelFetcher } from '../server/LevelStore';
 
 export interface GameSession {
   readonly client: GameClient;
@@ -48,9 +49,9 @@ export interface GameSession {
 /** Single-player: the authoritative server runs in this tab. */
 export async function createLocalSession(
   events: GameClientEvents = {},
-  options: { simulatedLatencyMs?: number } = {},
+  options: { simulatedLatencyMs?: number; levelFetcher?: LevelFetcher } = {},
 ): Promise<GameSession> {
-  const server = new GameServer();
+  const server = new GameServer({ levelFetcher: options.levelFetcher });
   const { client: clientTransport, server: serverTransport } =
     createLocalTransportPair<C2S, S2C>(options.simulatedLatencyMs ?? 0);
 

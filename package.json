@@ -41,7 +41,9 @@
     "verify:purity": "node tools/verify/server-purity.mjs",
     "verify:server": "node tools/verify/server-core.mjs",
     "verify:session": "node tools/verify/acceptance-session.mjs",
-    "verify:backend": "node tools/verify/backend-smoke.mjs"
+    "verify:backend": "node tools/verify/backend-smoke.mjs",
+    "verify:movement": "node tools/verify/server-movement.mjs",
+    "bake:collision": "node tools/bakeCollision.mjs"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.20.0",
