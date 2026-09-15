@@ -61,6 +61,10 @@ export interface StaticBatcherOptions {
 interface Bucket {
   material: THREE.Material;
   geometries: THREE.BufferGeometry[];
+  /** Meshes contributing to this bucket, so a bucket that bails out of
+   *  merging can leave its sources visible instead of reporting them
+   *  consumed. */
+  sources: THREE.Mesh[];
   castShadow: boolean;
   receiveShadow: boolean;
   layer: number;
@@ -86,7 +90,6 @@ export class StaticBatcher {
   private readonly lodStrength: number;
   private readonly minTrianglesToMerge: number;
   private readonly buckets = new Map<string, Bucket>();
-  private readonly sources: THREE.Object3D[] = [];
   private readonly materialKeys = new Map<THREE.Material, string>();
   private readonly owned: Array<THREE.BufferGeometry> = [];
 
@@ -134,6 +137,13 @@ export class StaticBatcher {
       bucket = {
         material,
         geometries: [],
+        // The meshes whose geometry went into this bucket. Tracked PER
+        // BUCKET, not globally, because a bucket can bail out of merging
+        // (too few meshes, too few triangles, merge failure) and its
+        // sources must then stay visible. Reporting them as consumed
+        // anyway hid ~4100 triangles of the prototype map -- including the
+        // whole airfield apron -- with no batch drawing them instead.
+        sources: [],
         castShadow: mesh.castShadow,
         receiveShadow: mesh.receiveShadow,
         layer: mesh.layers.mask,
@@ -151,7 +161,7 @@ export class StaticBatcher {
     if (!geo.attributes.normal) geo.computeVertexNormals();
     geo.applyMatrix4(mesh.matrixWorld);
     bucket.geometries.push(geo);
-    this.sources.push(mesh);
+    bucket.sources.push(mesh);
     return true;
   }
 
@@ -173,6 +183,10 @@ export class StaticBatcher {
   /** Merge everything collected. The batcher is single-use per level. */
   build(): BatchResult {
     const objects: THREE.Object3D[] = [];
+    // Only meshes a batch actually draws in place of. Every `continue`
+    // below is a bucket that produced NO batch, so its sources must keep
+    // drawing themselves.
+    const consumed: THREE.Mesh[] = [];
     let triangles = 0;
     let lodTriangles = 0;
     let batches = 0;
@@ -194,6 +208,7 @@ export class StaticBatcher {
       if (triCount < this.minTrianglesToMerge) { merged.dispose(); continue; }
 
       mergedSources += bucket.geometries.length;
+      consumed.push(...bucket.sources);
       triangles += triCount;
       this.owned.push(merged);
 
@@ -268,7 +283,7 @@ export class StaticBatcher {
 
     return {
       objects,
-      consumed: this.sources.slice(),
+      consumed,
       stats: {
         sourceMeshes: mergedSources,
         batches,
@@ -342,7 +357,6 @@ export class StaticBatcher {
     for (const g of this.owned) g.dispose();
     this.owned.length = 0;
     this.buckets.clear();
-    this.sources.length = 0;
     this.materialKeys.clear();
   }
 }
