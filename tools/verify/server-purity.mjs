@@ -99,8 +99,16 @@ function reachableFrom(roots) {
     if (seen.has(file)) continue;
     seen.add(file);
     const code = stripComments(fs.readFileSync(file, 'utf8'));
-    for (const match of code.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
-      const resolved = resolveImport(file, match[1]);
+    // `import type { X } from './Y'` is erased at compile time -- the emitted
+    // bundle contains nothing from Y. Following it would condemn the server
+    // for a type it borrows from a client file while importing no code, which
+    // is both legal and useful. Value imports are still followed.
+    // Verified by the bundle-erasure check further down, so this is not taken
+    // on trust.
+    for (const match of code.matchAll(/(^|\n)\s*import\s+([\s\S]*?)from\s+['"]([^'"]+)['"]/g)) {
+      const clause = match[2];
+      if (/^\s*type\s/.test(clause)) continue;
+      const resolved = resolveImport(file, match[3]);
       if (resolved && !seen.has(resolved)) queue.push(resolved);
     }
   }
@@ -159,6 +167,39 @@ for (const file of walk(NET_DIR)) {
         report(relayFile, 1, `input action "${match[1]}" is not in DEFAULT_KEY_BINDINGS`);
       }
     }
+  }
+}
+
+// --- the compiled server bundle must contain no client code ----------------
+// The import walk skips `import type`, on the grounds that it is erased. That
+// is an assumption about the compiler, so verify it against a real bundle
+// rather than trusting it: if a type-only import ever pulled code, these
+// strings would appear in the output.
+{
+  const { build } = await import('esbuild');
+  const result = await build({
+    entryPoints: [path.join(SERVER_DIR, 'GameServer.ts')],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    write: false,
+    absWorkingDir: ROOT,
+    logLevel: 'silent',
+  });
+  // Strip comments first: doc comments legitimately MENTION the banned names
+  // (Constants.ts documents a "THREE.Layers index"), and flagging prose would
+  // make the check unusable -- or worse, train people to delete the prose.
+  const bundled = stripComments(result.outputFiles[0].text);
+  const banned = [
+    ['localStorage', 'browser storage reached the server bundle'],
+    ['document.createElement', 'DOM construction reached the server bundle'],
+    ['requestAnimationFrame', 'a browser frame loop reached the server bundle'],
+    ['THREE.Vector3(', 'three.js reached the server bundle'],
+    ['new Scene(', 'a three.js scene reached the server bundle'],
+    ['WebGLRenderer', 'a renderer reached the server bundle'],
+  ];
+  for (const [needle, why] of banned) {
+    if (bundled.includes(needle)) report(path.join(SERVER_DIR, 'GameServer.ts'), 1, why);
   }
 }
 

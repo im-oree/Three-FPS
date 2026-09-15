@@ -81,6 +81,9 @@ export class MovementSystem implements ServerSystem {
     if (frame) {
       player.yaw = frame.yaw;
       player.pitch = frame.pitch;
+      // Published for the systems that run after movement (combat reads the
+      // trigger from here), so there is one canonical button mask per tick.
+      player.lastButtons = frame.buttons;
     }
 
     const buttons = frame?.buttons ?? 0;

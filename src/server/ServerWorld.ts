@@ -79,6 +79,8 @@ export interface ServerPlayer {
   fallPeakY: number;
   /** Last input sequence consumed, echoed back so the client can reconcile. */
   lastProcessedSeq: number;
+  /** Button mask from the most recent input, read by combat and interaction. */
+  lastButtons: number;
 }
 
 export interface SpawnPoint { pos: Vec3; yaw: number }
@@ -187,6 +189,7 @@ export class ServerWorld {
       jumpHeld: false,
       fallPeakY: spawn.pos[1],
       lastProcessedSeq: -1,
+      lastButtons: 0,
     });
     return spawn;
   }

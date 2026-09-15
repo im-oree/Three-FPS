@@ -38,6 +38,7 @@ import type { ServerSystem } from './ServerSystem';
 import { CollisionWorld } from './CollisionWorld';
 import { LevelStore, type LevelFetcher } from './LevelStore';
 import { MovementSystem } from './systems/MovementSystem';
+import { CombatSystem } from './systems/CombatSystem';
 
 /**
  * Longest real interval a single update() call will simulate. Beyond this the
@@ -67,6 +68,8 @@ export class GameServer {
   private readonly levels: LevelStore | null;
   /** Tracks the load in flight, so a fast re-join cannot race it. */
   private levelLoad: Promise<void> | null = null;
+  /** Kept for ammo queries; also registered as an ordinary system. */
+  readonly combat: CombatSystem;
 
   private readonly connections = new Map<PlayerId, Connection>();
   private readonly systems: ServerSystem[] = [];
@@ -89,6 +92,10 @@ export class GameServer {
     // the backend and the browser boot with different system sets -- exactly
     // the divergence this architecture exists to prevent.
     this.addSystem(new MovementSystem(this.collision));
+    // Order matters: combat reads the button mask movement publishes, so
+    // movement must have consumed this tick's input before combat runs.
+    this.combat = new CombatSystem(this.collision);
+    this.addSystem(this.combat);
   }
 
   // --- lifecycle -----------------------------------------------------------
