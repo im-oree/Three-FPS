@@ -17,6 +17,8 @@ export const GameState = {
   BOOT: 'BOOT',
   MAIN_MENU: 'MAIN_MENU',
   LOADOUT: 'LOADOUT',
+  /** Operator selection — multiple operators, chosen like a COD lobby. */
+  OPERATORS: 'OPERATORS',
   SETTINGS: 'SETTINGS',
   LOADING: 'LOADING',
   PLAYING: 'PLAYING',

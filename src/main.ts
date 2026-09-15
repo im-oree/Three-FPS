@@ -113,6 +113,10 @@ import type { ResolvedAnimationDescriptor, AnimationTarget } from './animation/A
 import { createLocalSession, type GameSession } from './net/GameSession';
 import { InputRelay } from './net/InputRelay';
 import { httpLevelFetcher } from './server/LevelStore';
+import loadProgress, { DEPLOY_STAGES } from './core/LoadProgress';
+import { OperatorShowcase } from './ui/showcase/OperatorShowcase';
+import OperatorsMenu from './ui/menus/OperatorsMenu';
+import operatorRoster from './customization/OperatorRoster';
 
 const canvas = document.getElementById('game-canvas') as HTMLCanvasElement | null;
 if (!canvas) throw new Error('[main] #game-canvas element missing from index.html');
@@ -1196,11 +1200,24 @@ let activeLevelId = LEVELS[0].id;
 /** Start (or restart) a match on a level: load it, then show the click gate. */
 const beginLoad = async (levelId: string): Promise<void> => {
   activeLevelId = levelId;
-  loadingScreen.setLevelName(getLevel(levelId).displayName);
+  const level = getLevel(levelId);
+  loadingScreen.setLevel(level.displayName, level.description, levelId);
   gameStateManager.setState(GameState.LOADING);
+
+  // Declare the whole run up front so the bar is weighted by real work
+  // rather than by which phase happens to report.
+  loadProgress.begin(DEPLOY_STAGES);
+
   // Audio first so nothing pops in on the first shot (§7.2/§9.2).
+  loadProgress.enter('audio');
   await audioManager.preload(allAudioPaths());
+  loadProgress.complete('audio');
+
+  loadProgress.enter('skins');
   await skinManager.preload();
+  loadProgress.complete('skins');
+
+  // LevelLoader reports its own four stages from inside.
   await levelLoader.load(levelId);
 };
 
@@ -1282,6 +1299,30 @@ const gameOverScreen = new GameOverScreen({
   onMainMenu: quitToMenu,
 });
 
+// --- the live operator standing in the menus -------------------------------
+// One showcase instance shared by the main menu and operator select: two live
+// WebGL contexts rendering the same soldier would double the cost for nothing.
+const operatorShowcase = new OperatorShowcase(engine.assetLoader);
+const operatorsMenu = new OperatorsMenu();
+mainMenu.attachShowcase(operatorShowcase);
+operatorsMenu.attachShowcase(operatorShowcase);
+
+// Driven from the ALWAYS-updatables list so it animates in the menu, where
+// the gameplay simulation is deliberately not running.
+engine.registerAlwaysUpdatable({
+  update: (dt: number) => {
+    const state = gameStateManager.getState();
+    if (state === GameState.MAIN_MENU || state === GameState.OPERATORS) {
+      operatorShowcase.update(dt);
+    }
+    // The deploy screen's background drift must keep moving while the main
+    // thread is busy building the level -- that is the whole point of it.
+    if (state === GameState.LOADING) loadingScreen.update(dt);
+  },
+});
+window.addEventListener('resize', () => operatorShowcase.resize());
+
+ui.register('operators', operatorsMenu, GameState.OPERATORS);
 ui.register('mainMenu', mainMenu, GameState.MAIN_MENU);
 ui.register('loadout', loadoutMenu, GameState.LOADOUT);
 ui.register('settings', settingsMenu, GameState.SETTINGS);
@@ -1392,6 +1433,10 @@ const mockAnimationTarget: AnimationTarget = {
 animationStateMachine.registerTarget(mockAnimationTarget);
 
 interface OperatorTestHook {
+  THREE: typeof THREE;
+  loadoutManager: typeof loadoutManager;
+  operatorRoster: typeof operatorRoster;
+  operatorShowcase: OperatorShowcase;
   engine: Engine;
   /** THE state authority — inspect current channels, log and rejections. */
   characterState: typeof characterState;
@@ -1450,6 +1495,10 @@ interface OperatorTestHook {
   mockAnimationTarget: AnimationTarget;
 }
 (window as unknown as { __OPERATOR__: OperatorTestHook }).__OPERATOR__ = {
+  THREE,
+  loadoutManager,
+  operatorRoster,
+  operatorShowcase,
   engine,
   characterState,
   projectileSystem,

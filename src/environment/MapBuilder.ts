@@ -17,6 +17,7 @@ import type { FrustumCullingManager } from '../core/FrustumCullingManager';
 import type RenderQualityManager from '../core/quality/RenderQualityManager';
 import { resolvePropDefinition, preloadColliderData } from './props/PropCatalog';
 import WindSwayAnimator from './props/WindSwayAnimator';
+import assetParserPool from '../core/AssetParserPool';
 
 export interface PropManifestEntry {
   readonly propType: string;
@@ -54,10 +55,10 @@ export class MapBuilder {
     poolSizeOverrides: Record<string, number> = {},
     windSwayPropTypes: readonly string[] = [],
   ): Promise<number> {
-    const manifest: PropManifestEntry[] = await fetch(manifestUrl).then((r) => {
-      if (!r.ok) throw new Error(`MapBuilder: ${manifestUrl} -> HTTP ${r.status}`);
-      return r.json();
-    });
+    // Parsed in a worker: this manifest reaches ~90 KB and a synchronous
+    // parse stalls the loading screen mid-build.
+    const manifest: PropManifestEntry[] =
+      await assetParserPool.loadJson<PropManifestEntry[]>(manifestUrl);
 
     // Pass 1: pre-size every prop type exactly (static) or generously (dynamic).
     const counts = new Map<string, number>();

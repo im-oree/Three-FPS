@@ -16,6 +16,8 @@
  */
 import * as THREE from 'three';
 import eventBus from '../core/EventBus';
+import loadProgress from '../core/LoadProgress';
+import assetParserPool from '../core/AssetParserPool';
 import ballistics from '../weapons/BallisticsSystem';
 import { TrainingDummy } from './TrainingDummy';
 import { getLevel, LEVELS, type LevelDefinition } from './LevelDefinition';
@@ -47,6 +49,20 @@ export interface LevelBuilderDeps {
 /** Collision nodes inside a shell .glb carry this prefix (Document L §2). */
 const COLLECTION_PREFIX = /^COL_/;
 
+/**
+ * Yield long enough for the browser to actually paint.
+ *
+ * setTimeout(0) queues a macrotask but does NOT guarantee a paint; a double
+ * rAF does, because the second callback can only run after the first frame
+ * has been composited. This is the difference between a bar that animates
+ * and a bar that teleports from 0 to 100.
+ */
+function yieldToPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+}
+
 export class LevelLoader {
   readonly scene = new THREE.Scene();
   /** Axis-aligned world boxes, for systems that want cheap bounds. */
@@ -55,6 +71,9 @@ export class LevelLoader {
   readonly staticMeshes: THREE.Mesh[] = [];
 
   private definition: LevelDefinition | null = null;
+
+  /** The level currently loaded, or null. Read by tools and the menu. */
+  get currentDefinition(): LevelDefinition | null { return this.definition; }
   /** Stashed while an aerial view suppresses fog (Document I §6). */
   private suppressedFog: THREE.Scene["fog"] = null;
   private readonly dummies: TrainingDummy[] = [];
@@ -141,17 +160,33 @@ export class LevelLoader {
     this.scene.fog = new THREE.FogExp2(def.skyColor, def.fogDensity);
 
     this.buildLights(def);
+    // Each phase reports honestly as it completes. Yielding between phases
+    // is what lets the bar actually paint: without it the browser runs the
+    // whole build in one frame and the player sees 0% then 100%.
+    loadProgress.enter('shell');
     if (def.shellFile) {
       await this.buildShell(def);
     } else {
       this.buildGround(def);
       for (const box of def.boxes) this.buildBox(box);
     }
+    loadProgress.complete('shell');
+    await yieldToPaint();
+
     // Document N §2.4: terrain collision BEFORE props, so anything that
     // queries ground height during placement sees the real surface.
+    loadProgress.enter('collision');
     if (def.terrainCollision) await this.buildTerrainCollision(def);
     if (def.calloutZonesFile) await this.loadCalloutZones(def);
+    loadProgress.complete('collision');
+    await yieldToPaint();
+
+    loadProgress.enter('props');
     if (def.propManifest) await this.buildProps(def);
+    loadProgress.complete('props');
+    await yieldToPaint();
+
+    loadProgress.enter('lighting');
     if (def.hdri) await this.applyHDRI(def);
     this.buildDummies(def);
     // Occluders come from the placed buildings, so this must follow props.
@@ -159,6 +194,7 @@ export class LevelLoader {
     // Batching runs LAST: every static mesh this level will ever have must
     // already exist, because merging bakes world transforms into vertices.
     this.batchStaticGeometry();
+    loadProgress.complete('lighting');
 
     // Yield one frame so a caller awaiting this sees the progress bar paint.
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -598,20 +634,15 @@ export class LevelLoader {
    */
   private async buildTerrainCollision(def: LevelDefinition): Promise<void> {
     if (!def.terrainCollision || !this.builderDeps) return;
-    const data = await fetch(def.terrainCollision).then((r) => {
-      if (!r.ok) throw new Error(`LevelLoader: ${def.terrainCollision} -> HTTP ${r.status}`);
-      return r.json();
-    }) as {
-      width: number; depth: number; nrows: number; ncols: number;
-      scale: { x: number; y: number; z: number }; heights: number[];
-    };
-
-    const expected = (data.nrows + 1) * (data.ncols + 1);
-    if (data.heights.length !== expected) {
-      console.error(
-        `LevelLoader: terrain heightfield size mismatch — got ${data.heights.length}, `
-        + `expected ${expected} for ${data.nrows}x${data.ncols}. Terrain collision SKIPPED.`,
-      );
+    // Fetched, parsed and validated in a worker: this file is up to ~120 KB
+    // of JSON (~16k floats) and a synchronous parse here freezes the loading
+    // screen exactly when it is trying to animate. The worker hands back a
+    // transferred Float32Array, so the main thread never walks the array.
+    let data: Awaited<ReturnType<typeof assetParserPool.loadTerrain>>;
+    try {
+      data = await assetParserPool.loadTerrain(def.terrainCollision);
+    } catch (error) {
+      console.error(`LevelLoader: terrain collision SKIPPED — ${String(error)}`);
       return;
     }
 
@@ -619,7 +650,7 @@ export class LevelLoader {
     const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, 0, 0));
     const collider = world.createCollider(
       RAPIER.ColliderDesc.heightfield(
-        data.nrows, data.ncols, new Float32Array(data.heights),
+        data.nrows, data.ncols, data.heights,
         new THREE.Vector3(data.scale.x, data.scale.y, data.scale.z),
       ),
       body,
@@ -639,10 +670,10 @@ export class LevelLoader {
   private async loadCalloutZones(def: LevelDefinition): Promise<void> {
     if (!def.calloutZonesFile) return;
     try {
-      const zones = await fetch(def.calloutZonesFile).then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      }) as { name: string; polygon: [number, number][] }[];
+      // Parsed off-thread; the pool throws on a bad status or bad JSON.
+      const zones = await assetParserPool.loadJson<
+        { name: string; polygon: [number, number][] }[]
+      >(def.calloutZonesFile);
       calloutZoneRegistry.loadZones(zones);
       console.log(`[LevelLoader] ${calloutZoneRegistry.count} callout zones registered.`);
     } catch (err) {

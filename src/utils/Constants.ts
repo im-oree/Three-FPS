@@ -32,6 +32,93 @@ export const CLOCK = {
   FIXED_DT: 1 / 60,
 } as const;
 
+/**
+ * Menu operator showcase — the live 3D soldier standing in the main menu.
+ *
+ * Every motion here is deliberately tiny. The reference is a man standing
+ * still while a handheld camera watches him, not an idle animation loop:
+ * amplitudes above a few centimetres stop reading as "a menu" and start
+ * reading as "a character viewer".
+ */
+export const MENU_SHOWCASE = {
+  BODY_PATH: 'characters/body_standard.glb',
+  FOV: 30,
+  /**
+   * The model faces -Z, so the camera sits at NEGATIVE z to see his face.
+   * Low and slightly off-axis, looking up at chest height: the reference's
+   * hero framing, where the operator fills the centre column.
+   */
+  CAMERA_POS: [0.42, 1.30, -4.35] as const,
+  LOOK_HEIGHT: 0.98,
+  /** Body yaw (radians): a three-quarter turn reads far better than square-on. */
+  BODY_YAW: 0.30,
+  /** Slow positional drift (metres) and its speed (radians/second). */
+  DRIFT_AMPLITUDE: 0.035,
+  DRIFT_SPEED: 0.27,
+  /** Fast, tiny handheld tremor layered on top of the drift. */
+  SHAKE_AMPLITUDE: 0.0045,
+  SHAKE_SPEED: 2.3,
+  /** Breathing and weight-shift periods, deliberately incommensurable. */
+  BREATH_SPEED: 1.15,
+  SWAY_SPEED: 0.41,
+  /**
+   * Where the support hand goes when a weapon has no foregrip (a pistol):
+   * cupped just under and behind the trigger hand, in weapon space.
+   */
+  SUPPORT_HAND_CUP: [-0.055, -0.045, 0.02] as const,
+  /**
+   * Poses anchor the WEAPON in body space; both hands are then IK'd onto the
+   * grips the weapon actually has. Nothing here is a joint angle -- this rig
+   * has no rest bend for Euler angles to build on, and the arms are solved.
+   *
+   * Body faces -Z. Shoulders sit at y=1.34, x=+/-0.20. Upper arm 0.32 m,
+   * forearm 0.28 m, so reach is 0.60 m: keep the weapon inside that.
+   * Poles are DIRECTIONS the elbows bend toward: down-and-out.
+   */
+  POSE_STAND: {
+    /** Gun up across the chest, muzzle forward and slightly down. */
+    weaponPos: [0.06, 1.13, -0.24] as const,
+    weaponRot: [0.10, 0.92, 0.06] as const,
+    poleR: [0.30, -0.94, 0.16] as const,
+    poleL: [-0.26, -0.95, 0.14] as const,
+    torsoLean: 0.03,
+    chestLean: 0.04,
+    chestTwist: -0.20,
+    headTurn: 0.10,
+    headTilt: 0.02,
+  },
+  /** Tighter patrol tuck, gun higher and closer in. Loadout/operators. */
+  POSE_READY: {
+    weaponPos: [0.07, 1.19, -0.22] as const,
+    weaponRot: [0.06, 0.88, 0.04] as const,
+    poleR: [0.28, -0.95, 0.14] as const,
+    poleL: [-0.24, -0.96, 0.12] as const,
+    torsoLean: 0.05,
+    chestLean: 0.06,
+    chestTwist: -0.24,
+    headTurn: 0.07,
+    headTilt: 0.03,
+  },
+  /**
+   * Walk cycle. The reference has the operator advancing toward camera, so a
+   * slow forward march reads far better than a statue -- but the stride must
+   * stay small or he looks like he is marching on the spot.
+   */
+  WALK: {
+    /** Strides per second. Slow and heavy, not a jog. */
+    SPEED: 0.62,
+    /** Peak hip/knee swing in radians. */
+    LEG_SWING: 0.30,
+    KNEE_BEND: 0.34,
+    /** Vertical bounce of the whole body, metres. */
+    BOB: 0.018,
+    /** Side-to-side weight shift, metres. */
+    LATERAL: 0.012,
+    /** Shoulder counter-rotation against the hips. */
+    TORSO_COUNTER: 0.05,
+  },
+} as const;
+
 /** Debug overlay (utils/Debug.ts). */
 export const DEBUG = {
   /** Frames averaged for the on-screen FPS readout. */
