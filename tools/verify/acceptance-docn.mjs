@@ -220,8 +220,14 @@ check('ladder rungs are solid', tower.rungs >= 8, `${tower.rungs} rung hits`);
 console.log('\n[4] Callout zones');
 // ---------------------------------------------------------------------------
 const callouts = await page.evaluate(async () => {
-  const mod = await import('/src/world/CalloutZoneRegistry.ts');
-  const reg = mod.calloutZoneRegistry ?? mod.default;
+  // Read the registry the APP is using, via the debug handle.
+  //
+  // A bare `import('/src/world/CalloutZoneRegistry.ts')` looks equivalent but
+  // is not: Vite serves that specifier as its own module instance, so the
+  // harness got a SECOND, empty registry and reported "0 zones" while the
+  // running game had all 24. The module-singleton pattern only holds within
+  // one module graph.
+  const reg = window.__OPERATOR__.calloutZones;
   const probes = [
     ['Tower', 2, 2], ['Mid', -7, -5], ['Range', 0, -26], ['Armory', 33, -12],
     ['Tin Building', 20, 6], ['Tyres', 31, 13], ['Trailer', -10, 20],
@@ -264,8 +270,18 @@ const veg = await page.evaluate(async () => {
   ops.levelLoader.scene.traverse((o) => {
     if (o.name === 'PalmCrown' && crowns.length < 6) crowns.push(o);
   });
+  // Wait on ANIMATION FRAMES, not wall-clock.
+  //
+  // The sway phase advances in the render loop, so `setTimeout(900)` only
+  // moves the crowns if frames actually render during those 900 ms. Under
+  // SwiftShader a single frame can take well over a second, and the earlier
+  // steps of this suite leave the GPU busy, so the timeout would sometimes
+  // return having rendered ZERO frames and report "0/6 crowns moved" -- a
+  // failure with nothing wrong behind it. Frames are the real clock here.
   const before = crowns.map((c) => `${c.rotation.x.toFixed(5)},${c.rotation.z.toFixed(5)}`);
-  await new Promise((r) => setTimeout(r, 900));
+  for (let i = 0; i < 20; i += 1) {
+    await new Promise((r) => requestAnimationFrame(r));
+  }
   const after = crowns.map((c) => `${c.rotation.x.toFixed(5)},${c.rotation.z.toFixed(5)}`);
   const moved = before.filter((b, i) => b !== after[i]).length;
   // Distinct rotations => they are NOT locked together.
@@ -278,7 +294,7 @@ const veg = await page.evaluate(async () => {
 });
 check('palms are cloned (not instanced)', veg.palmClones >= 15, `${veg.palmClones} palm clones`);
 check('wind sway registered', veg.swayCount > 0, `${veg.swayCount} sway nodes`);
-check('palm crowns actually move', veg.moved > 0, `${veg.moved}/${veg.crowns} crowns moved in 0.9 s`);
+check('palm crowns actually move', veg.moved > 0, `${veg.moved}/${veg.crowns} crowns moved over 20 frames`);
 check(
   'palms sway INDEPENDENTLY',
   veg.distinct > 1,
