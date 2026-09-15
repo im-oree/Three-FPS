@@ -78,6 +78,8 @@ export class PlayerController {
   private readonly renderPos = new THREE.Vector3();
   private readonly renderBob = { x: 0, y: 0, z: 0 };
   private visualSnapshotsInit = false;
+  /** True while VehicleSystem owns the player (Document V). */
+  private vehicleSuspended = false;
 
   /** Document 3: AnimationStateMachine reads the movement state from here. */
   get currentState(): PlayerStateValue {
@@ -276,7 +278,53 @@ export class PlayerController {
     this.movement.state.pitch = pitch;
   }
 
+  /**
+   * Suspend the on-foot character while the player rides a vehicle
+   * (Document V). VehicleSystem owns the transition.
+   *
+   * Suspending rather than destroying: the player keeps their weapons,
+   * health, stamina and animation state, so getting out restores the
+   * character exactly as it was. Rebuilding the controller on exit would
+   * mean serialising every one of those, and any field added later would
+   * silently fail to survive a car ride.
+   *
+   * While suspended, fixedStep() is skipped entirely: no movement
+   * integration, no collision resolution, no head bob, and no input is
+   * consumed — which is what stops WASD both steering the car and walking
+   * the character around inside it.
+   */
+  setVehicleSuspended(suspended: boolean): void {
+    if (this.vehicleSuspended === suspended) return;
+    this.vehicleSuspended = suspended;
+    if (suspended) {
+      // Zero the velocity so the character does not resume a fall on exit.
+      this.movement.state.velocity.set(0, 0, 0);
+    }
+  }
+
+  get isVehicleSuspended(): boolean { return this.vehicleSuspended; }
+
+  /**
+   * Keep the suspended player's logical position glued to their seat.
+   *
+   * Audio listener placement, spatial queries and anything else that asks
+   * "where is the player" must follow the vehicle, not the patch of ground
+   * where they got in.
+   */
+  setVehicleAnchor(position: THREE.Vector3): void {
+    if (!this.vehicleSuspended) return;
+    this.movement.state.position.copy(position);
+    this.prevVisualPos.copy(position);
+    this.currVisualPos.copy(position);
+    this.renderPos.copy(position);
+  }
+
   update(dt: number): void {
+    // Riding a vehicle: VehicleSystem owns the camera and the player's
+    // position. Returning before stepFixed keeps the character controller
+    // completely inert rather than half-driving it from stale input.
+    if (this.vehicleSuspended) return;
+
     this.clock.stepFixed(CLOCK.FIXED_DT, (fixedDt) => {
       this.prevVisualPos.copy(this.currVisualPos);
       this.prevVisualBob.x = this.currVisualBob.x;

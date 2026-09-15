@@ -289,6 +289,31 @@ export class LevelLoader {
       // Collision-only nodes are invisible and must stay individually
       // addressable; lights, cameras and helpers are not geometry.
       if (COLLECTION_PREFIX.test(o.name)) return true;
+      // GROUND-SCALE MESHES ARE NEVER BATCHED.
+      //
+      // The batcher buckets by spatial cell, so a 520 m terrain gets chopped
+      // into many small cells; the original mesh is then hidden as
+      // "consumed". Each cell is frustum-culled by its own bounding sphere,
+      // and the cells under and behind the camera fail that test, so large
+      // parts of the ground disappear as you drive — the prototype map
+      // rendered as a vehicle floating in empty sky.
+      //
+      // A single ground mesh is already one draw call, which is exactly what
+      // batching is trying to achieve, so there is nothing to win here and an
+      // entire world to lose.
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh && mesh.geometry) {
+        if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+        const bb = mesh.geometry.boundingBox;
+        if (bb) {
+          const spanX = (bb.max.x - bb.min.x) * o.scale.x;
+          const spanZ = (bb.max.z - bb.min.z) * o.scale.z;
+          if (Math.max(spanX, spanZ) > 200) {
+            o.frustumCulled = false;
+            return true;
+          }
+        }
+      }
       return false;
     };
 
@@ -331,8 +356,20 @@ export class LevelLoader {
     // than the occluders themselves, so the proof would never hold anyway).
     if (this.builderDeps?.culling) {
       for (const obj of result.objects) {
-        const sphere = new THREE.Box3().setFromObject(obj)
-          .getBoundingSphere(new THREE.Sphere());
+        const box = new THREE.Box3().setFromObject(obj);
+        const sphere = box.getBoundingSphere(new THREE.Sphere());
+        // A batch that spans the whole map (the merged terrain cell) has the
+        // same sphere-vs-frustum failure as the source terrain mesh: the
+        // camera ends up inside a ~370 m sphere whose centre is behind the
+        // near plane, intersectsSphere says no, and the ground vanishes.
+        // Ground-scale batches stay resident — one draw call is cheap, an
+        // invisible world is not.
+        const spanXZ = Math.max(box.max.x - box.min.x, box.max.z - box.min.z);
+        if (spanXZ > 200) {
+          obj.frustumCulled = false;
+          obj.visible = true;
+          continue;
+        }
         this.cullingHandles.push(this.builderDeps.culling.registerSphere(obj, sphere, {
           id: `batch:${obj.name}`,
           margin: 1.5,
@@ -488,6 +525,33 @@ export class LevelLoader {
         const targets = (node as THREE.Mesh).isMesh ? [node] : node.children;
         for (const child of targets) {
           if (COLLECTION_PREFIX.test(child.name)) continue;
+          // GROUND-SCALE MESHES ARE NEVER FRUSTUM-CULLED.
+          //
+          // The culler tests a bounding SPHERE against the frustum. For a
+          // 520 x 520 m terrain that sphere has a ~368 m radius centred on
+          // the map, and once the camera is inside it near the surface the
+          // sphere can fail intersectsSphere even though the mesh fills the
+          // screen — the sphere's centre is behind the near plane and its
+          // extent is mostly below the ground. Result: the entire terrain
+          // blinks out and the player appears to be flying over an empty
+          // void. That is exactly what the first prototype driving
+          // screenshot showed.
+          //
+          // Anything this large is cheap to keep resident (one draw call)
+          // and catastrophic to cull wrongly, so it opts out.
+          const geo = (child as THREE.Mesh).geometry;
+          let spanXZ = 0;
+          if (geo?.boundingBox || geo?.computeBoundingBox) {
+            if (!geo.boundingBox) geo.computeBoundingBox();
+            const bb = geo.boundingBox;
+            if (bb) {
+              spanXZ = Math.max(bb.max.x - bb.min.x, bb.max.z - bb.min.z);
+            }
+          }
+          if (spanXZ > 200) {
+            child.frustumCulled = false;
+            continue;
+          }
           this.cullingHandles.push(
             this.builderDeps.culling.register(child, {
               id: `shell:${child.name}`,

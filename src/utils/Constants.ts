@@ -109,6 +109,23 @@ export const DEFAULT_KEY_BINDINGS = {
   killstreakSlot1: 'KeyZ',
   killstreakSlot2: 'KeyX',
   killstreakSlot3: 'KeyB',
+  /**
+   * Vehicles (Document V). `inspect` already owns F, the shooter convention
+   * every player reaches for, so enter/exit sits on E — the other convention,
+   * and free on this keymap.
+   *
+   * Driving deliberately REUSES the on-foot movement binds (WASD) rather than
+   * introducing a second movement keymap: rebinding "left" once should steer
+   * left too. Only the controls with no on-foot equivalent get their own bind.
+   */
+  vehicleEnter: 'KeyE',
+  vehicleExit: 'KeyE',
+  /** Cycle to the next free seat without getting out. */
+  vehicleSeatSwap: 'KeyE',
+  vehicleHandbrake: 'Space',
+  vehicleHorn: 'KeyH',
+  /** Right the vehicle after a roll-over. */
+  vehicleFlip: 'KeyR',
   debugToggle: 'F3',
   debugGizmos: 'F4', // Document C §3.6 socket/joint orientation axes
   pause: 'Escape',

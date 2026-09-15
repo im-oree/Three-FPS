@@ -333,8 +333,46 @@ const FIRING_RANGE: LevelDefinition = {
   killPlaneY: -33,
 };
 
+
+/**
+ * PROTOTYPE — the vehicle development sandbox (Document V).
+ *
+ * Not a playable map: a workshop. Flat tuned ground joined to real terrain,
+ * a lake, and sections for each vehicle class reached by teleport pads.
+ * Sections are deliberately sparse; they fill in as each vehicle lands.
+ */
+const PROTOTYPE: LevelDefinition = {
+  id: 'prototype',
+  displayName: 'Prototype Range',
+  description: 'Vehicle development sandbox: airfield, helipads, driving course, harbour.',
+  ambientSoundKey: 'ambient_village_dusty_loop',
+  skyColor: 0x8fb4d4,
+  // Low fog: this map is 520 m across and the whole point is seeing the
+  // airfield from the hub. Shipment-grade fog would erase it.
+  fogDensity: 0.0012,
+  hemiIntensity: 0.72,
+  sunIntensity: 2.5,
+  // Hub centre, facing north up the map toward the airfield.
+  spawn: [0, 0, 20],
+  spawnYaw: 0,
+  groundHalfSize: 260,
+  worldExtents: { centerX: 0, centerZ: 0, halfWidth: 260, halfHeight: 260 },
+  groundSurface: 'concrete',
+  groundColor: 0x5c6b3f,
+  boxes: [],
+  dummies: [],
+  killstreakAirspace: { centerXZ: [0, 0], radius: 300, arrivalAltitude: 180 },
+  shellFile: '/assets/models/environment/prototype_shell.glb',
+  // The shell's authored colliders only cover the built pads (runway, apron,
+  // hub, driving course). Everything between them is terrain, and without a
+  // heightfield there is literally no floor there — the first acceptance run
+  // drove the Humvee off the hub pad and it fell to y = -152.
+  terrainCollision: '/assets/environment-meta/prototype_terrain.json',
+  killPlaneY: -33,
+};
+
 export const LEVELS: readonly LevelDefinition[] = [
-  WAREHOUSE, FACILITY, TRAINING_RANGE, SHIPMENT, FIRING_RANGE,
+  WAREHOUSE, FACILITY, TRAINING_RANGE, SHIPMENT, FIRING_RANGE, PROTOTYPE,
 ];
 
 export function getLevel(id: string): LevelDefinition {
