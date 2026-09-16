@@ -1482,12 +1482,23 @@ export const MISSILE = {
   /** Start looking almost straight down. */
   START_PITCH: -1.30,     // -74 deg
   TURN_RESPONSIVENESS: 4.2,
-  /** Launch height above the designated point. */
-  LAUNCH_ALTITUDE: 210,
+  /**
+   * Launch height above the designated point.
+   *
+   * Raised from 210 m. On a covered map the player has to line the dive up
+   * with a roof opening, and at the old altitude the roof filled the screen
+   * almost immediately -- there was no time to pick a bay, only to react.
+   * The extra height buys roughly two more seconds of approach.
+   */
+  LAUNCH_ALTITUDE: 330,
   /** Slight offset so the dive has a direction rather than being vertical. */
-  LAUNCH_STANDOFF: 46,
-  /** Roughly five seconds of control, per the real streak. */
-  FLIGHT_TIME_BUDGET: 9,
+  LAUNCH_STANDOFF: 62,
+  /**
+   * Seconds of control. Lengthened with the altitude: the budget has to cover
+   * the longer approach or the missile would run out of fuel before it
+   * reached the roof it was aimed at.
+   */
+  FLIGHT_TIME_BUDGET: 14,
   IMPACT_HOLD_SECONDS: 0.7,
   /**
    * Settle beat after the nose-cam seat, before steering handoff. The jet

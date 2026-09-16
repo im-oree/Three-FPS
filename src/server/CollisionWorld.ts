@@ -56,6 +56,21 @@ export interface Heightfield {
 /** A tiny gap kept between the capsule and geometry so contact is stable. */
 const SKIN = 0.001;
 
+/**
+ * One slab-intersection parameter, without the 0/0 trap.
+ *
+ * `offset * inverseDirection` is the plain form. When the direction component
+ * is zero the inverse is +/-Infinity, and `0 * Infinity` is NaN -- exactly the
+ * case of a ray travelling parallel to a face while lying in its plane. The
+ * limit there is "never enters along this axis", so the sign of the offset is
+ * the right answer.
+ */
+function slab(offset: number, inverseDir: number): number {
+  const t = offset * inverseDir;
+  if (Number.isNaN(t)) return offset >= 0 ? Infinity : -Infinity;
+  return t;
+}
+
 export class CollisionWorld {
   private boxes: Box[] = [];
   private terrain: Heightfield | null = null;
@@ -265,13 +280,25 @@ export class CollisionWorld {
     const [ox, oy, oz] = origin;
     const [dx, dy, dz] = dir;
 
+    // Reciprocals once, not per box. `dir` is expected to be normalised; a
+    // zero component yields +/-Infinity, which the slab test handles.
+    const idx = 1 / dx, idy = 1 / dy, idz = 1 / dz;
+
     for (let i = 0; i < this.boxes.length; i += 1) {
       const box = this.boxes[i];
-      // Slab method. A zero component is handled by the infinities that
-      // division by zero produces, which is correct here rather than a bug.
-      const tx1 = (box.minX - ox) / dx, tx2 = (box.maxX - ox) / dx;
-      const ty1 = (box.minY - oy) / dy, ty2 = (box.maxY - oy) / dy;
-      const tz1 = (box.minZ - oz) / dz, tz2 = (box.maxZ - oz) / dz;
+      // Slab method.
+      //
+      // The subtlety is the DEGENERATE case: when the ray has a zero
+      // component AND starts exactly on that face's plane, the division is
+      // 0/0, which is NaN rather than an infinity. Every comparison against
+      // NaN is false, so the guards below silently accept the box and return
+      // a hit with a NaN distance -- an axis-aligned ray (straight down at a
+      // roof, dead along a corridor) would report hitting a box nowhere near
+      // it. slab() substitutes the sign of the offset for the degenerate
+      // case, which is what the limit actually is.
+      const tx1 = slab(box.minX - ox, idx), tx2 = slab(box.maxX - ox, idx);
+      const ty1 = slab(box.minY - oy, idy), ty2 = slab(box.maxY - oy, idy);
+      const tz1 = slab(box.minZ - oz, idz), tz2 = slab(box.maxZ - oz, idz);
 
       const tmin = Math.max(
         Math.min(tx1, tx2), Math.min(ty1, ty2), Math.min(tz1, tz2),

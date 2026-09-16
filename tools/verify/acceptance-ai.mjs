@@ -114,8 +114,8 @@ console.log('\n[2] Fair perception');
   // wanders out from behind the divider would pass this test for the wrong
   // reason.
   for (let i = 0; i < 30; i += 1) {
-    seerPlayer.px = -10; seerPlayer.pz = 0;
-    hiddenPlayer.px = 10; hiddenPlayer.pz = 0;
+    seerPlayer.px = -10; seerPlayer.py = 0; seerPlayer.pz = 0;
+    hiddenPlayer.px = 10; hiddenPlayer.py = 0; hiddenPlayer.pz = 0;
     server.update(1 / 60);
   }
   const agent = server.ai.getAgent(seer);
@@ -123,13 +123,39 @@ console.log('\n[2] Fair perception');
   check('a bot cannot see an enemy through a wall',
     !sawThroughWall, sawThroughWall ? 'saw through the divider' : 'blocked');
 
-  // Remove the wall; now it must see.
+  // Remove the wall; now it must see. Keep pinning them and keep the seer
+  // facing the target: with the divider gone both bots are free to run off,
+  // and a bot that has wandered out of its own field of view would fail this
+  // for a reason that has nothing to do with perception.
   server.collision.load(ROOM);
   server.ai.buildNavigation();
-  for (let i = 0; i < 60; i += 1) server.update(1 / 60);
-  const seesNow = server.ai.getAgent(seer).beliefs.sightings.has(hidden);
+  // With the wall gone the bot must acquire the target. Driving this through
+  // the full server loop is unreliable for a reason that is not about
+  // perception: AISystem runs last and re-queues the bot's OWN look input
+  // every tick, so any yaw the test pins is overwritten before perceive()
+  // next runs -- the bot is busy patrolling and is entitled to look where it
+  // likes. Call perceive() directly instead: it is the unit under test, and
+  // this is exactly the same function the running bot calls.
+  server.collision.load(ROOM);
+  server.ai.buildNavigation();
+
+  const agentNow = server.ai.getAgent(seer);
+  seerPlayer.px = -10; seerPlayer.py = 0; seerPlayer.pz = 0;
+  hiddenPlayer.px = 10; hiddenPlayer.py = 0; hiddenPlayer.pz = 0;
+  seerPlayer.yaw = Math.atan2(-(hiddenPlayer.px - seerPlayer.px), hiddenPlayer.pz - seerPlayer.pz);
+  const fresh = new Beliefs();
+  perceive(seerPlayer, server.world, server.collision, fresh, getDifficulty('veteran'), 16);
+  const seesNow = fresh.sightings.has(hidden);
   check('a bot does see an enemy in the open', seesNow,
     seesNow ? 'acquired' : 'still blind with clear line of sight');
+
+  // And the FOV cone points FORWARD: facing directly away must not see them.
+  seerPlayer.yaw += Math.PI;
+  const behind = new Beliefs();
+  perceive(seerPlayer, server.world, server.collision, behind, getDifficulty('veteran'), 16);
+  check('a bot does not see an enemy standing behind it',
+    !behind.sightings.has(hidden),
+    behind.sightings.has(hidden) ? 'saw through the back of its head' : 'blind behind');
 }
 
 console.log('\n[3] Reaction time gates engagement');
@@ -149,7 +175,10 @@ console.log('\n[3] Reaction time gates engagement');
   const world = new ServerWorld();
   world.addPlayer('a'); world.addPlayer('b');
   const a = world.getPlayer('a'); const b = world.getPlayer('b');
-  a.px = 0; a.pz = 0; b.px = 0; b.pz = -8;
+  // yaw 0 faces +Z (forward is (-sin, cos), matching MovementSystem), so the
+  // target goes in FRONT at +Z. This previously read -8 and passed only
+  // because Perception's FOV cone was inverted.
+  a.px = 0; a.pz = 0; b.px = 0; b.pz = 8;
   a.yaw = 0;
   world.beginTick(1, 0);
   const beliefs = new Beliefs();

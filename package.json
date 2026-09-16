@@ -46,6 +46,7 @@
     "bake:collision": "node tools/bakeCollision.mjs",
     "verify:combat": "node tools/verify/server-combat.mjs",
     "verify:killstreaks": "node tools/verify/server-killstreaks.mjs",
+    "verify:killhouse": "node tools/verify/acceptance-killhouse.mjs",
     "generate:previews": "node tools/generateMapPreviews.mjs",
     "verify:previews": "node tools/generateMapPreviews.mjs --verify",
     "verify:menu": "node tools/verify/acceptance-menu.mjs",

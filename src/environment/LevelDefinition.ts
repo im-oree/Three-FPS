@@ -38,6 +38,15 @@ export interface LevelDefinition {
   readonly spawn: readonly [number, number, number];
   readonly spawnYaw: number;
   /** Ground plane extent (metres, half-size) and its surface tag. */
+  /**
+   * Keep this level out of random/automatic map selection.
+   *
+   * Set on developer and test levels: they are reachable by explicitly
+   * choosing them in the map list, but Quick Play and any future game-mode
+   * rotation must never drop a player into one. Declared on the level itself
+   * rather than filtered at each call site, so a new caller cannot forget.
+   */
+  readonly excludeFromRotation?: boolean;
   readonly groundHalfSize: number;
   readonly groundSurface: string;
   readonly groundColor: number;
@@ -146,38 +155,38 @@ function stairs(
 }
 
 // --- WAREHOUSE: crates, catwalk supports, mantle-height stacks --------------
-const WAREHOUSE: LevelDefinition = {
-  id: 'warehouse',
-  displayName: 'Warehouse',
-  description: 'Tight crate corridors and stacked cover. Close-quarters.',
+const KILLHOUSE: LevelDefinition = {
+  id: 'killhouse',
+  displayName: 'Killhouse',
+  description: 'SAS live-fire training warehouse. Tight, symmetrical, brutal.',
   ambientSoundKey: 'ambient_warehouse',
-  skyColor: 0x2a3240,
-  fogDensity: 0.008,
-  hemiIntensity: 1.45,
-  sunIntensity: 2.2,
-  spawn: [0, 0, 22],
-  spawnYaw: 0,
-  groundHalfSize: 34,
-  worldExtents: { centerX: 0, centerZ: 0, halfWidth: 31, halfHeight: 31 },
+  // Indoors: the "sky" is only ever glimpsed through the roof bays, so the
+  // clear colour is the daylight that falls through them.
+  skyColor: 0x9fb4c6,
+  fogDensity: 0.004,
+  hemiIntensity: 1.15,
+  sunIntensity: 2.6,
+  // South platform, looking up the long axis at the tower.
+  spawn: [0, 2.5, 28],
+  spawnYaw: Math.PI,
+  groundHalfSize: 33,
+  worldExtents: { centerX: 0, centerZ: 0, halfWidth: 23, halfHeight: 32 },
   groundSurface: 'concrete',
-  groundColor: 0x7d776e,
-  boxes: [
-    ...room(-30, -30, 30, 30, 8, 1, 'metal', 0x5a6068),
-    // Crate rows, deliberately at vault (0.9) and mantle (1.8) heights.
-    { min: [-14, 0, -6], max: [-11, 0.9, -3], surface: 'wood', color: 0x6b4a2a, name: 'crate_low_a' },
-    { min: [-8, 0, -6], max: [-5, 1.4, -3], surface: 'wood', color: 0x6b4a2a, name: 'crate_mid_a' },
-    { min: [-2, 0, -6], max: [1, 1.8, -3], surface: 'wood', color: 0x6b4a2a, name: 'crate_tall_a' },
-    { min: [5, 0, -6], max: [8, 2.4, -3], surface: 'wood', color: 0x5c3f24, name: 'crate_high_a' },
-    { min: [-14, 0, 6], max: [-9, 1.1, 10], surface: 'wood', color: 0x6b4a2a, name: 'crate_low_b' },
-    { min: [8, 0, 6], max: [13, 2.0, 11], surface: 'wood', color: 0x5c3f24, name: 'crate_high_b' },
-    // Steel shelving columns.
-    { min: [16, 0, -14], max: [17, 6, -13], surface: 'metal', color: 0x3a3f47, name: 'column_a' },
-    { min: [16, 0, 4], max: [17, 6, 5], surface: 'metal', color: 0x3a3f47, name: 'column_b' },
-    { min: [-18, 0, -14], max: [-17, 6, -13], surface: 'metal', color: 0x3a3f47, name: 'column_c' },
-    ...stairs(20, -4, 8, 0.25, 0.55, 4, 'metal', 0x44484f),
-    { min: [24.4, 0, -4], max: [29, 2.0, 0], surface: 'metal', color: 0x4a4f57, name: 'platform' },
-  ],
-  dummies: [[20, 0, 18], [-20, 0, 0], [4, 0, -22]],
+  groundColor: 0x9a948a,
+  boxes: [],
+  dummies: [[-12, 0, 6], [12, 0, -6], [0, 0, -18]],
+  killstreakAirspace: {
+    centerXZ: [0, 0],
+    radius: 95,
+    // Higher than the open maps: a missile here has to be lined up with a
+    // roof bay, so the player needs altitude and time to pick one.
+    arrivalAltitude: 210,
+    uavOrbitHeight: 58,
+  },
+  shellFile: '/assets/models/environment/killhouse_shell.glb',
+  calloutZonesFile: '/assets/environment-meta/killhouse_callouts.json',
+  hdri: '/assets/hdri/tropical_firingrange.hdr',
+  hdriIntensity: 0.55,
 };
 
 // --- FACILITY: clean corridors, low tunnels, long sightlines ---------------
@@ -343,6 +352,9 @@ const FIRING_RANGE: LevelDefinition = {
  */
 const PROTOTYPE: LevelDefinition = {
   id: 'prototype',
+  // A sandbox for new building kit pieces, not a shipped map: it loads only
+  // when picked by hand.
+  excludeFromRotation: true,
   displayName: 'Prototype Range',
   description: 'Vehicle development sandbox: airfield, helipads, driving course, harbour.',
   ambientSoundKey: 'ambient_village_dusty_loop',
@@ -372,8 +384,17 @@ const PROTOTYPE: LevelDefinition = {
 };
 
 export const LEVELS: readonly LevelDefinition[] = [
-  WAREHOUSE, FACILITY, TRAINING_RANGE, SHIPMENT, FIRING_RANGE, PROTOTYPE,
+  KILLHOUSE, FACILITY, TRAINING_RANGE, SHIPMENT, FIRING_RANGE, PROTOTYPE,
 ];
+
+/**
+ * The levels random selection is allowed to pick from.
+ *
+ * Quick Play, and later the game-mode rotation, must use this rather than
+ * LEVELS. Anything flagged excludeFromRotation is reachable only by name.
+ */
+export const ROTATION_LEVELS: readonly LevelDefinition[] =
+  LEVELS.filter((level) => !level.excludeFromRotation);
 
 export function getLevel(id: string): LevelDefinition {
   return LEVELS.find((l) => l.id === id) ?? LEVELS[0];

@@ -129,8 +129,12 @@ export function perceive(
     // Facing test before the raycast: it is a dot product against a cheap
     // normalisation, and it rejects most candidates for free.
     if (distance > 1e-3) {
+      // Forward is (-sin, +cos), the same basis MovementSystem uses to turn
+      // stick input into world motion (see MoveTo for the derivation). The
+      // -cos here was a sign error: it pointed the FOV cone directly BEHIND
+      // the bot, so a bot could only notice enemies it had its back to.
       const forwardX = -Math.sin(self.yaw);
-      const forwardZ = -Math.cos(self.yaw);
+      const forwardZ = Math.cos(self.yaw);
       const dot = (dx / distance) * forwardX + (dz / distance) * forwardZ;
       if (dot < cosHalfFov) continue;
     }

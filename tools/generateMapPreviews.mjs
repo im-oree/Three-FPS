@@ -40,8 +40,12 @@ export function levelIds() {
   );
   const ids = [];
   // Only match ids at the top level of a level object, which are the ones
-  // followed by a displayName.
-  const pattern = /id:\s*'([a-z_]+)',\s*\n\s*displayName:/g;
+  // followed by a displayName. Comments and extra fields may sit between the
+  // two (prototype carries an excludeFromRotation flag and a note), so allow
+  // a few intervening lines rather than requiring them to be adjacent --
+  // otherwise a level silently loses its preview the moment someone
+  // annotates it, which is exactly what happened.
+  const pattern = /id:\s*'([a-z_]+)',(?:[^\n]*\n(?:\s*\/\/[^\n]*\n|\s*[a-zA-Z]+:[^\n]*\n){0,4})?\s*displayName:/g;
   let match;
   while ((match = pattern.exec(source))) ids.push(match[1]);
   return ids;
@@ -165,11 +169,64 @@ async function main() {
       // Breathing room so nothing touches the frame edge.
       const reach = Math.max((box.maxX - box.minX) / 2, (box.maxZ - box.minZ) / 2) * 1.15;
 
-      // Three-quarter aerial on the diagonal: shows building faces AND the
-      // layout. Straight down reads as a blueprint, not a map.
-      const pitch = (38 * Math.PI) / 180;
-      const yaw = (35 * Math.PI) / 180;
-      const distance = reach * 2.25;
+      // PER-MAP CAMERA PLANS.
+      //
+      // One shared three-quarter aerial framed every map identically, which
+      // made six different places look like six grey rectangles. Each map now
+      // declares the angle that actually shows what it IS: a low angle for a
+      // map whose character is its silhouette, a steeper one for a layout
+      // that reads from above, and an INTERIOR camera for Killhouse, which is
+      // a roofed warehouse -- an aerial shot of it is a photograph of a roof.
+      //
+      // `interior` places the camera inside the building looking down its
+      // long axis, `elevation` lifts the look-at point so tall structures sit
+      // in frame rather than at the top edge.
+      const PLANS = {
+        // Roofed: shoot from inside, down the long axis, past the tower.
+        killhouse: {
+          interior: true,
+          // Back into the south end at gallery height, looking up the long
+          // axis so the watchtower is centre-frame with the lit roof bays
+          // above it -- the two things that identify this map instantly.
+          // Eye-level-ish and well back in the south end, looking level at
+          // the tower deck. Shooting from above put the 7.4 m tower below
+          // frame centre against a same-coloured floor; from here it stands
+          // against the lit roof bays, which is how you actually see it.
+          // Down the WEST aisle rather than the centre line: the mid-map
+          // cover walls sit on the centre line and were standing directly
+          // between the camera and the tower. From the aisle the tower is
+          // clear, with the lit roof bays behind it.
+          pos: [-14.5, 7.4, 26.5], look: [0.0, 3.4, -5.0], fov: 70,
+        },
+        // Container yard: low and raking, so the stacks read as a skyline.
+        shipment: { pitchDeg: 26, yawDeg: 38, distanceScale: 2.05, lookY: 0.10 },
+        // Long corridors: steeper, so the lanes are legible.
+        facility: { pitchDeg: 44, yawDeg: 20, distanceScale: 2.15, lookY: 0.05 },
+        // A distance ladder: shoot down it, not across it.
+        training_range: { pitchDeg: 30, yawDeg: 74, distanceScale: 2.10, lookY: 0.06 },
+        // Tropical compound: the tower and the palms are the picture.
+        firingrange: { pitchDeg: 32, yawDeg: 42, distanceScale: 2.00, lookY: 0.12 },
+        // Sandbox: plain overview is the honest framing.
+        prototype: { pitchDeg: 40, yawDeg: 30, distanceScale: 2.30, lookY: 0.05 },
+      };
+      const plan = PLANS[level.id] ?? { pitchDeg: 38, yawDeg: 35, distanceScale: 2.25, lookY: 0.0 };
+
+      if (plan.interior) {
+        return {
+          reach: Math.round(reach),
+          distance: Math.round(reach),
+          far: Math.max(reach * 14, 1200),
+          pos: plan.pos,
+          look: plan.look,
+          fov: plan.fov ?? 42,
+          interior: true,
+          skyColor: level.skyColor ?? 0x2a3240,
+        };
+      }
+
+      const pitch = (plan.pitchDeg * Math.PI) / 180;
+      const yaw = (plan.yawDeg * Math.PI) / 180;
+      const distance = reach * plan.distanceScale;
       return {
         reach: Math.round(reach),
         distance: Math.round(distance),
@@ -179,7 +236,9 @@ async function main() {
           Math.sin(pitch) * distance + reach * 0.12,
           centerZ + Math.cos(yaw) * Math.cos(pitch) * distance,
         ],
-        look: [centerX, 0, centerZ],
+        look: [centerX, reach * (plan.lookY ?? 0), centerZ],
+        fov: plan.fov ?? 42,
+        interior: false,
         skyColor: level.skyColor ?? 0x2a3240,
       };
     }, bounds);
@@ -202,6 +261,7 @@ async function main() {
       const height = 720;
       const camera = new THREE.PerspectiveCamera(42, width / height, 0.5, framing.far);
       camera.position.fromArray(framing.pos);
+      if (framing.fov) { camera.fov = framing.fov; }
       camera.lookAt(framing.look[0], framing.look[1], framing.look[2]);
       // World layer only: the viewmodel's own lights live in this scene and
       // would blow the map out to white.
@@ -221,6 +281,17 @@ async function main() {
       // high dynamic range arrives unmapped and clips every pixel to pure
       // white. Measured: with the env map bound the whole frame reads 255;
       // without it, 0-73. Everything is restored afterwards.
+      // Turn off frustum/occlusion culling for the shoot.
+      //
+      // Culling is driven by the GAME camera, and the preview camera is
+      // somewhere else entirely -- so anything outside the player's view had
+      // already been switched off, and the preview rendered a map with its
+      // contents missing. On Killhouse that removed the watchtower, the whole
+      // point of the shot. setEnabled(false) force-shows every registered
+      // entry; it is restored below.
+      const culling = op.engine.sceneManager.culling;
+      culling?.setEnabled(false);
+
       const savedBackground = scene.background;
       const savedEnvironment = scene.environment;
       const savedFog = scene.fog;
@@ -231,13 +302,37 @@ async function main() {
       // by, so replace it with a temporary hemisphere fill. Without this the
       // geometry is correct but almost black.
       scene.environment = null;
-      const fill = new THREE.HemisphereLight(0xdceaff, 0x4a4035, 2.1);
-      const sun = new THREE.DirectionalLight(0xfff4e2, 2.4);
+      // Lighting. The previous fill was flat and bright, which is what made
+      // the previews look washed out: a strong sky-coloured hemisphere with
+      // almost no directional contrast leaves every surface the same value,
+      // and the fog then lifted the blacks further. Lower the ambient, raise
+      // the key, and warm/cool them against each other so surfaces separate.
+      // Interiors are lit differently: the key is outside the roof and the
+      // sky dome does not reach in, so an indoor shot needs a stronger
+      // ambient or it renders as a black box with a bright ceiling.
+      // Maps with a dark sky (Facility's near-black interior palette) get a
+      // lift: at the standard fill they rendered as a black tile with a
+      // barely-visible outline, which is not a preview of anything.
+      const skyLum = ((framing.skyColor >> 16 & 255) * 0.3
+        + (framing.skyColor >> 8 & 255) * 0.59
+        + (framing.skyColor & 255) * 0.11) / 255;
+      const darkLift = skyLum < 0.25 ? 0.85 : 0;
+      const fill = new THREE.HemisphereLight(
+        0xbcd2ea, 0x3a3026, (framing.interior ? 2.4 : 1.35) + darkLift,
+      );
+      const sun = new THREE.DirectionalLight(0xfff1d8, framing.interior ? 2.2 : 3.1);
       sun.position.set(-0.4, 1, 0.55).multiplyScalar(framing.reach * 2);
-      scene.add(fill, sun);
-      // A gentle linear fog keeps aerial depth without the exponential
-      // haze that turns a 100 m shot into a white sheet.
-      scene.fog = new THREE.Fog(framing.skyColor, framing.far * 0.35, framing.far * 1.1);
+      // A second, dimmer light from the opposite side keeps shadowed faces
+      // readable without flattening them back out.
+      const rim = new THREE.DirectionalLight(0x9fb8d8, 0.85);
+      rim.position.set(0.7, 0.45, -0.6).multiplyScalar(framing.reach * 2);
+      scene.add(fill, sun, rim);
+      // Fog starts much further out than before. At 0.35 of `far` it was
+      // greying the middle of every shot; interiors get none at all, since
+      // there is no distance for haze to accumulate over.
+      scene.fog = framing.interior
+        ? null
+        : new THREE.Fog(framing.skyColor, framing.far * 0.55, framing.far * 1.35);
 
       const previousTarget = renderer.getRenderTarget();
       renderer.setRenderTarget(target);
@@ -247,6 +342,7 @@ async function main() {
 
       const pixels = new Uint8Array(width * height * 4);
       renderer.readRenderTargetPixels(target, 0, 0, width, height, pixels);
+      culling?.setEnabled(true);
 
       scene.remove(fill, sun);
       fill.dispose();

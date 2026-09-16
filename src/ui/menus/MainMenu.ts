@@ -26,7 +26,7 @@
 import eventBus from '../../core/EventBus';
 import cheatsStore, { CheatId, type CheatIdValue } from '../../core/CheatsStore';
 import { GameState, type GameStateValue } from '../../state/GameStateManager';
-import { LEVELS, getLevel } from '../../environment/LevelDefinition';
+import { LEVELS, ROTATION_LEVELS, getLevel } from '../../environment/LevelDefinition';
 import loadoutManager from '../../customization/LoadoutManager';
 import { getWeapon } from '../../weapons/definitions';
 import { MENU_SHOWCASE } from '../../utils/Constants';
@@ -271,7 +271,10 @@ export class MainMenu implements Screen {
   /** The level Quick Play deploys to: the filter if set, else random. */
   private pickQuickPlayLevel(): string {
     if (this.filterLevelId) return this.filterLevelId;
-    return LEVELS[Math.floor(Math.random() * LEVELS.length)].id;
+    // ROTATION_LEVELS, not LEVELS: developer sandboxes are reachable only by
+    // picking them explicitly in the map window.
+    const pool = ROTATION_LEVELS.length ? ROTATION_LEVELS : LEVELS;
+    return pool[Math.floor(Math.random() * pool.length)].id;
   }
 
   /**
