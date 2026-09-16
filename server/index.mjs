@@ -19,6 +19,7 @@
  * (~50 ms) so there is no build artifact that can go stale against source.
  */
 import { WebSocketServer } from 'ws';
+import { SignalDirectory } from './SignalDirectory.mjs';
 import { createServer } from 'node:http';
 import { build } from 'esbuild';
 import { mkdtempSync, writeFileSync } from 'node:fs';
@@ -72,6 +73,16 @@ const diskLevelFetcher = async (levelId) => {
 };
 
 const rooms = new RoomManager(diskLevelFetcher);
+
+/**
+ * The peer-to-peer directory.
+ *
+ * Hosted games run in the HOST'S browser -- this only introduces peers and
+ * relays their SDP. It is deliberately separate from RoomManager above, which
+ * serves the dedicated-server arrangement. Both can run at once: a player may
+ * join a backend-hosted room or a peer-hosted game from the same browser.
+ */
+const directory = new SignalDirectory();
 const log = (...args) => console.log(`[backend]`, ...args);
 
 /**
@@ -135,13 +146,29 @@ const http = createServer((req, res) => {
     res.end(JSON.stringify(body));
   };
   if (req.url === '/health') {
-    send(200, { ok: true, rooms: rooms.count, protocol: Protocol.PROTOCOL_VERSION, uptime: process.uptime() });
+    send(200, {
+      ok: true,
+      rooms: rooms.count,
+      games: directory.gameCount,
+      peers: directory.peerCount,
+      protocol: Protocol.PROTOCOL_VERSION,
+      uptime: process.uptime(),
+    });
   } else if (req.url === '/rooms') {
     send(200, { rooms: rooms.listable });
+  } else if (req.url === '/games') {
+    // The server browser, over plain HTTP: inspectable with curl, and a
+    // fallback for a client that has not opened its lobby socket yet.
+    send(200, { games: directory.listings() });
   } else {
     send(404, { error: 'not found' });
   }
 });
+
+/** Messages the signalling directory owns. Everything else is simulation. */
+const LOBBY_MESSAGES = new Set([
+  'hostGame', 'heartbeat', 'stopHosting', 'listGames', 'joinGame', 'signal', 'pong',
+]);
 
 const wss = new WebSocketServer({ server: http });
 
@@ -150,10 +177,24 @@ wss.on('connection', (socket) => {
   let room = null;
   let playerId = null;
 
+  // Every socket is also a lobby peer. Discovery and simulation share one
+  // connection so a player can browse games while sitting in a match, and
+  // so hosting does not need a second socket to keep alive.
+  const lobbyPeerId = directory.addPeer(
+    (message) => transport.send(message),
+    () => { try { socket.close(); } catch { /* already gone */ } },
+  );
+
   // Room selection happens BEFORE the simulation sees the connection: the
   // GameServer is handed an already-placed player, so it never has to know
   // that rooms exist.
   const offMessage = transport.onMessage((msg) => {
+    // Lobby traffic is discovery, not simulation: it is handled by the
+    // directory and never reaches a GameServer.
+    if (LOBBY_MESSAGES.has(msg?.t)) {
+      directory.handle(lobbyPeerId, msg);
+      return;
+    }
     switch (msg?.t) {
       case 'listRooms':
         transport.send({ t: 'roomList', rooms: rooms.listable });
@@ -209,6 +250,8 @@ wss.on('connection', (socket) => {
 
   transport.onClose(() => {
     offMessage();
+    // Delisting on disconnect is what keeps the browser free of dead rows.
+    directory.removePeer(lobbyPeerId);
     if (room && playerId) room.server.disconnect(playerId);
     room = null;
   });
@@ -231,9 +274,21 @@ const timer = setInterval(() => {
   }
 }, TICK_MS);
 
+// Measure RTT to each host so the server browser can show a real ping
+// figure, and drop listings whose host stopped answering.
+const lobbyTimer = setInterval(() => {
+  try {
+    directory.pingHosts();
+    directory.pruneStale();
+  } catch (err) {
+    console.error('[backend] lobby error:', err);
+  }
+}, 3000);
+
 const shutdown = () => {
   log('shutting down');
   clearInterval(timer);
+  clearInterval(lobbyTimer);
   rooms.disposeAll();
   wss.close();
   http.close(() => process.exit(0));

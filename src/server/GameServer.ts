@@ -130,6 +130,8 @@ export class GameServer {
 
   /** Player count named by a custom-match host, if any. */
   private explicitPlayerCount: number | null = null;
+  /** Bots for THIS match, when the host asked for them. */
+  private botsRequested = false;
   /** Tracks the load in flight, so a fast re-join cannot race it. */
   private levelLoad: Promise<void> | null = null;
   /** Kept for ammo queries; also registered as an ordinary system. */
@@ -211,7 +213,14 @@ export class GameServer {
     // The match owns score, the clock, death and respawn. It runs after
     // combat and killstreaks (so a kill scored this tick is counted this
     // tick) and before AI, so a bot's brain sees the post-death world.
-    this.autoFill = options.fillLobby ?? true;
+    // Bots are OFF unless somebody asks for them.
+    //
+    // This used to default to true so single-player had opponents. With a
+    // server browser that is no longer defensible: a room advertising 6/8
+    // players has to mean six people, or every number in the list is a lie.
+    // A host who wants bots turns them on per match (joinMatch rules.bots),
+    // and the AI is unchanged when they do.
+    this.autoFill = options.fillLobby ?? false;
     this.match = new MatchSystem(this.collision);
     // Subscribe rather than drain: consumeEvents() is destructive, so a
     // second consumer would silently starve whichever ran second.
@@ -355,6 +364,12 @@ export class GameServer {
         // A custom match is the SAME mode definition with a clamped patch
         // applied -- there is no separate custom-match code path, which is
         // what makes every setting work rather than each needing plumbing.
+        // `bots` is a boolean, so it does not go through sanitiseOverrides
+        // (which clamps numbers). A host opting in turns filling back on for
+        // this match only; resetAll() clears it again.
+        if (msg.rules && typeof msg.rules.bots === 'boolean') {
+          this.botsRequested = msg.rules.bots;
+        }
         const clean = msg.rules ? sanitiseOverrides(msg.rules) : undefined;
         const custom = clean
           ? customise(getGameMode(msg.modeId ?? 'ffa'), clean)
@@ -392,7 +407,7 @@ export class GameServer {
         });
         // Fill the lobby to the mode's player count, so a solo player joins a
         // populated match rather than an empty map.
-        if (this.autoFill) this.fillLobby();
+        if (this.botsEnabled) this.fillLobby();
         // Report where the player ACTUALLY is, not the world's fallback
         // spawn: placePlayer may have moved them, and a client told the wrong
         // spawn teleports itself somewhere the server does not agree with.
@@ -541,7 +556,7 @@ export class GameServer {
       // been handed a level but has no players is a server nobody asked to
       // populate -- filling it here would conjure a lobby out of a bare
       // startMatch() and make the population depend on load timing.
-      if (this.autoFill && this.running && this.hasJoinedPlayer()) this.fillLobby();
+      if (this.botsEnabled && this.running && this.hasJoinedPlayer()) this.fillLobby();
     }).catch((error: unknown) => {
       console.warn(`[server] level "${levelId}" collision failed to load:`, error);
     });
@@ -598,6 +613,11 @@ export class GameServer {
    * exactly what COD does too, and exactly why they must be indistinguishable
    * from the humans they are standing in for.
    */
+  /** Bots are on when the server was built for them or a host asked. */
+  private get botsEnabled(): boolean {
+    return this.autoFill || this.botsRequested;
+  }
+
   fillLobby(): void {
     const target = this.lobbyTarget();
     let present = 0;
@@ -686,6 +706,8 @@ export class GameServer {
     // A custom match's player count belongs to THAT match. Leaving it set
     // would size the next, ordinary match to the last host's choice.
     this.explicitPlayerCount = null;
+    // One match's bot choice must not leak into the next.
+    this.botsRequested = false;
   }
 
   /** Full shutdown. The client calls this when the tab/game closes. */

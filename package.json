@@ -42,6 +42,7 @@
     "verify:server": "node tools/verify/server-core.mjs",
     "verify:session": "node tools/verify/acceptance-session.mjs",
     "verify:backend": "node tools/verify/backend-smoke.mjs",
+    "verify:lobby": "node tools/verify/acceptance-lobby.mjs",
     "verify:movement": "node tools/verify/server-movement.mjs",
     "bake:collision": "node tools/bakeCollision.mjs",
     "verify:combat": "node tools/verify/server-combat.mjs",

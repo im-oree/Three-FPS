@@ -48,7 +48,8 @@ const DIVIDER = { minX: -2, minY: 0, minZ: -20, maxX: 2, maxY: 4, maxZ: 20, surf
  * reasons). Start first, then install the test geometry, then build nav.
  */
 function makeServer(boxes = ROOM) {
-  const server = new GameServer();
+  // Bots are off by default now; this suite is entirely about bots.
+  const server = new GameServer({ fillLobby: true });
   server.startMatch('testroom');
   server.collision.load(boxes);
   server.ai.buildNavigation();
@@ -482,7 +483,7 @@ console.log('\n[12] Navigation maps the floor, not the roof');
   };
 
   for (const levelId of ['killhouse', 'facility', 'shipment']) {
-    const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+    const server = new GameServer({ levelFetcher: diskLevelFetcher(), fillLobby: true });
     let fire = () => {};
     server.accept({
       onMessage: (f) => { fire = f; return () => {}; },
@@ -527,7 +528,7 @@ console.log('\n[13] Bots actually fight on every map');
   // A map where bots cannot reach each other looks fine in a screenshot and
   // is dead to play. Measured against the real server at the real tick rate.
   for (const [levelId, floor] of [['killhouse', 8], ['shipment', 8], ['facility', 4]]) {
-    const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+    const server = new GameServer({ levelFetcher: diskLevelFetcher(), fillLobby: true });
     let fire = () => {};
     server.accept({
       onMessage: (f) => { fire = f; return () => {}; },
@@ -564,7 +565,7 @@ console.log('\n[13] Bots actually fight on every map');
 // player". Each one is a bug we actually shipped and fixed.
 console.log('\n[14] Bots move like players');
 for (const levelId of ['shipment', 'killhouse', 'facility']) {
-  const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+  const server = new GameServer({ levelFetcher: diskLevelFetcher(), fillLobby: true });
   let fire = () => {};
   server.accept({
     onMessage: (f) => { fire = f; return () => {}; },
@@ -620,7 +621,7 @@ for (const levelId of ['shipment', 'killhouse', 'facility']) {
 // --- [15] Bots commit to a decision instead of dithering ------------------
 console.log('\n[15] Decisions last long enough to mean something');
 {
-  const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+  const server = new GameServer({ levelFetcher: diskLevelFetcher(), fillLobby: true });
   let fire = () => {};
   server.accept({
     onMessage: (f) => { fire = f; return () => {}; },
@@ -662,7 +663,7 @@ console.log('\n[15] Decisions last long enough to mean something');
 console.log('\n[16] Navigation scales to the biggest map');
 {
   const t0 = Date.now();
-  const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+  const server = new GameServer({ levelFetcher: diskLevelFetcher(), fillLobby: true });
   let fire = () => {};
   server.accept({
     onMessage: (f) => { fire = f; return () => {}; },

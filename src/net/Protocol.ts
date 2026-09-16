@@ -241,6 +241,15 @@ export interface MatchRulesWire {
   readonly timeLimitSeconds?: number;
   readonly maxPlayers?: number;
   readonly respawnDelaySeconds?: number;
+  /**
+   * Fill empty slots with AI players.
+   *
+   * Off unless a host asks for it. A server browser advertises a player
+   * count, and that count has to mean real people -- a lobby listed as 6/8
+   * that turns out to be one human and five bots is a lie to everyone
+   * reading the list.
+   */
+  readonly bots?: boolean;
 }
 
 /** One row of the scoreboard. */

@@ -27,6 +27,8 @@ const raw = JSON.parse(fs.readFileSync('assets/collision/killhouse.json', 'utf8'
 
 const server = new GameServer({
   levelFetcher: async (id) => JSON.parse(fs.readFileSync(`assets/collision/${id}.json`, 'utf8')),
+  // Bots are off by default now; this suite measures bot play.
+  fillLobby: true,
 });
 server.startMatch('killhouse');
 await server.whenLevelReady();
