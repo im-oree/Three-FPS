@@ -1669,3 +1669,151 @@ input[type='checkbox'] { pointer-events: auto; width: 17px; height: 17px; accent
 }
 
 .cod__mode--custom { border-left: 2px solid var(--ui-accent); }
+
+/* --- server browser ------------------------------------------------------
+   A dense table, like the Black Ops / MW browser it is modelled on: the four
+   things a player decides on (name, map+mode, population, ping) in fixed
+   columns, so rows can be scanned vertically rather than read. */
+.mapwin__panel--browser { max-width: 1080px; }
+
+.browser__header,
+.browser__row {
+  display: grid;
+  grid-template-columns: minmax(0, 2.4fr) minmax(0, 1.3fr) minmax(0, 1fr) 110px 120px;
+  align-items: center;
+  gap: 12px;
+  padding: 0 18px;
+}
+
+.browser__header {
+  height: 34px;
+  border-bottom: 1px solid var(--cod-line-strong);
+  color: var(--cod-faint);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.browser__rows {
+  flex: 1;
+  min-height: 260px;
+  max-height: 52vh;
+  overflow-y: auto;
+}
+
+.browser__row {
+  width: 100%;
+  height: 46px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--cod-line);
+  border-left: 2px solid transparent;
+  color: var(--cod-text);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.browser__row:hover { background: rgba(125, 211, 240, 0.07); }
+
+.browser__row--on {
+  background: rgba(125, 211, 240, 0.13);
+  border-left-color: var(--cod-accent);
+}
+
+/* Full games stay visible — knowing the game exists matters — but read as
+   unavailable rather than failing silently when JOIN is pressed. */
+.browser__row--full { opacity: 0.45; }
+
+.browser__col {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser__col--name { display: flex; align-items: center; gap: 8px; }
+.browser__col--players,
+.browser__col--ping {
+  font-family: var(--ui-mono);
+  font-variant-numeric: tabular-nums;
+}
+.browser__col--ping { display: flex; align-items: center; gap: 8px; }
+.browser__col--map,
+.browser__col--mode { color: var(--cod-dim); }
+
+.browser__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.browser__lock,
+.browser__live {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 2px;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+}
+
+.browser__lock { background: rgba(141, 155, 173, 0.2); color: var(--cod-dim); }
+.browser__live { background: rgba(216, 87, 75, 0.9); color: #fff; }
+
+/* Four-bar signal glyph: a number alone is hard to scan at a glance. */
+.browser__ping-text { min-width: 34px; text-align: right; }
+
+.browser__bars { display: flex; align-items: flex-end; gap: 2px; height: 14px; }
+.browser__bar {
+  width: 3px;
+  background: rgba(255, 255, 255, 0.14);
+}
+.browser__bar:nth-child(1) { height: 4px; }
+.browser__bar:nth-child(2) { height: 7px; }
+.browser__bar:nth-child(3) { height: 10px; }
+.browser__bar:nth-child(4) { height: 14px; }
+
+.browser__bars--good .browser__bar--on { background: var(--cod-good, #6fc98a); }
+.browser__bars--ok .browser__bar--on { background: var(--cod-accent-warm); }
+.browser__bars--bad .browser__bar--on { background: var(--ui-danger); }
+
+.browser__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 260px;
+  text-align: center;
+}
+
+.browser__empty-title {
+  color: var(--cod-dim);
+  font-size: 18px;
+  letter-spacing: 0.18em;
+}
+
+.browser__empty-hint {
+  max-width: 420px;
+  color: var(--cod-faint);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.browser__foot { justify-content: space-between; }
+.browser__actions { display: flex; align-items: center; gap: 8px; }
+
+.browser__status {
+  color: var(--cod-faint);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+.browser__status--bad { color: var(--ui-danger); }
+
+/* The action button's label changes length (START MATCH / HOST MATCH); keep
+   it on one line so the footer does not reflow when VISIBILITY is toggled. */
+.custom__foot .btn { white-space: nowrap; }

@@ -23,7 +23,7 @@ function run(server, seconds) {
 }
 
 function freshServer(levelId = 'killhouse') {
-  const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+  const server = new GameServer({ levelFetcher: diskLevelFetcher(), fillLobby: true });
   server.startMatch(levelId, 'ffa');
   return server;
 }
@@ -615,7 +615,7 @@ console.log('\n[15] Starting a new match leaves nothing behind');
 
   for (const mode of GAME_MODES) {
     for (const levelId of LEVELS) {
-      const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+      const server = new GameServer({ levelFetcher: diskLevelFetcher(), fillLobby: true });
       const link = fakeTransport();
       server.accept(link.transport);
       link.fire({ t: 'joinMatch', levelId, modeId: mode.id });
@@ -663,7 +663,7 @@ console.log('\n[15] Starting a new match leaves nothing behind');
     };
   };
   const populate = async (levelId, rules) => {
-    const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+    const server = new GameServer({ levelFetcher: diskLevelFetcher(), fillLobby: true });
     const link = fakeTransport();
     server.accept(link.transport);
     link.fire({ t: 'joinMatch', levelId, modeId: 'ffa', ...(rules ? { rules } : {}) });
@@ -718,7 +718,7 @@ console.log('\n[15] Starting a new match leaves nothing behind');
 // the countdown expiring set phase='live' inline instead of calling
 // beginLive(), so the freeze was never lifted and NOBODY could move all match.
 {
-  const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+  const server = new GameServer({ levelFetcher: diskLevelFetcher(), fillLobby: true });
   let fire = () => {};
   server.accept({
     onMessage: (f) => { fire = f; return () => {}; },
@@ -764,7 +764,7 @@ console.log('\n[15] Starting a new match leaves nothing behind');
 // of exactly one player -- itself. The lobby was invisible. You were shot by
 // people who were never drawn.
 {
-  const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+  const server = new GameServer({ levelFetcher: diskLevelFetcher(), fillLobby: true });
   const sent = [];
   let fire = () => {};
   server.accept({

@@ -66,7 +66,16 @@ export type LobbyC2S =
    * cannot be used to spray offers at arbitrary sessions.
    */
   | { readonly t: 'signal'; readonly to: PeerId; readonly payload: unknown }
-  | { readonly t: 'ping'; readonly id: number };
+  /** Client-initiated latency probe; the directory echoes it back. */
+  | { readonly t: 'ping'; readonly id: number }
+  /**
+   * Answer to the directory's own ping.
+   *
+   * This is how a listing gets a real ping figure: the directory times the
+   * round trip to the HOST, and every browsing player sees that number. A
+   * host that never replies is a host nobody can measure.
+   */
+  | { readonly t: 'pong'; readonly id: number };
 
 export type LobbyS2C =
   | { readonly t: 'lobbyWelcome'; readonly peerId: PeerId }
@@ -80,7 +89,10 @@ export type LobbyS2C =
   | { readonly t: 'signal'; readonly from: PeerId; readonly payload: unknown }
   /** The other side went away before the peer connection came up. */
   | { readonly t: 'peerGone'; readonly peerId: PeerId }
-  | { readonly t: 'pong'; readonly id: number };
+  /** Answer to a client-initiated ping. */
+  | { readonly t: 'pong'; readonly id: number }
+  /** The directory measuring a host. Answer with 'pong', same id. */
+  | { readonly t: 'ping'; readonly id: number };
 
 /** Listings older than this are dropped: the host's tab was closed. */
 export const LISTING_TIMEOUT_SECONDS = 15;

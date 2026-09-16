@@ -19,6 +19,7 @@
 import { GameClient, type GameClientEvents } from './GameClient';
 import { createLocalTransportPair } from './LocalTransport';
 import { LobbyClient } from './LobbyClient';
+import { ServerClock } from './ServerClock';
 import { RtcGuestTransport, RtcHostTransport, DEFAULT_ICE_SERVERS } from './RtcTransport';
 import { GameServer } from '../server/GameServer';
 import type { LevelFetcher } from '../server/LevelStore';
@@ -116,16 +117,27 @@ export async function createHostedSession(
   });
   pushStatus();
 
+  // The host's server runs on its OWN clock, not the render loop.
+  //
+  // Guests are simulated by this server, so tying it to the host's frame rate
+  // would export the host's GPU load to every other player -- and a
+  // backgrounded host tab, where rAF stops entirely, would freeze the match
+  // for everybody. A timer keeps ticking regardless.
+  const clock = new ServerClock((dt) => {
+    server.update(dt);
+    pushStatus();
+  });
+  clock.start();
+
   let disposed = false;
   const session: HostedGameSession = {
     client,
     server,
     lobby,
     get guestCount(): number { return guests.size; },
-    update(realSeconds: number): void {
-      if (disposed) return;
-      server.update(realSeconds);
-      pushStatus();
+    update(): void {
+      // Deliberately empty: the clock owns stepping. Kept so a hosted session
+      // is drop-in compatible with every other GameSession.
     },
     async addLocalTestClient(): Promise<GameClient> {
       const pair = createLocalTransportPair<C2S, S2C>();
@@ -138,6 +150,7 @@ export async function createHostedSession(
     dispose(): void {
       if (disposed) return;
       disposed = true;
+      clock.stop();
       for (const transport of guests.values()) transport.close();
       guests.clear();
       // Delist before tearing down, so nobody sees a row they cannot join.

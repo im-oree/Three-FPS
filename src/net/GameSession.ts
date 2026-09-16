@@ -49,9 +49,21 @@ export interface GameSession {
 /** Single-player: the authoritative server runs in this tab. */
 export async function createLocalSession(
   events: GameClientEvents = {},
-  options: { simulatedLatencyMs?: number; levelFetcher?: LevelFetcher } = {},
+  options: {
+    simulatedLatencyMs?: number;
+    levelFetcher?: LevelFetcher;
+    /** Fill empty slots with AI. On by default for a local match. */
+    fillLobby?: boolean;
+  } = {},
 ): Promise<GameSession> {
-  const server = new GameServer({ levelFetcher: options.levelFetcher });
+  // A LOCAL match fills with AI, because a solo Free-For-All against nobody
+  // is not a game. This is the opposite default to a HOSTED match, where an
+  // empty slot must stay empty until a real player takes it -- a listing that
+  // says 6/8 has to mean six people.
+  const server = new GameServer({
+    levelFetcher: options.levelFetcher,
+    fillLobby: options.fillLobby ?? true,
+  });
   const { client: clientTransport, server: serverTransport } =
     createLocalTransportPair<C2S, S2C>(options.simulatedLatencyMs ?? 0);
 

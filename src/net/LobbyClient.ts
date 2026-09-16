@@ -132,6 +132,14 @@ export class LobbyClient {
       case 'peerGone':
         this.emit('onPeerGone', msg.peerId);
         break;
+      case 'ping':
+        // Answer immediately, echoing the id. This is what gives OTHER
+        // players a real ping figure for the game we are hosting: the
+        // directory times the round trip. Without the reply every listing
+        // shows 0 ms, which looks like a perfect connection to a host that
+        // has never been measured at all.
+        this.send({ t: 'pong', id: msg.id });
+        break;
       case 'signal': {
         const listeners = this.signalHandlers.get(msg.from);
         if (listeners) {

@@ -112,6 +112,12 @@ import PerspectiveController from './player/PerspectiveController';
 import PerspectiveSync from './animation/PerspectiveSync';
 import type { ResolvedAnimationDescriptor, AnimationTarget } from './animation/AnimationBlender';
 import { createLocalSession, type GameSession } from './net/GameSession';
+import {
+  createHostedSession, joinHostedSession, type HostedGameSession,
+} from './net/HostedSession';
+import { resolveLobbyUrl, resolveLobbyHttpBase } from './net/lobbyUrl';
+import type { GameListing } from './net/LobbyProtocol';
+import type { GameClientEvents } from './net/GameClient';
 import { InputRelay } from './net/InputRelay';
 import { httpLevelFetcher } from './server/LevelStore';
 import loadProgress, { DEPLOY_STAGES } from './core/LoadProgress';
@@ -1236,6 +1242,8 @@ const matchBar = new MatchBar();
 // (solo: yes; with others present: no) and reports back; the client renders
 // that answer instead of assuming it.
 let session: GameSession | null = null;
+/** Set while this tab is HOSTING, so the lobby listing can be kept current. */
+let hostedSession: HostedGameSession | null = null;
 let simulationRunning = true;
 
 let inputRelay: InputRelay | null = null;
@@ -1302,7 +1310,15 @@ const endDeathPresentation = (pos: Vec3, yaw: number): void => {
   }
 };
 
-const sessionReady = createLocalSession({
+/**
+ * Everything the client does in response to the server.
+ *
+ * Extracted so a hosted or joined session gets EXACTLY the same handlers as
+ * single-player. A guest's killfeed, death cam and scoreboard are driven by
+ * the host's server through this same bundle, which is what makes the two
+ * arrangements behave identically rather than merely similarly.
+ */
+const sessionEvents: GameClientEvents = {
   onSimulationState: (running, reason) => {
     simulationRunning = running;
     eventBus.emit('net:simulationState', { running, reason });
@@ -1347,12 +1363,28 @@ const sessionReady = createLocalSession({
       victimIsFriendly: friendly(entry.victimTeam, entry.victimId),
     });
   },
-}, { levelFetcher: httpLevelFetcher() }).then((s) => {
+};
+
+/** Point the game at a session: it owns the input relay and the client. */
+const adoptSession = (s: GameSession): GameSession => {
   session = s;
   // The relay reports INTENT every frame; the server decides the outcome.
   inputRelay = new InputRelay(s.client, engine.inputManager, playerController);
+  // Keep the test hook pointed at the LIVE session. Without this, swapping to
+  // a hosted session would leave tests inspecting the disposed one -- which
+  // reads as "the server stopped responding" rather than "wrong object".
+  const hook = (window as unknown as { __OPERATOR__?: Record<string, unknown> }).__OPERATOR__;
+  if (hook) {
+    hook.session = s;
+    hook.gameClient = s.client;
+    hook.gameServer = s.server;
+  }
   return s;
-});
+};
+
+const sessionReady = createLocalSession(
+  sessionEvents, { levelFetcher: httpLevelFetcher() },
+).then(adoptSession);
 void sessionReady;
 
 engine.registerAlwaysUpdatable({
@@ -1383,6 +1415,64 @@ engine.registerAlwaysUpdatable({
     }
   },
 });
+
+/**
+ * Replace the live session, disposing whatever was there.
+ *
+ * Every arrangement (single-player, hosting, joining) produces a GameSession,
+ * so swapping is the only thing that differs between them. Disposing first is
+ * what makes "end the match and start another" actually end the old server
+ * rather than leaving it ticking in the background.
+ */
+const swapSession = async (next: Promise<GameSession>): Promise<GameSession> => {
+  const previous = session;
+  session = null;
+  inputRelay = null;
+  previous?.dispose();
+  return adoptSession(await next);
+};
+
+/** Back to a private, in-tab match. */
+const swapToLocalSession = (): Promise<GameSession> => {
+  if (session && session.server && !hostedSession) return Promise.resolve(session);
+  hostedSession = null;
+  return swapSession(createLocalSession(
+    sessionEvents, { levelFetcher: httpLevelFetcher() },
+  ));
+};
+
+/** Host a game other players can find in the server browser. */
+const startHosting = async (
+  levelId: string,
+  options: { modeId?: string; overrides?: MatchRulesWire; lobbyName?: string; bots?: boolean },
+): Promise<GameSession> => {
+  const mode = getGameMode(options.modeId ?? 'ffa');
+  const created = await swapSession(createHostedSession({
+    lobbyUrl: resolveLobbyUrl(),
+    name: options.lobbyName
+      ?? `${operatorRoster.selected.name.toUpperCase()}'S GAME`,
+    levelId,
+    modeId: options.modeId ?? 'ffa',
+    maxPlayers: options.overrides?.maxPlayers ?? mode.maxPlayers,
+    ...(options.bots ? { bots: true } : {}),
+    levelFetcher: httpLevelFetcher(),
+  }, sessionEvents));
+  hostedSession = created as HostedGameSession;
+  return created;
+};
+
+/** Join a game somebody else is hosting. */
+const joinGame = async (game: GameListing, password?: string): Promise<void> => {
+  activeModeId = game.modeId;
+  activeRules = null;
+  hostedSession = null;
+  await swapSession(joinHostedSession({
+    lobbyUrl: resolveLobbyUrl(),
+    gameId: game.id,
+    ...(password ? { password } : {}),
+  }, sessionEvents));
+  await beginLoad(game.levelId);
+};
 
 // --- screens ---------------------------------------------------------------
 const ui = new UIManager();
@@ -1483,8 +1573,16 @@ const mainMenu = new MainMenu((levelId, options) => {
   activeModeId = options?.modeId ?? 'ffa';
   activeRules = options?.overrides ?? null;
   levelLoader.setWeather(options?.weather ?? null);
-  void beginLoad(levelId);
-});
+
+  // Hosting swaps the in-tab single-player server for one that also admits
+  // remote peers. Everything downstream -- loading, the click gate, the HUD
+  // -- is unchanged, because a hosted session is the same GameSession shape.
+  if (options?.host) {
+    void startHosting(levelId, options).then(() => beginLoad(levelId));
+    return;
+  }
+  void swapToLocalSession().then(() => beginLoad(levelId));
+}, joinGame);
 const loadingScreen = new LoadingScreen(enterMatch);
 const settingsMenu = new SettingsMenu(
   engine.inputManager,
@@ -1883,6 +1981,17 @@ void sessionReady.then((s) => {
   hook.gameServer = s.server;
   hook.isSimulationRunning = () => simulationRunning;
 });
+// P2P entry points, so the two-browser acceptance suite drives the same code
+// paths the menu buttons do rather than a test-only shortcut.
+(window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.hostGame = (
+  levelId: string,
+  options: { modeId?: string; overrides?: MatchRulesWire; lobbyName?: string; bots?: boolean },
+) => startHosting(levelId, options).then(() => beginLoad(levelId));
+(window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.joinGame = joinGame;
+(window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.listGames = async () => {
+  const res = await fetch(`${resolveLobbyHttpBase()}/games`);
+  return (await res.json() as { games: GameListing[] }).games;
+};
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.animationEngine = animationEngine;
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.cheatsStore = cheatsStore;
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.playerHealth = playerHealth;

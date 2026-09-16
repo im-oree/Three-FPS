@@ -134,16 +134,29 @@ abstract class RtcEndpoint<TOut, TIn> implements Transport<TOut, TIn> {
     });
 
     channel.addEventListener('open', () => {
-      // Ready once the unreliable game channel is up: it carries the traffic
-      // that matters, and the control channel opens alongside it.
-      if (channel.label !== UNRELIABLE_LABEL) return;
+      // Flush on EVERY channel open, not just the game one.
+      //
+      // The two channels do not open at the same instant. Anything queued for
+      // a channel that is still connecting gets re-queued by send(), so a
+      // flush driven only by the game channel stranded every reliable message
+      // that was waiting on the control channel -- including 'welcome'. The
+      // guest connected, the host simulated it, and the guest never learned
+      // its own player id.
       this.flush();
+
+      // The session is usable only when BOTH channels are up: the handshake
+      // travels on the reliable one, so reporting ready before it exists
+      // invites exactly the dropped-handshake bug described above.
+      if (!this.bothOpen) return;
       this.startPing();
       if (!this.settled) { this.settled = true; this.opened?.(); }
     });
 
     channel.addEventListener('close', () => {
-      if (channel.label === UNRELIABLE_LABEL) this.fireClose('data channel closed');
+      // Either channel dying ends the session: without the reliable one there
+      // is no way to deliver a match event, and without the game one there is
+      // nothing to simulate.
+      this.fireClose(`${channel.label} channel closed`);
     });
   }
 
@@ -215,7 +228,12 @@ abstract class RtcEndpoint<TOut, TIn> implements Transport<TOut, TIn> {
     this.fireClose('closed locally');
   }
 
-  get connected(): boolean { return this.game?.readyState === 'open'; }
+  /** Both channels up. Anything less is a half-built link, not a session. */
+  protected get bothOpen(): boolean {
+    return this.game?.readyState === 'open' && this.control?.readyState === 'open';
+  }
+
+  get connected(): boolean { return this.bothOpen; }
   get rttMs(): number { return this.rtt; }
 }
 

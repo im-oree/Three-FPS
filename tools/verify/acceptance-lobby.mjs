@@ -296,6 +296,36 @@ try {
     !after.games.some((g) => g.id === hosting.gameId),
     `${after.games.length} game(s) remain`);
 
+  // --- [10] listings carry a MEASURED ping ---------------------------------
+  console.log('\n[10] A listing\'s ping is real, not a placeholder');
+
+  {
+    const d = new SignalDirectory();
+    const sent = [];
+    const hostId = d.addPeer((m) => sent.push(m));
+    d.handle(hostId, {
+      t: 'hostGame', name: 'PING TEST', levelId: 'killhouse', modeId: 'ffa', maxPlayers: 8,
+    });
+
+    check('an unmeasured host reports 0, not a fake latency',
+      d.listings()[0].pingMs === 0, `${d.listings()[0].pingMs}`);
+
+    d.pingHosts();
+    const ping = [...sent].reverse().find((m) => m.t === 'ping');
+    check('the directory probes the host', Boolean(ping), ping ? `id ${ping.id}` : 'no ping sent');
+
+    // The host answers, as LobbyClient now does.
+    await new Promise((r) => setTimeout(r, 12));
+    d.handle(hostId, { t: 'pong', id: ping.id });
+    const measured = d.listings()[0].pingMs;
+    check('the answered probe becomes the listing ping', measured > 0, `${measured} ms`);
+
+    // A stale or invented id must not move the figure.
+    d.handle(hostId, { t: 'pong', id: 1 });
+    check('a mismatched pong is ignored', d.listings()[0].pingMs === measured,
+      `${d.listings()[0].pingMs} vs ${measured}`);
+  }
+
   guestSocket.socket.close();
 } catch (err) {
   failed += 1;

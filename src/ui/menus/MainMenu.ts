@@ -38,6 +38,9 @@ import { MENU_SHOWCASE } from '../../utils/Constants';
 import { button, div, el, uiSound } from '../dom';
 import type { Screen } from '../UIManager';
 import type { OperatorShowcase } from '../showcase/OperatorShowcase';
+import { ServerBrowser } from './ServerBrowser';
+import { resolveLobbyUrl } from '../../net/lobbyUrl';
+import type { GameListing } from '../../net/LobbyProtocol';
 
 /** Top navigation, mirroring the reference. */
 const TABS = ['PLAY', 'WEAPONS', 'OPERATORS', 'BARRACKS', 'STORE'] as const;
@@ -136,8 +139,19 @@ export class MainMenu implements Screen {
   constructor(
     private readonly onPlayLevel: (
       levelId: string,
-      options?: { modeId?: string; overrides?: GameModeOverrides; weather?: string },
+      options?: {
+        modeId?: string; overrides?: GameModeOverrides; weather?: string;
+        /** Advertise this match in the server browser for others to join. */
+        host?: boolean;
+        lobbyName?: string;
+        /** Fill empty slots with AI. Off unless the host asks. */
+        bots?: boolean;
+      },
     ) => void,
+    /** Join a game found in the server browser. */
+    private readonly onJoinGame: (
+      game: GameListing, password?: string,
+    ) => Promise<void> = () => Promise.reject(new Error('joining is not wired up')),
   ) {
     this.element.append(this.buildTopBar(), this.buildBody(), this.buildFooter());
     this.showRoot();
@@ -312,6 +326,20 @@ export class MainMenu implements Screen {
     });
     this.modeList.appendChild(custom);
 
+    // SERVER BROWSER: games other people are hosting right now.
+    const browse = el('button', 'cod__mode cod__mode--browser');
+    browse.type = 'button';
+    browse.append(
+      div('cod__mode-tag', 'ONLINE'),
+      div('cod__mode-name', 'SERVER BROWSER'),
+      div('cod__mode-desc', 'Find and join a game somebody else is hosting.'),
+    );
+    browse.addEventListener('click', () => {
+      uiSound('confirm');
+      this.openServerBrowser();
+    });
+    this.modeList.appendChild(browse);
+
     // The map filter: opens the map browser rather than listing levels here,
     // so the left column stays a MODE list like the reference.
     const maps = el('button', 'cod__mode cod__mode--maps');
@@ -450,6 +478,17 @@ export class MainMenu implements Screen {
     this.element.appendChild(overlay);
   }
 
+  /** The server browser, as a modal window over the lobby. */
+  openServerBrowser(): void {
+    this.closeWindows();
+    const browser = new ServerBrowser({
+      lobbyUrl: resolveLobbyUrl(),
+      onJoin: (game, password) => this.onJoinGame(game, password),
+      onHost: () => this.openCustomMatch(),
+    });
+    this.element.appendChild(browser.element);
+  }
+
   /**
    * The custom match window: host a game with the rules opened up.
    *
@@ -469,10 +508,18 @@ export class MainMenu implements Screen {
     let modeId = 'ffa';
     let levelId = this.filterLevelId ?? this.pickQuickPlayLevel();
     let weather = 'clear';
+    // Online hosting and bots are both OFF by default. A private match with
+    // no AI is the honest default: nothing is advertised to strangers, and a
+    // listed game's player count means real people.
+    let online = false;
+    let bots = false;
     const overrides: {
       scoreLimit?: number; timeLimitSeconds?: number;
       maxPlayers?: number; respawnDelaySeconds?: number;
     } = {};
+
+    /** Assigned once the footer is built; refreshSummary keeps its label. */
+    let startButton: HTMLElement | null = null;
 
     const head = div('mapwin__head');
     head.append(
@@ -496,7 +543,11 @@ export class MainMenu implements Screen {
         ?? nearestChoice(PLAYER_CHOICES, base.maxPlayers);
       summary.textContent = `${base.displayName} · ${getLevel(levelId).displayName}`
         + ` · ${limit} to win · ${minutes} min · ${players} players`
-        + ` · ${weather}`;
+        + ` · ${weather}`
+        + ` · ${online ? 'listed online' : 'private'}`
+        + ` · ${bots ? 'bots fill empty slots' : 'no bots'}`;
+      // Keep the action button honest about what it is about to do.
+      if (startButton) startButton.textContent = online ? 'HOST MATCH' : 'START MATCH';
     };
 
     /**
@@ -602,6 +653,24 @@ export class MainMenu implements Screen {
       ),
       (value) => { overrides.respawnDelaySeconds = value; },
     );
+    const onlineRow = choiceRow(
+      'VISIBILITY',
+      [
+        { value: false, label: 'PRIVATE' },
+        { value: true, label: 'ONLINE' },
+      ],
+      online,
+      (value) => { online = value; },
+    );
+    const botsRow = choiceRow(
+      'BOTS',
+      [
+        { value: false, label: 'OFF' },
+        { value: true, label: 'FILL LOBBY' },
+      ],
+      bots,
+      (value) => { bots = value; },
+    );
     const weatherRow = choiceRow(
       'WEATHER',
       [{ value: 'clear', label: 'CLEAR' }, { value: 'overcast', label: 'OVERCAST' },
@@ -629,9 +698,8 @@ export class MainMenu implements Screen {
     body.append(
       modeRow.row, mapRow.row, scoreRow.row, timeRow.row,
       playerRow.row, respawnRow.row, weatherRow.row,
+      onlineRow.row, botsRow.row,
     );
-
-    refreshSummary();
 
     const foot = div('mapwin__foot custom__foot');
     foot.append(summary);
@@ -650,9 +718,15 @@ export class MainMenu implements Screen {
         ...(overrides.respawnDelaySeconds !== undefined
           ? { respawnDelaySeconds: overrides.respawnDelaySeconds } : {}),
       };
-      this.onPlayLevel(levelId, { modeId, overrides: patch, weather });
+      this.onPlayLevel(levelId, {
+        modeId, overrides: patch, weather,
+        ...(online ? { host: true } : {}),
+        ...(bots ? { bots: true } : {}),
+      });
     });
+    startButton = start;
     foot.appendChild(start);
+    refreshSummary();
 
     panel.append(head, body, foot);
     overlay.appendChild(panel);
