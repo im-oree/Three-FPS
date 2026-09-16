@@ -33,21 +33,31 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = path.join(ROOT, 'assets/previews');
 const URL = process.env.PREVIEW_URL ?? 'http://localhost:5174';
 
-/** Read the level ids straight from the definition file — one source of truth. */
+/**
+ * Read the level ids straight from the definition file — one source of truth.
+ *
+ * Parsed structurally, NOT by matching `id:` against a nearby `displayName:`.
+ * That regex depended on the two lines staying within a few lines of each
+ * other, so annotating a level (a comment, an extra field) silently dropped
+ * it from the list -- and a dropped level is one whose missing preview stops
+ * being reported, which defeats the point of a compulsory check. This counts
+ * top-level `const X: LevelDefinition = {` blocks instead, which is what a
+ * level actually IS.
+ */
 export function levelIds() {
   const source = fs.readFileSync(
     path.join(ROOT, 'src/environment/LevelDefinition.ts'), 'utf8',
   );
   const ids = [];
-  // Only match ids at the top level of a level object, which are the ones
-  // followed by a displayName. Comments and extra fields may sit between the
-  // two (prototype carries an excludeFromRotation flag and a note), so allow
-  // a few intervening lines rather than requiring them to be adjacent --
-  // otherwise a level silently loses its preview the moment someone
-  // annotates it, which is exactly what happened.
-  const pattern = /id:\s*'([a-z_]+)',(?:[^\n]*\n(?:\s*\/\/[^\n]*\n|\s*[a-zA-Z]+:[^\n]*\n){0,4})?\s*displayName:/g;
+  const blocks = /(?:const\s+\w+\s*:\s*LevelDefinition\s*=\s*\{)/g;
   let match;
-  while ((match = pattern.exec(source))) ids.push(match[1]);
+  while ((match = blocks.exec(source))) {
+    // Scan forward for this block's own `id:`, stopping at the first one.
+    const rest = source.slice(match.index, match.index + 4000);
+    const id = /\bid:\s*'([a-z0-9_]+)'/.exec(rest);
+    if (id) ids.push(id[1]);
+  }
+  if (!ids.length) throw new Error('levelIds(): parsed no levels — parser is broken');
   return ids;
 }
 

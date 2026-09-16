@@ -47,6 +47,16 @@ export interface LevelDefinition {
    * rather than filtered at each call site, so a new caller cannot forget.
    */
   readonly excludeFromRotation?: boolean;
+  /**
+   * Players this map plays well with, when the mode has no opinion.
+   *
+   * Map scale decides how often people meet. Measured on the server: eight
+   * bots on the 520 m prototype sandbox average 258 m apart and manage one
+   * kill a minute, while the same eight on Shipment average 20 m and manage
+   * seven. A mode's player count is balanced for a normal-sized map, so a
+   * large one has to ask for more bodies or it plays like an empty server.
+   */
+  readonly recommendedPlayers?: number;
   readonly groundHalfSize: number;
   readonly groundSurface: string;
   readonly groundColor: number;
@@ -206,7 +216,10 @@ const FACILITY: LevelDefinition = {
   groundSurface: 'metal',
   groundColor: 0x7f858d,
   boxes: [
-    ...room(-26, -26, 26, 26, 6, 1, 'metal', 0x555d67),
+    // Flush with the ±30 ground slab (room() builds walls outside the rect,
+    // so 29 + 1 m thickness lands exactly on the edge). At 26 this left a
+    // 3 m unfenced lip and players walked off the map.
+    ...room(-29, -29, 29, 29, 6, 1, 'metal', 0x555d67),
     // Central spine wall with two doorways.
     { min: [-1, 0, -18], max: [1, 4, -6], surface: 'metal', color: 0x353b43, name: 'spine_a' },
     { min: [-1, 0, 2], max: [1, 4, 14], surface: 'metal', color: 0x353b43, name: 'spine_b' },
@@ -242,7 +255,14 @@ const TRAINING_RANGE: LevelDefinition = {
   groundSurface: 'dirt',
   groundColor: 0x8a8071,
   boxes: [
-    ...room(-34, -34, 34, 34, 7, 1, 'concrete', 0x6b7280),
+    // The wall ring must sit ON the ground slab's edge, not inside it.
+    // `room()` builds its walls OUTSIDE the rect it is given, so a half-size
+    // of 40 means the inner face belongs at 39: that leaves the 1 m wall
+    // occupying 39..40 and no floor outside it. Previously this was 34,
+    // which left a 5 m unfenced lip all the way round -- players (and bots
+    // especially, since they path to cover near the edge) simply walked off
+    // the map and fell out of the world.
+    ...room(-39, -39, 39, 39, 7, 1, 'concrete', 0x6b7280),
     // Traversal gallery: every height the vault/mantle solver cares about.
     { min: [-22, 0, -22], max: [-19, 0.9, -19], surface: 'concrete', color: 0x6a6558, name: 'ledge_0_9' },
     { min: [-17, 0, -22], max: [-14, 1.4, -19], surface: 'concrete', color: 0x6a6558, name: 'ledge_1_4' },
@@ -309,6 +329,8 @@ const SHIPMENT: LevelDefinition = {
 // terrain, props, callouts and minimap bounds all read the same plan. --------
 const FIRING_RANGE: LevelDefinition = {
   id: 'firingrange',
+  // A large outdoor range; a standard eight-player lobby spreads too thin.
+  recommendedPlayers: 14,
   displayName: 'Firing Range',
   description: 'Tropical military training compound. Three lanes converge on the central tower.',
   ambientSoundKey: 'ambient_village_dusty_loop',
@@ -355,6 +377,8 @@ const PROTOTYPE: LevelDefinition = {
   // A sandbox for new building kit pieces, not a shipped map: it loads only
   // when picked by hand.
   excludeFromRotation: true,
+  // 520 m across. Eight players here never find each other.
+  recommendedPlayers: 20,
   displayName: 'Prototype Range',
   description: 'Vehicle development sandbox: airfield, helipads, driving course, harbour.',
   ambientSoundKey: 'ambient_village_dusty_loop',
@@ -397,7 +421,7 @@ const PROTOTYPE: LevelDefinition = {
  * constant rather than a build hash: the previews are committed assets, so
  * their version belongs with them in source control.
  */
-export const PREVIEW_VERSION = 3;
+export const PREVIEW_VERSION = 4;
 
 /** URL for a level's generated aerial preview, cache-busted. */
 export function previewUrl(levelId: string): string {
@@ -409,13 +433,27 @@ export const LEVELS: readonly LevelDefinition[] = [
 ];
 
 /**
- * The levels random selection is allowed to pick from.
+ * The levels RANDOM selection is allowed to pick from.
  *
- * Quick Play, and later the game-mode rotation, must use this rather than
- * LEVELS. Anything flagged excludeFromRotation is reachable only by name.
+ * Quick Play and the mode rotation must use this rather than LEVELS.
+ * `excludeFromRotation` says "never roll this by chance" -- it does NOT say
+ * "unplayable". A sandbox map is a poor thing to drop someone into without
+ * asking, but a perfectly fine thing to pick deliberately, which is why
+ * HOSTABLE_LEVELS below is a different list.
  */
 export const ROTATION_LEVELS: readonly LevelDefinition[] =
   LEVELS.filter((level) => !level.excludeFromRotation);
+
+/**
+ * The levels a host may choose BY NAME in a custom match.
+ *
+ * Every level with the collision and spawn data a match needs, including the
+ * ones kept out of the random pool. Separating the two lists is the whole
+ * point: "don't surprise me with it" and "I can't play it" are different
+ * statements, and the custom-match dialog is exactly where the player has
+ * asked for the map on purpose.
+ */
+export const HOSTABLE_LEVELS: readonly LevelDefinition[] = LEVELS;
 
 export function getLevel(id: string): LevelDefinition {
   return LEVELS.find((l) => l.id === id) ?? LEVELS[0];

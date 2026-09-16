@@ -53,11 +53,30 @@ function sanitise(frame: InputFrame): InputFrame {
 export class MovementSystem implements ServerSystem {
   readonly name = 'movement';
 
+  /**
+   * Called when a player leaves the world.
+   *
+   * A callback rather than a direct MatchSystem call: movement must not
+   * depend on scoring, and the match owns what a death means (respawn timer,
+   * killfeed, score). Set by GameServer when it wires the systems together.
+   */
+  fellOutOfWorld: ((player: ServerPlayer) => void) | null = null;
+
   constructor(private readonly collision: CollisionWorld) {}
 
   tick(dt: number, world: ServerWorld): void {
     for (const player of world.allPlayers) {
       if (!player.alive) continue;
+
+      // Left the world: a gap in the floor, a map edge, or a fall off a
+      // ledge. COD kills you for it, so the server does too -- and it must
+      // be the SERVER, because a bot has no client to notice it is falling.
+      // Without this a player who slips through the floor falls forever,
+      // silently removing themselves from the match.
+      if (player.py < this.collision.killPlaneY) {
+        this.fellOutOfWorld?.(player);
+        continue;
+      }
       // A player in a vehicle is moved by the vehicle, not by their own feet.
       if (player.vehicleId !== null) { player.pendingInput.length = 0; continue; }
 

@@ -145,6 +145,9 @@ for (const level of LEVELS) {
     spawn: level.spawn.map(round),
     spawnYaw: level.spawnYaw,
     killPlaneY: level.killPlaneY ?? -25,
+    // Lobby size hint. Rides with the collision because it is a property of
+    // the geometry's SCALE, and the server has no other view of the level.
+    ...(level.recommendedPlayers ? { recommendedPlayers: level.recommendedPlayers } : {}),
     boxes,
     ...(terrain ? { terrain } : {}),
     ...(spawns ? { spawns } : {}),

@@ -10,7 +10,7 @@ import { buildServerBundle, diskLevelFetcher, makeCheck } from './server-harness
 const {
   GameServer, CollisionWorld, ServerWorld, MatchSystem, SpawnSelector,
   FREE_FOR_ALL, TEAM_DEATHMATCH, getGameMode, customise,
-  NameAuthority, NameRandom, Protocol,
+  NameAuthority, NameRandom, Protocol, GAME_MODES,
 } = await buildServerBundle();
 
 const { check, report } = makeCheck();
@@ -586,6 +586,128 @@ console.log('\n[15] Starting a new match leaves nothing behind');
     server.match.spawns.countFor('ffa') > 0,
     `${server.match.spawns.countFor('ffa')} points on shipment`);
 
+  server.shutdown();
+}
+
+// --- every registered mode, on every hostable map --------------------------
+// Quick Play picks a random mode AND a random map, and custom matches can
+// pair any mode with any map. That is a matrix, not a single path, so it is
+// tested as one: a mode that only works on the map it was written against is
+// a mode Quick Play can still deploy someone into.
+{
+  const LEVELS = [
+    'shipment', 'killhouse', 'facility',
+    'training_range', 'firingrange', 'prototype',
+  ];
+
+  const fakeTransport = () => {
+    let onMsg = () => {};
+    return {
+      transport: {
+        onMessage: (f) => { onMsg = f; return () => {}; },
+        onClose: () => () => {},
+        send: () => {},
+        close: () => {},
+      },
+      fire: (m) => onMsg(m),
+    };
+  };
+
+  for (const mode of GAME_MODES) {
+    for (const levelId of LEVELS) {
+      const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+      const link = fakeTransport();
+      server.accept(link.transport);
+      link.fire({ t: 'joinMatch', levelId, modeId: mode.id });
+      await server.whenLevelReady();
+      for (let i = 0; i < 60 * 90; i += 1) server.update(1 / 60);
+
+      const log = server.match.deathLog;
+      const byPlayer = log.filter((d) => d.killer !== null).length;
+      const fell = log.filter((d) => d.killer === null).length;
+      const label = `${mode.id}/${levelId}`;
+
+      // Nobody may leave the world. A fall is either a hole in the map or a
+      // missing fence, and both used to go unnoticed because the victim just
+      // dropped forever instead of dying.
+      check(`${label}: nobody falls out of the world`,
+        fell === 0, `${fell} of ${log.length} deaths were falls`);
+
+      // The point of a match is that people fight in it. A map where the AI
+      // cannot find anyone is a map Quick Play must not be able to roll.
+      check(`${label}: players actually fight`,
+        byPlayer >= 2, `${byPlayer} kills by a player in 90 s`);
+
+      if (mode.teamBased) {
+        const teams = new Set(server.world.playerIds().map((id) => server.match.teamOf(id)));
+        check(`${label}: splits into two teams`,
+          teams.has('A') && teams.has('B'), [...teams].join('/'));
+      }
+      server.shutdown();
+    }
+  }
+}
+
+// --- the map's scale decides the lobby, unless the host said otherwise -----
+{
+  const fakeTransport = () => {
+    let onMsg = () => {};
+    return {
+      transport: {
+        onMessage: (f) => { onMsg = f; return () => {}; },
+        onClose: () => () => {},
+        send: () => {},
+        close: () => {},
+      },
+      fire: (m) => onMsg(m),
+    };
+  };
+  const populate = async (levelId, rules) => {
+    const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+    const link = fakeTransport();
+    server.accept(link.transport);
+    link.fire({ t: 'joinMatch', levelId, modeId: 'ffa', ...(rules ? { rules } : {}) });
+    await server.whenLevelReady();
+    for (let i = 0; i < 60; i += 1) server.update(1 / 60);
+    const n = server.world.playerIds().length;
+    server.shutdown();
+    return n;
+  };
+
+  check('a normal-sized map uses the mode\'s player count',
+    await populate('shipment') === FREE_FOR_ALL.maxPlayers,
+    `${await populate('shipment')} players`);
+
+  // 520 m across: eight players here average 258 m apart and manage one kill
+  // a minute, which is not a match.
+  check('a large map raises the lobby to fit its scale',
+    await populate('prototype') > FREE_FOR_ALL.maxPlayers,
+    `${await populate('prototype')} players on prototype`);
+
+  check('a host\'s explicit player count beats the map\'s preference',
+    await populate('prototype', { maxPlayers: 4 }) === 4,
+    `${await populate('prototype', { maxPlayers: 4 })} players`);
+}
+
+// --- the kill plane is the SERVER's rule ------------------------------------
+{
+  const server = new GameServer({ levelFetcher: diskLevelFetcher(), fillLobby: false });
+  server.startMatch('shipment', 'ffa');
+  await server.whenLevelReady();
+  const id = server.addBot();
+  const victim = server.world.getPlayer(id);
+  const before = server.match.deathLog.length;
+  // Drop them through the floor the way a collision gap would.
+  victim.py = -400;
+  server.update(1 / 60);
+
+  check('a player below the kill plane dies instead of falling forever',
+    server.match.deathLog.length === before + 1 && !victim.alive,
+    `alive=${victim.alive}, deaths ${before} -> ${server.match.deathLog.length}`);
+
+  const record = server.match.deathLog[server.match.deathLog.length - 1];
+  check('falling out of the world is nobody\'s kill',
+    record.killer === null, `killer=${record.killer}`);
   server.shutdown();
 }
 

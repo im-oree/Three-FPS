@@ -27,7 +27,7 @@ import eventBus from '../../core/EventBus';
 import cheatsStore, { CheatId, type CheatIdValue } from '../../core/CheatsStore';
 import { GameState, type GameStateValue } from '../../state/GameStateManager';
 import {
-  LEVELS, ROTATION_LEVELS, getLevel, previewUrl,
+  LEVELS, ROTATION_LEVELS, HOSTABLE_LEVELS, getLevel, previewUrl,
 } from '../../environment/LevelDefinition';
 import {
   GAME_MODES, getGameMode, type GameModeOverrides,
@@ -273,12 +273,12 @@ export class MainMenu implements Screen {
       div('cod__mode-tag', 'FAST'),
       div('cod__mode-name', 'QUICK PLAY'),
       div('cod__mode-desc', this.filterLevelId
-        ? `Deploying to ${getLevel(this.filterLevelId).displayName}.`
-        : 'Deploy immediately to a random map.'),
+        ? `Deploying to ${getLevel(this.filterLevelId).displayName}. Random mode.`
+        : 'Deploy immediately. Random map, random mode.'),
     );
     quick.addEventListener('click', () => {
       uiSound('confirm');
-      this.onPlayLevel(this.pickQuickPlayLevel(), { modeId: 'ffa' });
+      this.onPlayLevel(this.pickQuickPlayLevel(), { modeId: this.pickQuickPlayMode() });
     });
     this.modeList.appendChild(quick);
 
@@ -346,6 +346,19 @@ export class MainMenu implements Screen {
     // ROTATION_LEVELS, not LEVELS: developer sandboxes are reachable only by
     // picking them explicitly in the map window.
     const pool = ROTATION_LEVELS.length ? ROTATION_LEVELS : LEVELS;
+    return pool[Math.floor(Math.random() * pool.length)].id;
+  }
+
+  /**
+   * The mode Quick Play deploys into: a random one that actually exists.
+   *
+   * Read from the GAME_MODES registry rather than a list written here, so a
+   * mode is in the rotation the moment it is registered and can never be a
+   * name the server does not know. Quick Play previously hardcoded 'ffa',
+   * which meant the "random" deploy always played the same mode.
+   */
+  pickQuickPlayMode(): string {
+    const pool = GAME_MODES;
     return pool[Math.floor(Math.random() * pool.length)].id;
   }
 
@@ -446,7 +459,7 @@ export class MainMenu implements Screen {
    * which is exactly what makes every setting work by construction rather
    * than each one needing to be plumbed individually.
    */
-  private openCustomMatch(): void {
+  openCustomMatch(): void {
     this.closeWindows();
     const overlay = div('mapwin');
     const panel = div('mapwin__panel mapwin__panel--custom');
@@ -554,7 +567,10 @@ export class MainMenu implements Screen {
     );
     const mapRow = choiceRow(
       'MAP',
-      (ROTATION_LEVELS.length ? ROTATION_LEVELS : LEVELS)
+      // HOSTABLE, not ROTATION: picking a map here is a deliberate act, so
+      // the sandbox maps kept out of Quick Play's random roll belong on the
+      // list. Quick Play still never rolls them by chance.
+      HOSTABLE_LEVELS
         .map((l) => ({ value: l.id, label: l.displayName.toUpperCase() })),
       levelId,
       (value) => { levelId = value; },

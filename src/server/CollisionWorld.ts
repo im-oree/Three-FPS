@@ -75,6 +75,18 @@ export class CollisionWorld {
   private boxes: Box[] = [];
   private terrain: Heightfield | null = null;
 
+  /**
+   * The height below which a body has left the world.
+   *
+   * Part of the collision description because it IS one: it answers "is this
+   * position still inside the level", which is the same question the boxes
+   * answer. Levels that never set one keep the default, so a map with a gap
+   * in its floor cannot produce a player who falls for the rest of the match.
+   */
+  private killPlane = -25;
+
+  get killPlaneY(): number { return this.killPlane; }
+
   get boxCount(): number { return this.boxes.length; }
 
   /** True when this level's floor is sculpted terrain rather than a slab. */
@@ -84,9 +96,14 @@ export class CollisionWorld {
    *  (AI navigation builds its grid from exactly this). */
   get allBoxes(): readonly Box[] { return this.boxes; }
 
-  load(boxes: readonly Box[], terrain: Heightfield | null = null): void {
+  load(
+    boxes: readonly Box[],
+    terrain: Heightfield | null = null,
+    killPlaneY = -25,
+  ): void {
     this.boxes = [...boxes];
     this.terrain = terrain;
+    this.killPlane = Number.isFinite(killPlaneY) ? killPlaneY : -25;
   }
 
   clear(): void {

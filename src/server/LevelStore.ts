@@ -15,6 +15,8 @@ export interface LevelCollision {
   readonly spawn: Vec3;
   readonly spawnYaw: number;
   readonly killPlaneY: number;
+  /** Players this map plays well with; undefined means "use the mode's". */
+  readonly recommendedPlayers?: number;
   readonly boxes: readonly Box[];
   /** Sculpted ground, on levels whose floor is terrain rather than a slab. */
   readonly terrain: Heightfield | null;
@@ -100,6 +102,8 @@ export class LevelStore {
       spawn,
       spawnYaw: typeof data.spawnYaw === 'number' ? data.spawnYaw : 0,
       killPlaneY: typeof data.killPlaneY === 'number' ? data.killPlaneY : -25,
+      ...(typeof data.recommendedPlayers === 'number'
+        ? { recommendedPlayers: data.recommendedPlayers } : {}),
       boxes,
       terrain: this.validateTerrain(levelId, (data as { terrain?: unknown }).terrain),
       spawns: this.validateSpawns((data as { spawns?: unknown }).spawns),

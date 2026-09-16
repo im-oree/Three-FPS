@@ -611,6 +611,49 @@ try {
     await sleep(250);
   }
 
+  console.log('\n[13c] Quick Play rolls a real mode, and sandboxes are hostable');
+  {
+    await page.evaluate(() => window.__OPERATOR__.quitToMenu());
+    await sleep(900);
+
+    // The mode Quick Play picks must be one the SERVER actually implements.
+    // It used to be hardcoded to 'ffa', so "random" only ever meant the map.
+    const rolled = await page.evaluate(() => {
+      const menu = window.__OPERATOR__.mainMenu;
+      const ids = new Set();
+      for (let i = 0; i < 200; i += 1) ids.add(menu.pickQuickPlayMode());
+      return [...ids];
+    });
+    const known = await page.evaluate(
+      () => window.__OPERATOR__.gameServer.knownModeIds?.()
+        ?? ['ffa', 'tdm'],
+    );
+    check('Quick Play only ever rolls modes the server implements',
+      rolled.length > 0 && rolled.every((id) => known.includes(id)),
+      `rolled ${rolled.join(',')} / known ${known.join(',')}`);
+    check('Quick Play actually varies the mode',
+      rolled.length > 1, `${rolled.length} distinct modes in 200 rolls`);
+
+    // A map kept out of the random pool must still be hostable by name.
+    const custom = await page.evaluate(() => {
+      const menu = window.__OPERATOR__.mainMenu;
+      menu.openCustomMatch();
+      const row = [...document.querySelectorAll('.custom__row')]
+        .find((r) => r.querySelector('.custom__label').textContent.includes('MAP'));
+      const labels = [...row.querySelectorAll('.custom__choice')]
+        .map((c) => c.textContent.trim());
+      return labels;
+    });
+    check('the custom-match map list includes the sandbox maps',
+      custom.some((l) => l.includes('PROTOTYPE')),
+      custom.join(', '));
+
+    await page.evaluate(() => {
+      for (const win of document.querySelectorAll('.mapwin')) win.remove();
+    });
+    await sleep(250);
+  }
+
   console.log('\n[14] The server clamps what a client asks for');
   {
     const clamped = await page.evaluate(() => {

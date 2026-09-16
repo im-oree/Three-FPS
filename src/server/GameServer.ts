@@ -43,7 +43,8 @@ import { AISystem } from './systems/AISystem';
 import { KillstreakSystem } from './systems/KillstreakSystem';
 import { MatchSystem } from './systems/MatchSystem';
 import {
-  customise, getGameMode, sanitiseOverrides, type GameModeDefinition,
+  customise, getGameMode, sanitiseOverrides, RULE_LIMITS, GAME_MODES,
+  type GameModeDefinition,
 } from './GameModes';
 import { NameAuthority, NameRandom } from './Identity';
 import { hashString, pickTier } from './ai/BotProfile';
@@ -125,6 +126,9 @@ export class GameServer {
   /** The authoritative collision geometry every system queries. */
   readonly collision = new CollisionWorld();
   private readonly levels: LevelStore | null;
+
+  /** Player count named by a custom-match host, if any. */
+  private explicitPlayerCount: number | null = null;
   /** Tracks the load in flight, so a fast re-join cannot race it. */
   private levelLoad: Promise<void> | null = null;
   /** Kept for ammo queries; also registered as an ordinary system. */
@@ -153,7 +157,14 @@ export class GameServer {
     // does not move players is not a server, and making it opt-in would let
     // the backend and the browser boot with different system sets -- exactly
     // the divergence this architecture exists to prevent.
-    this.addSystem(new MovementSystem(this.collision));
+    const movement = new MovementSystem(this.collision);
+    // Falling out of the world is a death, and the match owns deaths. Wiring
+    // it here keeps MovementSystem ignorant of scoring while still making the
+    // rule server-authoritative for every player, human or AI alike.
+    movement.fellOutOfWorld = (player) => {
+      this.match.registerDeath(this.world, player);
+    };
+    this.addSystem(movement);
     // Order matters: combat reads the button mask movement publishes, so
     // movement must have consumed this tick's input before combat runs.
     this.combat = new CombatSystem(this.collision);
@@ -303,10 +314,18 @@ export class GameServer {
         // A custom match is the SAME mode definition with a clamped patch
         // applied -- there is no separate custom-match code path, which is
         // what makes every setting work rather than each needing plumbing.
-        const custom = msg.rules
-          ? customise(getGameMode(msg.modeId ?? 'ffa'), sanitiseOverrides(msg.rules))
+        const clean = msg.rules ? sanitiseOverrides(msg.rules) : undefined;
+        const custom = clean
+          ? customise(getGameMode(msg.modeId ?? 'ffa'), clean)
           : undefined;
         this.startMatch(msg.levelId, msg.modeId, custom);
+        // AFTER startMatch: it calls resetAll(), which deliberately clears
+        // this so one match's custom size cannot leak into the next. The
+        // host's explicit count must outlive that reset, so it is recorded
+        // once the new match exists.
+        this.explicitPlayerCount = typeof clean?.maxPlayers === 'number'
+          ? clean.maxPlayers
+          : null;
         const spawn = this.world.addPlayer(connection.id, msg.loadout);
         // A human is a player exactly as a bot is: same name authority, same
         // scoreboard, same spawn selection. Without this registration the
@@ -445,7 +464,7 @@ export class GameServer {
     if (!this.levels) return;
     const cached = this.levels.peek(levelId);
     if (cached) {
-      this.collision.load(cached.boxes, cached.terrain);
+      this.collision.load(cached.boxes, cached.terrain, cached.killPlaneY);
       this.world.setSpawnPoints([{ pos: cached.spawn, yaw: cached.spawnYaw }]);
       this.applySpawnSets(cached);
       this.ai.buildNavigation();
@@ -455,11 +474,11 @@ export class GameServer {
     // spawned during the fetch falls out of the world.
     this.collision.load([{
       minX: -200, minY: -1, minZ: -200, maxX: 200, maxY: 0, maxZ: 200, surface: 'concrete',
-    }]);
+    }], null, -25);
     this.levelLoad = this.levels.load(levelId).then((data) => {
       // The match may have ended or changed level while this was in flight.
       if (this.levelId !== levelId) return;
-      this.collision.load(data.boxes, data.terrain);
+      this.collision.load(data.boxes, data.terrain, data.killPlaneY);
       this.world.setSpawnPoints([{ pos: data.spawn, yaw: data.spawnYaw }]);
       this.applySpawnSets(data);
       // Players who joined while this was in flight were placed against the
@@ -470,6 +489,17 @@ export class GameServer {
       // Navigation is derived from the collision that just landed, so it can
       // never describe a different world than the one players collide with.
       this.ai.buildNavigation();
+      // The map's own lobby size only becomes knowable now: anyone who joined
+      // during the fetch was sized against the mode alone, because the level
+      // data carrying `recommendedPlayers` had not arrived yet. Top up once
+      // it has, so a large map is populated rather than eight players lost
+      // in it. fillLobby only ever ADDS, so this cannot evict anyone.
+      //
+      // Only when somebody has actually JOINED, though. A server that has
+      // been handed a level but has no players is a server nobody asked to
+      // populate -- filling it here would conjure a lobby out of a bare
+      // startMatch() and make the population depend on load timing.
+      if (this.autoFill && this.running && this.hasJoinedPlayer()) this.fillLobby();
     }).catch((error: unknown) => {
       console.warn(`[server] level "${levelId}" collision failed to load:`, error);
     });
@@ -527,13 +557,45 @@ export class GameServer {
    * from the humans they are standing in for.
    */
   fillLobby(): void {
-    const target = this.match.getMode().maxPlayers;
+    const target = this.lobbyTarget();
     let present = 0;
     for (const connection of this.connections.values()) {
       if (connection.joined) present += 1;
     }
     present += this.ai.agentCount;
     for (let i = present; i < target; i += 1) this.addBot();
+  }
+
+  /**
+   * How many players this match should contain.
+   *
+   * The mode's count is balanced for a normal-sized map, so a large one may
+   * ask for more via `recommendedPlayers` -- otherwise eight players spread
+   * over 520 m never meet and the match plays like an empty server. A host
+   * who named a player count in a custom match always wins: an explicit
+   * choice must not be silently overruled by a map's preference.
+   */
+  private lobbyTarget(): number {
+    const mode = this.match.getMode();
+    if (this.explicitPlayerCount !== null) return this.explicitPlayerCount;
+    const hint = this.levels?.peek(this.levelId ?? '')?.recommendedPlayers;
+    if (typeof hint !== 'number' || !Number.isFinite(hint)) return mode.maxPlayers;
+    // Never below the mode's own count: a map hint raises a thin lobby, it
+    // does not shrink a mode that wants a crowd.
+    return Math.max(mode.maxPlayers, Math.min(RULE_LIMITS.maxPlayers.max, Math.round(hint)));
+  }
+
+  /** The modes this server can actually run. Test/UI seam. */
+  knownModeIds(): string[] {
+    return GAME_MODES.map((m) => m.id);
+  }
+
+  /** Whether any connection has actually joined the match. */
+  private hasJoinedPlayer(): boolean {
+    for (const connection of this.connections.values()) {
+      if (connection.joined) return true;
+    }
+    return false;
   }
 
   /** End the match once the last player has gone. */
@@ -579,6 +641,9 @@ export class GameServer {
     // a NEW match can be suppressed as a duplicate of the old one's, and the
     // scoreboard silently shows the previous match until someone scores.
     this.lastMatchFingerprint = '';
+    // A custom match's player count belongs to THAT match. Leaving it set
+    // would size the next, ordinary match to the last host's choice.
+    this.explicitPlayerCount = null;
   }
 
   /** Full shutdown. The client calls this when the tab/game closes. */
