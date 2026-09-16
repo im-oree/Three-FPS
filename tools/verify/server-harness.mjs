@@ -34,6 +34,18 @@ export { registerBuiltinCapabilities } from '${src('src/server/ai/registerCapabi
 export { approachAngle, SeededRandom, getDifficulty } from '${src('src/server/ai/Difficulty.ts')}';
 export { perceive, Beliefs } from '${src('src/server/ai/Perception.ts')}';
 export { plan } from '${src('src/server/ai/Planner.ts')}';
+export { MatchSystem } from '${src('src/server/systems/MatchSystem.ts')}';
+export {
+  createBotProfile, createSkillProfile, createPersonality, pickTier,
+  maybeMistake, hashString,
+} from '${src('src/server/ai/BotProfile.ts')}';
+export { SpawnSelector } from '${src('src/server/SpawnSelector.ts')}';
+export {
+  FREE_FOR_ALL, TEAM_DEATHMATCH, GAME_MODES, getGameMode, customise,
+} from '${src('src/server/GameModes.ts')}';
+export {
+  NameAuthority, NameRandom, IdentityRegistry,
+} from '${src('src/server/Identity.ts')}';
 export { AgentController } from '${src('src/server/ai/AgentController.ts')}';
 export { createLocalTransportPair } from '${src('src/net/LocalTransport.ts')}';
 export { GameClient } from '${src('src/net/GameClient.ts')}';

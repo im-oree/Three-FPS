@@ -48,6 +48,8 @@ export interface ServerEntity {
 
 export interface ServerPlayer {
   id: PlayerId;
+  /** Shown to other players. Set by whoever created the player. */
+  displayName: string;
   px: number; py: number; pz: number;
   yaw: number;
   pitch: number;
@@ -173,6 +175,7 @@ export class ServerWorld {
     this.nextSpawnIndex += 1;
     this.players.set(id, {
       id,
+      displayName: id,
       px: spawn.pos[0], py: spawn.pos[1], pz: spawn.pos[2],
       yaw: spawn.yaw, pitch: 0,
       health: 100, maxHealth: 100, alive: true,
@@ -290,6 +293,8 @@ export class ServerWorld {
     if (!p) return null;
     return {
       id: p.id,
+      name: p.displayName,
+      operatorId: p.loadout?.operatorId ?? 'ghost',
       health: p.health,
       maxHealth: p.maxHealth,
       alive: p.alive,

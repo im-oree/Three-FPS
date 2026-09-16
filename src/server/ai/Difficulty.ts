@@ -146,9 +146,12 @@ export function approachAngle(
  * reliable in a corridor, spraying across a field.
  */
 export function aimError(
-  profile: DifficultyProfile, distance: number, rng: SeededRandom,
+  source: { readonly aimConeDegrees: number }, distance: number, rng: SeededRandom,
 ): number {
+  // Accepts anything carrying a cone, so it works with both the tier profile
+  // and an individual bot's rolled SkillProfile without this module having to
+  // import the profile types (which would be a cycle).
   const widen = 1 + Math.min(distance / 40, 2.5);
-  const cone = (profile.aimConeDegrees * widen * Math.PI) / 180;
+  const cone = (source.aimConeDegrees * widen * Math.PI) / 180;
   return rng.signed() * cone;
 }

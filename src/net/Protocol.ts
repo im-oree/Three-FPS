@@ -117,6 +117,8 @@ export interface LoadoutSpec {
   readonly secondaryId: string;
   readonly tacticalId: string;
   readonly killstreakIds: readonly string[];
+  /** Which operator the player deploys as. */
+  readonly operatorId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +209,17 @@ export interface KillstreakSlotState {
 
 export interface PlayerPublicState {
   readonly id: PlayerId;
+  /**
+   * The name shown on nameplates, the killfeed and the scoreboard.
+   *
+   * Note what is NOT here: any indication of whether a human or an agent is
+   * driving. The client is not told, because it has no legitimate use for it
+   * and every accidental use (sorting the scoreboard, dimming a nameplate)
+   * would break the illusion that everyone in the lobby is a player.
+   */
+  readonly name: string;
+  /** Which operator to render them as. */
+  readonly operatorId: string;
   readonly health: number;
   readonly maxHealth: number;
   readonly alive: boolean;

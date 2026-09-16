@@ -25,12 +25,22 @@ import { CapabilityRegistry, intentToFrame } from './Capability';
 import { getDifficulty, SeededRandom, type DifficultyProfile } from './Difficulty';
 import { NeedsModel } from './NeedsModel';
 import { Beliefs, perceive } from './Perception';
+import {
+  createBotProfile, hashString as hashProfileId, type BotProfile, type SkillTier,
+} from './BotProfile';
 import { setTraversalCaps } from './NavContext';
 import type { SquadBlackboard } from './SquadBlackboard';
 import type { TraversalCaps } from './Navigation';
 
 export interface AgentOptions {
   readonly difficulty?: string;
+  /**
+   * Skill tier. When given, the agent rolls an individual SkillProfile and
+   * PersonalityProfile around that tier's baseline, so two bots on the same
+   * tier are still different players. Omitted means the tier is derived from
+   * `difficulty`, which keeps every existing caller working unchanged.
+   */
+  readonly tier?: SkillTier;
   /** Capability ids. Omitted means DEFAULT_CAPABILITIES. */
   readonly capabilities?: readonly string[];
   readonly seed?: number;
@@ -47,6 +57,12 @@ export class AgentController {
   readonly id: PlayerId;
   readonly beliefs = new Beliefs();
   readonly profile: DifficultyProfile;
+  /**
+   * This bot as an individual: its rolled aim, movement tech and temperament.
+   * `profile` above is the tier envelope (what it can perceive and how fast
+   * it may turn); this is who it is inside that envelope.
+   */
+  readonly bot: BotProfile;
   private readonly needs = new NeedsModel();
   private readonly rng: SeededRandom;
   private readonly capabilities: Capability[];
@@ -70,6 +86,12 @@ export class AgentController {
   ) {
     this.id = id;
     this.profile = getDifficulty(options.difficulty ?? 'regular');
+    // The individual roll. Seeded from the same id the RNG uses, so a bot is
+    // reproducibly the same player across runs.
+    const tier = (options.tier
+      ?? (options.difficulty as SkillTier | undefined)
+      ?? 'regular') as SkillTier;
+    this.bot = createBotProfile(id, tier, options.seed ?? hashProfileId(id));
     this.rng = new SeededRandom(options.seed ?? hashString(id));
     this.capabilities = CapabilityRegistry.createAll(
       options.capabilities ?? DEFAULT_CAPABILITIES,
@@ -124,6 +146,7 @@ export class AgentController {
       needs: this.needs,
       squad: this.squad,
       profile: this.profile,
+      skill: this.bot.skill,
       rng: this.rng,
       dt: thinkDt,
     };
@@ -131,6 +154,7 @@ export class AgentController {
 
     const rays = perceive(
       player, this.world, this.collision, this.beliefs, this.profile, rayBudget,
+      this.bot.skill.reactionMs,
     );
 
     // Share what was actually seen. Teammates get it through the blackboard,

@@ -350,5 +350,100 @@ console.log('\n[10] Determinism');
     a === b ? 'bit-identical' : 'diverged');
 }
 
+// --- [11] Per-bot tuning: thirty veterans are thirty different players -------
+console.log('\n[11] Bot profiles make individuals, not clones');
+{
+  const {
+    createBotProfile, createSkillProfile, createPersonality, pickTier, maybeMistake,
+  } = bundle;
+
+  // Two bots on the SAME tier must not be the same player.
+  const a = createBotProfile('bot-a', 'veteran');
+  const b = createBotProfile('bot-b', 'veteran');
+  const differs = a.skill.reactionMs !== b.skill.reactionMs
+    || a.skill.aimConeDegrees !== b.skill.aimConeDegrees
+    || a.skill.recoilControl !== b.skill.recoilControl;
+  check('two bots of the same tier roll different stats',
+    differs,
+    `A ${a.skill.reactionMs.toFixed(0)}ms/${a.skill.aimConeDegrees.toFixed(2)}deg vs `
+    + `B ${b.skill.reactionMs.toFixed(0)}ms/${b.skill.aimConeDegrees.toFixed(2)}deg`);
+
+  // But the same bot is the same player every time — reproducible tests.
+  const again = createBotProfile('bot-a', 'veteran');
+  check('the same bot id always rolls the same profile',
+    again.skill.reactionMs === a.skill.reactionMs
+    && again.personality.aggression === a.personality.aggression,
+    'identical on re-roll');
+
+  // Tiers must actually order: a pro reacts faster and aims tighter.
+  const recruit = createBotProfile('r', 'recruit');
+  const pro = createBotProfile('p', 'pro');
+  check('a pro reacts faster and shoots tighter than a recruit',
+    pro.skill.reactionMs < recruit.skill.reactionMs
+    && pro.skill.aimConeDegrees < recruit.skill.aimConeDegrees,
+    `pro ${pro.skill.reactionMs.toFixed(0)}ms/${pro.skill.aimConeDegrees.toFixed(2)}deg vs `
+    + `recruit ${recruit.skill.reactionMs.toFixed(0)}ms/`
+    + `${recruit.skill.aimConeDegrees.toFixed(2)}deg`);
+
+  // The humanity floor: no roll may produce superhuman reaction.
+  const rng2 = new SeededRandom(99);
+  let fastest = Infinity;
+  for (let i = 0; i < 500; i += 1) {
+    fastest = Math.min(fastest, createSkillProfile('pro', rng2).reactionMs);
+  }
+  check('no roll ever produces a superhuman reaction time',
+    fastest >= 100, `fastest of 500 rolls was ${fastest.toFixed(0)}ms`);
+
+  // Perception is NOT widened by the individual roll. This is the fairness
+  // guarantee: skill changes execution, never what a bot can know.
+  check('the top tier does not see further than a veteran',
+    pro.difficulty.viewRangeMeters === createBotProfile('v', 'veteran')
+      .difficulty.viewRangeMeters
+    && pro.difficulty.fovDegrees === createBotProfile('v2', 'veteran')
+      .difficulty.fovDegrees,
+    `pro sees ${pro.difficulty.viewRangeMeters}m / ${pro.difficulty.fovDegrees}deg`);
+
+  // No profile field may leak world knowledge.
+  const fields = Object.keys(a.skill).concat(Object.keys(a.personality)).join(' ');
+  check('no skill or personality field grants information',
+    !/omniscien|wallhack|seeThrough|knowsEnemy|trueposition/i.test(fields),
+    `${Object.keys(a.skill).length} skill + `
+    + `${Object.keys(a.personality).length} personality fields, none informational`);
+
+  // Personalities spread out rather than clustering on one archetype.
+  const rng3 = new SeededRandom(7);
+  const aggressions = [];
+  for (let i = 0; i < 60; i += 1) aggressions.push(createPersonality(rng3).aggression);
+  const spread = Math.max(...aggressions) - Math.min(...aggressions);
+  check('personalities span a real range of aggression',
+    spread > 0.6, `aggression spans ${spread.toFixed(2)}`);
+
+  // Tier distribution fills a lobby with a believable mix.
+  const rng4 = new SeededRandom(2024);
+  const tiers = {};
+  for (let i = 0; i < 400; i += 1) {
+    const t = pickTier(rng4);
+    tiers[t] = (tiers[t] ?? 0) + 1;
+  }
+  check('a filled lobby draws a mix of skill tiers',
+    Object.keys(tiers).length >= 4,
+    Object.entries(tiers).map(([k, v]) => `${k}:${v}`).join(' '));
+
+  // Mistakes are bounded by the bot's own mistake rate.
+  const rngM = new SeededRandom(5);
+  const flawless = { ...a.skill, mistakeRate: 0 };
+  const sloppy = { ...a.skill, mistakeRate: 1 };
+  const options = ['best', 'worse', 'worst'];
+  let flawlessKept = 0;
+  let sloppyKept = 0;
+  for (let i = 0; i < 100; i += 1) {
+    if (maybeMistake('best', options, flawless, rngM) === 'best') flawlessKept += 1;
+    if (maybeMistake('best', options, sloppy, rngM) === 'best') sloppyKept += 1;
+  }
+  check('mistake rate governs how often a bot picks a worse option',
+    flawlessKept === 100 && sloppyKept === 0,
+    `flawless kept ${flawlessKept}/100, sloppy kept ${sloppyKept}/100`);
+}
+
 console.log(`\nAI ACCEPTANCE: ${passed}/${passed + failed} checks passed`);
 process.exit(failed === 0 ? 0 : 1);

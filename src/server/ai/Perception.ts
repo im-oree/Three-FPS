@@ -107,6 +107,12 @@ export function perceive(
   beliefs: Beliefs,
   profile: DifficultyProfile,
   rayBudget: number,
+  /**
+   * The individual bot's reaction time, when it has one. Falls back to the
+   * tier's. This is what stops every veteran in the lobby from opening fire
+   * on the same frame: they each rolled their own delay.
+   */
+  reactionMsOverride?: number,
 ): number {
   const now = world.time;
   let raysUsed = 0;
@@ -166,7 +172,7 @@ export function perceive(
     if (now - sighting.lastSeen > MEMORY_SECONDS) beliefs.sightings.delete(id);
   }
 
-  updateFocus(beliefs, now, profile);
+  updateFocus(beliefs, now, profile, reactionMsOverride);
   return raysUsed;
 }
 
@@ -178,7 +184,9 @@ export function perceive(
  * two enemies at similar range oscillates between them every tick and hits
  * neither — it reads as a malfunction, not as indecision.
  */
-function updateFocus(beliefs: Beliefs, now: number, profile: DifficultyProfile): void {
+function updateFocus(
+  beliefs: Beliefs, now: number, profile: DifficultyProfile, reactionMsOverride?: number,
+): void {
   let best: Sighting | null = null;
   for (const sighting of beliefs.sightings.values()) {
     if (!sighting.visible) continue;
@@ -207,7 +215,8 @@ function updateFocus(beliefs: Beliefs, now: number, profile: DifficultyProfile):
   // the single most important humanising knob — without it, even a bot with
   // a wide aim cone feels inhuman, because the timing is impossible.
   if (beliefs.focusId && !beliefs.focusReady) {
-    if ((now - beliefs.focusAcquiredAt) * 1000 >= profile.reactionMs) {
+    const reactionMs = reactionMsOverride ?? profile.reactionMs;
+    if ((now - beliefs.focusAcquiredAt) * 1000 >= reactionMs) {
       beliefs.focusReady = true;
     }
   }

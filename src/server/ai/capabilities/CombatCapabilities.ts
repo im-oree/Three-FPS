@@ -22,19 +22,23 @@ import { navContext } from '../NavContext';
 function aimAt(ctx: AgentContext, target: Vec3, distance: number): {
   yaw: number; pitch: number; onTarget: boolean;
 } {
-  const { self, profile, rng } = ctx;
+  const { self, profile, skill, rng } = ctx;
   const dx = target[0] - self.px;
   const dy = target[1] - (self.py + EYE_HEIGHT);
   const dz = target[2] - self.pz;
 
   // Same basis as MovementSystem; see MoveTo for the derivation.
-  const desiredYaw = Math.atan2(-dx, dz) + aimError(profile, distance, rng);
+  // Aim error and tracking come from the INDIVIDUAL skill roll, so two bots
+  // on the same tier do not shoot identically. The turn RATE below still
+  // comes from the tier profile: that is the fairness limit shared with human
+  // input, and no per-bot roll is allowed to raise it.
+  const desiredYaw = Math.atan2(-dx, dz) + aimError(skill, distance, rng);
   const flat = Math.hypot(dx, dz);
-  const desiredPitch = Math.atan2(dy, flat) + aimError(profile, distance, rng) * 0.4;
+  const desiredPitch = Math.atan2(dy, flat) + aimError(skill, distance, rng) * 0.4;
 
   const yaw = approachAngle(self.yaw, desiredYaw, profile.maxTurnDegPerSecond, ctx.dt);
   const pitch = Math.max(-1.4, Math.min(1.4,
-    self.pitch + (desiredPitch - self.pitch) * Math.min(1, profile.aimTracking * 6)));
+    self.pitch + (desiredPitch - self.pitch) * Math.min(1, skill.aimTracking * 6)));
 
   // Only pull the trigger when actually pointed at the target. Firing while
   // still swinging is what produces bots that spray at walls.

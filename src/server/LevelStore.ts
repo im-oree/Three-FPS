@@ -18,7 +18,18 @@ export interface LevelCollision {
   readonly boxes: readonly Box[];
   /** Sculpted ground, on levels whose floor is terrain rather than a slab. */
   readonly terrain: Heightfield | null;
+  /**
+   * Per-mode spawn sets, probed from this exact geometry at bake time.
+   * Optional: a level without them falls back to its single legacy spawn.
+   */
+  readonly spawns?: {
+    readonly ffa?: readonly SpawnPointData[];
+    readonly teamA?: readonly SpawnPointData[];
+    readonly teamB?: readonly SpawnPointData[];
+  };
 }
+
+export interface SpawnPointData { readonly pos: Vec3; readonly yaw: number }
 
 /** Supplies the raw JSON for a level id. Injected, so this stays portable. */
 export type LevelFetcher = (levelId: string) => Promise<unknown>;
@@ -91,7 +102,36 @@ export class LevelStore {
       killPlaneY: typeof data.killPlaneY === 'number' ? data.killPlaneY : -25,
       boxes,
       terrain: this.validateTerrain(levelId, (data as { terrain?: unknown }).terrain),
+      spawns: this.validateSpawns((data as { spawns?: unknown }).spawns),
     };
+  }
+
+  /**
+   * Validate the spawn sets.
+   *
+   * Every point is checked for a finite 3-tuple and a finite yaw. A spawn
+   * point with a NaN in it places a player at an undefined position, which
+   * surfaces much later as an invisible player nobody can hit -- far cheaper
+   * to reject here.
+   */
+  private validateSpawns(raw: unknown): LevelCollision['spawns'] {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const source = raw as Record<string, unknown>;
+    const out: Record<string, SpawnPointData[]> = {};
+    for (const key of ['ffa', 'teamA', 'teamB']) {
+      const list = source[key];
+      if (!Array.isArray(list)) continue;
+      const points: SpawnPointData[] = [];
+      for (const entry of list) {
+        const p = entry as { pos?: unknown; yaw?: unknown };
+        if (!Array.isArray(p.pos) || p.pos.length !== 3) continue;
+        if (!p.pos.every((n) => typeof n === 'number' && Number.isFinite(n))) continue;
+        if (typeof p.yaw !== 'number' || !Number.isFinite(p.yaw)) continue;
+        points.push({ pos: p.pos as unknown as Vec3, yaw: p.yaw });
+      }
+      if (points.length) out[key] = points;
+    }
+    return Object.keys(out).length ? out : undefined;
   }
 
   /**

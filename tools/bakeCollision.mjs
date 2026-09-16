@@ -129,6 +129,17 @@ for (const level of LEVELS) {
     }
   }
 
+  // Spawn sets ride with the collision they were probed from. Shipping them
+  // as a separate fetch would let a level load geometry and spawn points from
+  // two different builds, and a spawn point that is 20 cm inside a wall in
+  // the version the server actually simulates is a very hard bug to see.
+  let spawns;
+  const spawnFile = path.join(ROOT, 'assets/spawns', `${level.id}.json`);
+  if (fs.existsSync(spawnFile)) {
+    const sets = JSON.parse(fs.readFileSync(spawnFile, 'utf8'));
+    spawns = { ffa: sets.ffa, teamA: sets.teamA, teamB: sets.teamB };
+  }
+
   const payload = {
     levelId: level.id,
     spawn: level.spawn.map(round),
@@ -136,6 +147,7 @@ for (const level of LEVELS) {
     killPlaneY: level.killPlaneY ?? -25,
     boxes,
     ...(terrain ? { terrain } : {}),
+    ...(spawns ? { spawns } : {}),
   };
   const outFile = path.join(OUT_DIR, `${level.id}.json`);
   fs.writeFileSync(outFile, JSON.stringify(payload));

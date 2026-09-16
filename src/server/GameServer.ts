@@ -41,8 +41,49 @@ import { MovementSystem } from './systems/MovementSystem';
 import { CombatSystem } from './systems/CombatSystem';
 import { AISystem } from './systems/AISystem';
 import { KillstreakSystem } from './systems/KillstreakSystem';
+import { MatchSystem } from './systems/MatchSystem';
+import { getGameMode, type GameModeDefinition } from './GameModes';
+import { NameAuthority, NameRandom } from './Identity';
+import { hashString, pickTier } from './ai/BotProfile';
+import { SeededRandom } from './ai/Difficulty';
 import { registerBuiltinCapabilities } from './ai/registerCapabilities';
 import type { AgentOptions } from './ai/AgentController';
+import type { SpawnPoint } from './ServerWorld';
+import type { LoadoutSpec, Vec3 } from '../net/Protocol';
+
+/**
+ * Weapons and operators a bot may be issued.
+ *
+ * Kept as plain id lists rather than imported from the client catalogues,
+ * which would drag the renderer into the server bundle (the purity check
+ * would reject it, correctly). The ids are validated against the server's own
+ * weapon table at fire time, so a typo here fails loudly rather than silently
+ * arming nobody.
+ */
+const BOT_PRIMARIES = ['rifle', 'smg', 'shotgun', 'sniper'] as const;
+const BOT_OPERATORS = [
+  'ghost', 'sentry', 'nomad', 'warden', 'vandal', 'ronin',
+] as const;
+
+/**
+ * Give a bot a random kit.
+ *
+ * Bots draw from the SAME operator roster and the same weapons a human picks
+ * from, because a lobby where every opponent carries the identical rifle and
+ * wears the identical uniform reads as a lobby of bots no matter how well
+ * they play.
+ */
+function randomLoadout(seedSource: string): LoadoutSpec {
+  const rng = new SeededRandom(hashString(`kit:${seedSource}`));
+  const pick = <T>(list: readonly T[]): T => list[Math.floor(rng.next() * list.length)];
+  return {
+    primaryId: pick(BOT_PRIMARIES),
+    secondaryId: 'pistol',
+    tacticalId: 'flash',
+    killstreakIds: ['uav', 'airstrike', 'guided_missile'],
+    operatorId: pick(BOT_OPERATORS),
+  };
+}
 
 /**
  * Longest real interval a single update() call will simulate. Beyond this the
@@ -113,6 +154,13 @@ export class GameServer {
     // packet arrives between frames. Registering it here rather than leaving
     // it to the caller keeps the in-process server and the hosted backend
     // from booting with different system sets.
+    // The match owns score, the clock, death and respawn. It runs after
+    // combat and killstreaks (so a kill scored this tick is counted this
+    // tick) and before AI, so a bot's brain sees the post-death world.
+    this.match = new MatchSystem(this.collision);
+    this.match.setKillSource(() => this.combat.lastShots);
+    this.addSystem(this.match);
+
     registerBuiltinCapabilities();
     this.ai = new AISystem(this.collision);
     this.addSystem(this.ai);
@@ -120,6 +168,11 @@ export class GameServer {
 
   /** Bots. Public so a room can fill empty slots. */
   readonly ai: AISystem;
+  /** Score, clock, death and respawn. */
+  readonly match: MatchSystem;
+  /** Hands out names nobody else holds, for humans and bots alike. */
+  readonly names = new NameAuthority();
+  private nameRng = new NameRandom(0x5eed);
   /** Killstreak authority: earning, cooldowns and blast damage. */
   readonly killstreaks: KillstreakSystem;
 
@@ -132,9 +185,28 @@ export class GameServer {
    * queueInput can tell the difference, which is the whole contract.
    */
   addBot(name?: string, options: AgentOptions = {}): PlayerId {
-    const id = `bot:${name ?? this.nextBotIndex()}`;
-    this.world.addPlayer(id, options.loadout);
-    this.ai.addAgent(id, options);
+    // The id deliberately carries NO marker. It used to be `bot:<n>`, which
+    // meant every snapshot told the client exactly which players were not
+    // human -- a scoreboard, a killfeed or a nameplate could trivially sort
+    // them out. A bot is a player; the only thing that knows otherwise is
+    // the identity record, which never leaves the server.
+    const id = `p${this.nextBotIndex()}`;
+    const displayName = this.names.generateUnique(this.nameRng);
+    // A bot with no explicit tier rolls one, so a filled lobby has the spread
+    // of ability a real one does rather than eight identical opponents.
+    const rolled = options.tier ?? pickTier(new SeededRandom(hashString(id)));
+    const loadout = options.loadout ?? randomLoadout(id);
+    this.world.addPlayer(id, loadout);
+    const spawned = this.world.getPlayer(id);
+    if (spawned) spawned.displayName = displayName;
+    this.match.identities.bind(id, {
+      identityId: `id_${id}`,
+      displayName,
+      isBot: true,
+      botProfileId: name ?? displayName,
+    });
+    this.match.addPlayer(id, displayName);
+    this.ai.addAgent(id, { ...options, tier: rolled, loadout });
     return id;
   }
 
@@ -268,8 +340,12 @@ export class GameServer {
 
   // --- match lifecycle -----------------------------------------------------
 
-  startMatch(levelId: string): void {
+  startMatch(levelId: string, modeId?: string, mode?: GameModeDefinition): void {
     if (this.levelId === levelId && this.running) return;
+    // The mode has to be set BEFORE onMatchStart, because the match system
+    // reads its time limit there. `mode` wins over `modeId` so a custom match
+    // can pass an edited definition rather than a registry lookup.
+    this.match.setMode(mode ?? getGameMode(modeId ?? this.match.getMode().id));
     // A new match must never inherit the previous one's state. This is the
     // reset seam the client used to do by hand in quitToMenu(), and doing it
     // here means it cannot be forgotten by a caller.
@@ -295,6 +371,7 @@ export class GameServer {
     if (cached) {
       this.collision.load(cached.boxes, cached.terrain);
       this.world.setSpawnPoints([{ pos: cached.spawn, yaw: cached.spawnYaw }]);
+      this.applySpawnSets(cached);
       this.ai.buildNavigation();
       return;
     }
@@ -308,12 +385,34 @@ export class GameServer {
       if (this.levelId !== levelId) return;
       this.collision.load(data.boxes, data.terrain);
       this.world.setSpawnPoints([{ pos: data.spawn, yaw: data.spawnYaw }]);
+      this.applySpawnSets(data);
       // Navigation is derived from the collision that just landed, so it can
       // never describe a different world than the one players collide with.
       this.ai.buildNavigation();
     }).catch((error: unknown) => {
       console.warn(`[server] level "${levelId}" collision failed to load:`, error);
     });
+  }
+
+  /**
+   * Hand the level's spawn sets to the selector.
+   *
+   * The sets ride along in the collision payload because they are derived
+   * from exactly that geometry (tools/generateSpawnPoints.mjs probes the
+   * baked boxes), so shipping them together means they can never describe a
+   * layout the server is not simulating. A level without sets falls back to
+   * its single legacy spawn, which is why old maps keep working.
+   */
+  private applySpawnSets(data: { spawns?: unknown; spawn: Vec3; spawnYaw: number }): void {
+    const sets = data.spawns as
+      | { ffa?: SpawnPoint[]; teamA?: SpawnPoint[]; teamB?: SpawnPoint[] }
+      | undefined;
+    if (sets && (sets.ffa?.length || sets.teamA?.length)) {
+      this.match.spawns.loadSets(sets);
+      return;
+    }
+    const single = [{ pos: data.spawn, yaw: data.spawnYaw }];
+    this.match.spawns.loadSets({ ffa: single, teamA: single, teamB: single });
   }
 
   /** Resolves once any in-flight level load has settled. For tests. */

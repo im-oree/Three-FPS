@@ -16,6 +16,7 @@ import type { CollisionWorld } from '../CollisionWorld';
 import type { ServerPlayer, ServerWorld } from '../ServerWorld';
 import type { Beliefs } from './Perception';
 import type { DifficultyProfile, SeededRandom } from './Difficulty';
+import type { SkillProfile } from './BotProfile';
 import type { NeedsModel } from './NeedsModel';
 import type { SquadBlackboard } from './SquadBlackboard';
 
@@ -30,6 +31,13 @@ export interface AgentContext {
   readonly needs: NeedsModel;
   readonly squad: SquadBlackboard;
   readonly profile: DifficultyProfile;
+  /**
+   * This bot's individual roll. `profile` is the tier envelope (perception
+   * and turn rate — the fairness limits); `skill` is execution within it.
+   * Capabilities should read `skill` for aim and movement tech so two bots on
+   * the same tier do not shoot identically.
+   */
+  readonly skill: SkillProfile;
   readonly rng: SeededRandom;
   /** Seconds this agent tick covers — larger than TICK_SECONDS when the
    *  scheduler has throttled this agent to think less often. */
