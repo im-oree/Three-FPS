@@ -29,6 +29,9 @@ import { GameState, type GameStateValue } from '../../state/GameStateManager';
 import {
   LEVELS, ROTATION_LEVELS, getLevel, previewUrl,
 } from '../../environment/LevelDefinition';
+import {
+  GAME_MODES, getGameMode, type GameModeOverrides,
+} from '../../server/GameModes';
 import loadoutManager from '../../customization/LoadoutManager';
 import { getWeapon } from '../../weapons/definitions';
 import { MENU_SHOWCASE } from '../../utils/Constants';
@@ -67,12 +70,21 @@ const CHEATS: ReadonlyArray<{ id: CheatIdValue; name: string; desc: string }> = 
  * exist) keeps the lobby looking right without lying about what deploying
  * actually does.
  */
-const MODES: ReadonlyArray<{ name: string; desc: string }> = [
-  { name: 'TEAM DEATHMATCH', desc: 'Standard engagement. First to the score cap.' },
-  { name: 'FREE-FOR-ALL', desc: 'Every operator for themselves.' },
-  { name: 'HARDPOINT', desc: 'Hold the rotating objective.' },
-  { name: 'SEARCH & DESTROY', desc: 'One life. Plant or defuse.' },
-];
+/**
+ * The playable modes, built from the SERVER's own registry.
+ *
+ * Derived rather than hand-written, so a card cannot advertise rules the
+ * server does not implement. These used to be four decorative cards that all
+ * started the same free-for-all -- picking "Search & Destroy" gave you FFA.
+ */
+const MODES: ReadonlyArray<{ id: string; name: string; desc: string }> =
+  GAME_MODES.map((mode) => ({
+    id: mode.id,
+    name: mode.displayName.toUpperCase(),
+    desc: mode.teamBased
+      ? `Team battle. First team to ${mode.scoreLimit} wins.`
+      : `Every operator for themselves. First to ${mode.scoreLimit}.`,
+  }));
 
 /** Daily challenges, presented the way the reference does. */
 const CHALLENGES: ReadonlyArray<{ text: string; progress: number; goal: number }> = [
@@ -80,6 +92,32 @@ const CHALLENGES: ReadonlyArray<{ text: string; progress: number; goal: number }
   { text: 'Get 50 Kills with a Weapon with 0 attachments', progress: 0, goal: 50 },
   { text: 'Get 30 Assists', progress: 0, goal: 30 },
 ];
+
+/** Custom-match rule choices offered to the host. */
+const SCORE_CHOICES = [10, 20, 30, 50, 75, 100] as const;
+const TIME_CHOICES = [5, 10, 15, 20] as const;
+const PLAYER_CHOICES = [2, 4, 6, 8, 10, 12] as const;
+const RESPAWN_CHOICES = [
+  { value: 1.5, label: 'FAST' },
+  { value: 3, label: 'NORMAL' },
+  { value: 6, label: 'SLOW' },
+] as const;
+
+/**
+ * The offered choice closest to `target`.
+ *
+ * A mode's real default need not be one of the round numbers on offer (team
+ * deathmatch scores to 75, respawns after 5 s). Highlighting the nearest
+ * offer keeps the dialog honest instead of leaving a row with nothing lit or,
+ * worse, lighting a value the match will not use.
+ */
+function nearestChoice(choices: readonly number[], target: number): number {
+  let best = choices[0];
+  for (const choice of choices) {
+    if (Math.abs(choice - target) < Math.abs(best - target)) best = choice;
+  }
+  return best;
+}
 
 export class MainMenu implements Screen {
   readonly element = div('screen screen--cod');
@@ -95,7 +133,12 @@ export class MainMenu implements Screen {
   /** When set, Quick Play always deploys here instead of a random map. */
   private filterLevelId: string | null = null;
 
-  constructor(private readonly onPlayLevel: (levelId: string) => void) {
+  constructor(
+    private readonly onPlayLevel: (
+      levelId: string,
+      options?: { modeId?: string; overrides?: GameModeOverrides; weather?: string },
+    ) => void,
+  ) {
     this.element.append(this.buildTopBar(), this.buildBody(), this.buildFooter());
     this.showRoot();
   }
@@ -235,23 +278,39 @@ export class MainMenu implements Screen {
     );
     quick.addEventListener('click', () => {
       uiSound('confirm');
-      this.onPlayLevel(this.pickQuickPlayLevel());
+      this.onPlayLevel(this.pickQuickPlayLevel(), { modeId: 'ffa' });
     });
     this.modeList.appendChild(quick);
 
     for (const mode of MODES) {
       const card = el('button', 'cod__mode');
       card.type = 'button';
+      card.dataset.modeId = mode.id;
       card.append(
         div('cod__mode-name', mode.name),
         div('cod__mode-desc', mode.desc),
       );
       card.addEventListener('click', () => {
         uiSound('confirm');
-        this.onPlayLevel(this.pickQuickPlayLevel());
+        // Deploy into THIS mode, not whatever the last one was.
+        this.onPlayLevel(this.pickQuickPlayLevel(), { modeId: mode.id });
       });
       this.modeList.appendChild(card);
     }
+
+    // CUSTOM MATCH: the same modes, with the rules opened up.
+    const custom = el('button', 'cod__mode cod__mode--custom');
+    custom.type = 'button';
+    custom.append(
+      div('cod__mode-tag', 'HOST'),
+      div('cod__mode-name', 'CUSTOM MATCH'),
+      div('cod__mode-desc', 'Set the mode, map, score limit, time and weather.'),
+    );
+    custom.addEventListener('click', () => {
+      uiSound('confirm');
+      this.openCustomMatch();
+    });
+    this.modeList.appendChild(custom);
 
     // The map filter: opens the map browser rather than listing levels here,
     // so the left column stays a MODE list like the reference.
@@ -268,6 +327,17 @@ export class MainMenu implements Screen {
       this.openMapBrowser();
     });
     this.modeList.appendChild(maps);
+  }
+
+  /**
+   * Close any open modal window.
+   *
+   * One window at a time: opening a second over the first leaves the new
+   * window's controls underneath a stale overlay, so clicks land on
+   * something the player cannot see.
+   */
+  private closeWindows(): void {
+    for (const win of this.element.querySelectorAll('.mapwin')) win.remove();
   }
 
   /** The level Quick Play deploys to: the filter if set, else random. */
@@ -287,6 +357,7 @@ export class MainMenu implements Screen {
    * of the screen visible behind it, which is most of the atmosphere.
    */
   private openMapBrowser(): void {
+    this.closeWindows();
     const overlay = div('mapwin');
     const panel = div('mapwin__panel');
 
@@ -357,6 +428,218 @@ export class MainMenu implements Screen {
     panel.append(head, grid, foot);
     overlay.appendChild(panel);
     // Click-away closes, which is what a window is expected to do.
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) {
+        uiSound('back');
+        overlay.remove();
+      }
+    });
+    this.element.appendChild(overlay);
+  }
+
+  /**
+   * The custom match window: host a game with the rules opened up.
+   *
+   * Every control here edits a GameModeOverrides patch against a real mode
+   * definition, and the server applies it with the same `customise()` a
+   * built-in mode goes through. There is no separate custom-match code path,
+   * which is exactly what makes every setting work by construction rather
+   * than each one needing to be plumbed individually.
+   */
+  private openCustomMatch(): void {
+    this.closeWindows();
+    const overlay = div('mapwin');
+    const panel = div('mapwin__panel mapwin__panel--custom');
+
+    // Working state. Starts as a copy of the base mode's own rules, so the
+    // dialog opens showing the real defaults rather than invented ones.
+    let modeId = 'ffa';
+    let levelId = this.filterLevelId ?? this.pickQuickPlayLevel();
+    let weather = 'clear';
+    const overrides: {
+      scoreLimit?: number; timeLimitSeconds?: number;
+      maxPlayers?: number; respawnDelaySeconds?: number;
+    } = {};
+
+    const head = div('mapwin__head');
+    head.append(
+      div('mapwin__title', 'CUSTOM MATCH'),
+      button('CLOSE', 'btn btn--small btn--ghost', () => {
+        uiSound('back');
+        overlay.remove();
+      }),
+    );
+
+    const body = div('custom__body');
+    const summary = div('custom__summary');
+
+    const refreshSummary = (): void => {
+      const base = getGameMode(modeId);
+      const limit = overrides.scoreLimit
+        ?? nearestChoice(SCORE_CHOICES, base.scoreLimit);
+      const minutes = Math.round((overrides.timeLimitSeconds
+        ?? nearestChoice(TIME_CHOICES.map((n) => n * 60), base.timeLimitSeconds)) / 60);
+      const players = overrides.maxPlayers
+        ?? nearestChoice(PLAYER_CHOICES, base.maxPlayers);
+      summary.textContent = `${base.displayName} · ${getLevel(levelId).displayName}`
+        + ` · ${limit} to win · ${minutes} min · ${players} players`
+        + ` · ${weather}`;
+    };
+
+    /**
+     * A row of mutually-exclusive choices.
+     *
+     * Returns the row plus a `select` hook so rows whose correct value
+     * depends on another row (the rule rows all follow MODE) can be
+     * re-pointed when that other row changes. Without it the highlight
+     * keeps showing the old mode's default while the match actually uses
+     * the new one -- the UI and the server disagreeing about the rules.
+     */
+    const choiceRow = <T>(
+      label: string,
+      options: ReadonlyArray<{ value: T; label: string }>,
+      initial: T,
+      onPick: (value: T) => void,
+    ): { row: HTMLElement; select: (value: T) => void } => {
+      const row = div('custom__row');
+      row.appendChild(div('custom__label', label));
+      const choices = div('custom__choices');
+      let current = initial;
+      const buttons: Array<{ node: HTMLElement; value: T }> = [];
+      const paint = (): void => {
+        for (const b of buttons) {
+          b.node.classList.toggle('custom__choice--on', b.value === current);
+        }
+      };
+      for (const option of options) {
+        const node = el('button', 'custom__choice', option.label);
+        node.type = 'button';
+        node.addEventListener('click', () => {
+          uiSound('confirm');
+          current = option.value;
+          onPick(option.value);
+          paint();
+          refreshSummary();
+        });
+        buttons.push({ node, value: option.value });
+        choices.appendChild(node);
+      }
+      paint();
+      row.appendChild(choices);
+      return {
+        row,
+        select: (value: T) => { current = value; paint(); },
+      };
+    };
+
+    // Assigned once the rows exist; MODE re-points them on every change.
+    let syncRuleRows = (): void => {};
+
+    const modeRow = choiceRow(
+      'MODE',
+      GAME_MODES.map((m) => ({ value: m.id, label: m.displayName.toUpperCase() })),
+      modeId,
+      (value) => {
+        modeId = value;
+        // Clearing the overrides on a mode change is deliberate: a score
+        // limit of 30 is right for FFA and absurd for team deathmatch, so
+        // carrying it across would silently produce a broken match.
+        overrides.scoreLimit = undefined;
+        overrides.timeLimitSeconds = undefined;
+        overrides.maxPlayers = undefined;
+        overrides.respawnDelaySeconds = undefined;
+        // ...and the rows must now show the NEW mode's defaults.
+        syncRuleRows();
+      },
+    );
+    const mapRow = choiceRow(
+      'MAP',
+      (ROTATION_LEVELS.length ? ROTATION_LEVELS : LEVELS)
+        .map((l) => ({ value: l.id, label: l.displayName.toUpperCase() })),
+      levelId,
+      (value) => { levelId = value; },
+    );
+    const scoreRow = choiceRow(
+      'SCORE LIMIT',
+      SCORE_CHOICES.map((n) => ({ value: n, label: String(n) })),
+      nearestChoice(SCORE_CHOICES, getGameMode(modeId).scoreLimit),
+      (value) => { overrides.scoreLimit = value; },
+    );
+    const timeRow = choiceRow(
+      'TIME LIMIT',
+      TIME_CHOICES.map((n) => ({ value: n * 60, label: `${n} MIN` })),
+      nearestChoice(TIME_CHOICES.map((n) => n * 60), getGameMode(modeId).timeLimitSeconds),
+      (value) => { overrides.timeLimitSeconds = value; },
+    );
+    const playerRow = choiceRow(
+      'PLAYERS',
+      PLAYER_CHOICES.map((n) => ({ value: n, label: String(n) })),
+      nearestChoice(PLAYER_CHOICES, getGameMode(modeId).maxPlayers),
+      (value) => { overrides.maxPlayers = value; },
+    );
+    const respawnRow = choiceRow(
+      'RESPAWN',
+      RESPAWN_CHOICES,
+      nearestChoice(
+        RESPAWN_CHOICES.map((c) => c.value),
+        getGameMode(modeId).respawnDelaySeconds,
+      ),
+      (value) => { overrides.respawnDelaySeconds = value; },
+    );
+    const weatherRow = choiceRow(
+      'WEATHER',
+      [{ value: 'clear', label: 'CLEAR' }, { value: 'overcast', label: 'OVERCAST' },
+        { value: 'fog', label: 'FOG' }, { value: 'night', label: 'NIGHT' }],
+      weather,
+      (value) => { weather = value; },
+    );
+
+    // Point every rule row at the current mode's real defaults. The offered
+    // choices are round numbers, so a mode whose default is not one of them
+    // (team deathmatch wants 75) highlights the closest offer -- and the
+    // summary reads from the same resolved numbers, so what the host sees
+    // highlighted is exactly what the match will run.
+    syncRuleRows = (): void => {
+      const base = getGameMode(modeId);
+      scoreRow.select(nearestChoice(SCORE_CHOICES, base.scoreLimit));
+      timeRow.select(nearestChoice(TIME_CHOICES.map((n) => n * 60), base.timeLimitSeconds));
+      playerRow.select(nearestChoice(PLAYER_CHOICES, base.maxPlayers));
+      respawnRow.select(nearestChoice(
+        RESPAWN_CHOICES.map((c) => c.value), base.respawnDelaySeconds,
+      ));
+      refreshSummary();
+    };
+
+    body.append(
+      modeRow.row, mapRow.row, scoreRow.row, timeRow.row,
+      playerRow.row, respawnRow.row, weatherRow.row,
+    );
+
+    refreshSummary();
+
+    const foot = div('mapwin__foot custom__foot');
+    foot.append(summary);
+    const start = button('START MATCH', 'btn btn--primary', () => {
+      uiSound('confirm');
+      overlay.remove();
+      // Drop the untouched fields so the server keeps its own defaults for
+      // anything the host did not actually change.
+      const patch: GameModeOverrides = {
+        ...(overrides.scoreLimit !== undefined
+          ? { scoreLimit: overrides.scoreLimit } : {}),
+        ...(overrides.timeLimitSeconds !== undefined
+          ? { timeLimitSeconds: overrides.timeLimitSeconds } : {}),
+        ...(overrides.maxPlayers !== undefined
+          ? { maxPlayers: overrides.maxPlayers } : {}),
+        ...(overrides.respawnDelaySeconds !== undefined
+          ? { respawnDelaySeconds: overrides.respawnDelaySeconds } : {}),
+      };
+      this.onPlayLevel(levelId, { modeId, overrides: patch, weather });
+    });
+    foot.appendChild(start);
+
+    panel.append(head, body, foot);
+    overlay.appendChild(panel);
     overlay.addEventListener('click', (event) => {
       if (event.target === overlay) {
         uiSound('back');

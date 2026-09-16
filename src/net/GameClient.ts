@@ -18,7 +18,7 @@ import {
   PROTOCOL_VERSION,
   type ClientTransport, type EntityState, type FxEvent, type InputFrame,
   type DeathWire, type KillfeedWire, type KillstreakSlotState, type LoadoutSpec,
-  type MatchStateWire, type PlayerPublicState,
+  type MatchRulesWire, type MatchStateWire, type PlayerPublicState,
   type S2C, type Snapshot, type Vec3,
 } from './Protocol';
 
@@ -96,10 +96,15 @@ export class GameClient {
   joinMatch(
     levelId: string,
     loadout?: LoadoutSpec,
-    options: { name?: string; modeId?: string } = {},
+    options: { name?: string; modeId?: string; rules?: MatchRulesWire } = {},
   ): void {
     this.transport.send({
-      t: 'joinMatch', levelId, loadout, name: options.name, modeId: options.modeId,
+      t: 'joinMatch',
+      levelId,
+      loadout,
+      name: options.name,
+      modeId: options.modeId,
+      rules: options.rules,
     });
   }
 

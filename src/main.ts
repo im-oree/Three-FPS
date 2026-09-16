@@ -123,7 +123,7 @@ import DeathOverlay from './ui/hud/DeathOverlay';
 import Killfeed from './ui/hud/Killfeed';
 import MatchBar from './ui/hud/MatchBar';
 import { WEAPON_LABELS } from './ui/menus/LoadoutMenu';
-import type { DeathWire, Vec3 } from './net/Protocol';
+import type { DeathWire, MatchRulesWire, Vec3 } from './net/Protocol';
 
 const canvas = document.getElementById('game-canvas') as HTMLCanvasElement | null;
 if (!canvas) throw new Error('[main] #game-canvas element missing from index.html');
@@ -1337,6 +1337,8 @@ const ui = new UIManager();
 let activeLevelId = LEVELS[0].id;
 /** Which game mode the next match runs. FFA is the default, as in COD. */
 let activeModeId = 'ffa';
+/** Custom-match rule patch for the next join, or null for the mode defaults. */
+let activeRules: MatchRulesWire | null = null;
 
 /** Start (or restart) a match on a level: load it, then show the click gate. */
 const beginLoad = async (levelId: string): Promise<void> => {
@@ -1395,11 +1397,22 @@ const enterMatch = (): void => {
     tacticalId: 'flash',
     killstreakIds: killstreakManager.slots.map((s) => s.id),
     operatorId: operatorRoster.selectedId_,
-  }, { modeId: activeModeId });
+  }, {
+    modeId: activeModeId,
+    ...(activeRules ? { rules: activeRules } : {}),
+  });
   gameStateManager.setState(GameState.PLAYING);
 };
 
-const mainMenu = new MainMenu((levelId) => { void beginLoad(levelId); });
+const mainMenu = new MainMenu((levelId, options) => {
+  // The lobby's choices are recorded here and applied at join time, because
+  // the SERVER owns the mode -- the client is only reporting what the host
+  // asked for.
+  activeModeId = options?.modeId ?? 'ffa';
+  activeRules = options?.overrides ?? null;
+  levelLoader.setWeather(options?.weather ?? null);
+  void beginLoad(levelId);
+});
 const loadingScreen = new LoadingScreen(enterMatch);
 const settingsMenu = new SettingsMenu(
   engine.inputManager,
@@ -1571,7 +1584,25 @@ window.addEventListener('keydown', (e) => {
 
 // Losing pointer lock unexpectedly (alt-tab, browser Escape) must pause, or
 // the player keeps taking damage behind a window they cannot see.
+/**
+ * Whether the pointer lock this PLAYING session was ever actually granted.
+ *
+ * Losing a lock you never held is not the player alt-tabbing, and must not
+ * pause the match. Without this the following race pauses a brand-new match
+ * the instant it starts: quitToMenu() calls exitPointerLock(), the browser
+ * delivers that `pointerlockchange` asynchronously, and if the player has
+ * already picked a new map the event arrives when the state is once again
+ * PLAYING -- so the new match pauses because the OLD one released the mouse.
+ */
+let pointerLockHeld = false;
+eventBus.on('input:pointerlock:acquired', () => { pointerLockHeld = true; });
+
 eventBus.on('input:pointerlock:lost', () => {
+  const wasHeld = pointerLockHeld;
+  pointerLockHeld = false;
+  // A release we never owned: a stale event from a previous match, or a
+  // request the browser refused. Not a reason to pause.
+  if (!wasHeld) return;
   // Dying releases pointer lock on purpose -- the death camera is running and
   // the player has no body to steer. Pausing here would drop the menu over
   // the death cam and, worse, read as the match being interrupted by the

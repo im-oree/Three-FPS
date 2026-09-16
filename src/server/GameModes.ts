@@ -95,3 +95,33 @@ export function customise(
 ): GameModeDefinition {
   return { ...base, ...overrides };
 }
+
+/** Hard bounds on what a custom match may ask for. */
+export const RULE_LIMITS = {
+  scoreLimit: { min: 1, max: 500 },
+  timeLimitSeconds: { min: 60, max: 3600 },
+  maxPlayers: { min: 2, max: 32 },
+  respawnDelaySeconds: { min: 0, max: 30 },
+} as const;
+
+/**
+ * Sanitise a client-proposed rule patch.
+ *
+ * A custom match is hosted by a CLIENT, so its numbers arrive over the wire
+ * and are therefore untrusted input. Everything is clamped to a sane range
+ * and anything non-finite is dropped -- a score limit of NaN would make
+ * `reachedScoreLimit()` always false and the match unendable, and a maxPlayers of
+ * 10000 would have the lobby filler spawn bots until the tab died.
+ */
+export function sanitiseOverrides(
+  patch: Partial<Record<keyof typeof RULE_LIMITS, unknown>>,
+): GameModeOverrides {
+  const out: Record<string, number> = {};
+  for (const key of Object.keys(RULE_LIMITS) as Array<keyof typeof RULE_LIMITS>) {
+    const raw = patch[key];
+    if (typeof raw !== 'number' || !Number.isFinite(raw)) continue;
+    const { min, max } = RULE_LIMITS[key];
+    out[key] = Math.min(max, Math.max(min, raw));
+  }
+  return out as GameModeOverrides;
+}

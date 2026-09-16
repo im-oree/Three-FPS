@@ -283,7 +283,9 @@ try {
       const startClock = hook.gameClient.match?.timeRemaining ?? 0;
       let maxRows = 0;
       const samples = [];
-      const deadline = Date.now() + 60000;
+      // Wall-clock ceiling. Generous because this harness runs on software
+      // GL, where the simulation advances well under real time.
+      const deadline = Date.now() + 150000;
       while (Date.now() < deadline) {
         const rows = document.querySelectorAll('.killfeed__row').length;
         if (rows > maxRows) {
@@ -293,8 +295,12 @@ try {
         }
         const elapsed = startClock - (hook.gameClient.match?.timeRemaining ?? 0);
         const deaths = hook.gameServer.match.deathLog.length;
-        // 25 s of MATCH time is enough for a lobby to produce kills.
-        if (elapsed >= 25 && deaths >= 3) break;
+        // Budget in MATCH time. Measured directly against the server at the
+        // real tick rate, eight bots produce 3-7 deaths per minute depending
+        // on the map (killhouse is the slowest: 3 in the first 60 s). So 25 s
+        // is not a safe window -- 55 s is, and the loop exits as soon as the
+        // kills arrive rather than always waiting that long.
+        if (deaths >= 3 || elapsed >= 55) break;
         await new Promise((r) => setTimeout(r, 400));
       }
       return {
@@ -408,6 +414,14 @@ try {
     check('preview URLs are cache-busted',
       previews.every((p) => /\?v=\d+/.test(p.url)),
       previews[0]?.url.split('/').pop() ?? '');
+
+    // Close the map window. Leaving it open stacks a SECOND window when the
+    // next step clicks MAPS again, and the new window's cards sit under the
+    // stale one -- the click lands on a card nobody can see.
+    await page.evaluate(() => {
+      for (const win of document.querySelectorAll('.mapwin')) win.remove();
+    });
+    await sleep(300);
   }
 
   // --- [12] Quitting to the menu resets the server completely -------------
@@ -461,8 +475,185 @@ try {
     check('player slots restart at p1 rather than continuing',
       second.ids.includes('p1'), second.ids.join(' '));
   }
+  // --- [13] Custom matches actually change the rules ----------------------
+  console.log('\n[13] A custom match hosts by the rules the host chose');
+  {
+    await page.evaluate(() => window.__OPERATOR__.quitToMenu());
+    await sleep(800);
+
+    // Open the custom match window through the real UI.
+    await page.evaluate(() => {
+      [...document.querySelectorAll('.cod__mode')]
+        .find((n) => n.textContent.includes('CUSTOM MATCH'))?.click();
+    });
+    await sleep(500);
+
+    const opened = await page.evaluate(() => ({
+      rows: [...document.querySelectorAll('.custom__label')].map((n) => n.textContent),
+      modes: [...document.querySelectorAll('.custom__row')][0]
+        ? [...[...document.querySelectorAll('.custom__row')][0]
+          .querySelectorAll('.custom__choice')].map((n) => n.textContent)
+        : [],
+    }));
+    check('the custom match window offers the real tunables',
+      opened.rows.includes('MODE') && opened.rows.includes('SCORE LIMIT')
+      && opened.rows.includes('TIME LIMIT') && opened.rows.includes('WEATHER'),
+      opened.rows.join(' '));
+    check('the mode list comes from the server\'s own registry',
+      opened.modes.some((m) => /FREE/.test(m))
+      && opened.modes.some((m) => /TEAM/.test(m)),
+      opened.modes.join(' '));
+
+    // Host a Team Deathmatch, 10 score, 5 minutes, 4 players, foggy.
+    await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('.custom__row')];
+      const pick = (label, text) => {
+        const row = rows.find((r) => r.querySelector('.custom__label')
+          ?.textContent === label);
+        [...row.querySelectorAll('.custom__choice')]
+          .find((c) => c.textContent === text)?.click();
+      };
+      pick('MODE', 'TEAM DEATHMATCH');
+      pick('SCORE LIMIT', '10');
+      pick('TIME LIMIT', '5 MIN');
+      pick('PLAYERS', '4');
+      pick('WEATHER', 'FOG');
+      document.querySelector('.custom__foot .btn--primary').click();
+    });
+
+    await page.waitForFunction(
+      () => window.__OPERATOR__.gameStateManager.getState() === 'PLAYING',
+      { timeout: 90000 },
+    );
+    await sleep(2000);
+
+    const hosted = await page.evaluate(() => {
+      const hook = window.__OPERATOR__;
+      const m = hook.gameClient.match;
+      const mode = hook.gameServer.match.getMode();
+      return {
+        modeId: mode.id,
+        teamBased: m?.teamBased,
+        scoreLimit: m?.scoreLimit,
+        timeLimit: mode.timeLimitSeconds,
+        maxPlayers: mode.maxPlayers,
+        players: m?.standings.length ?? 0,
+        teams: m ? [...new Set(m.standings.map((r) => r.team))].sort() : [],
+        fogDensity: hook.engine.sceneManager.scene.fog?.density ?? 0,
+      };
+    });
+
+    check('the custom match runs the chosen MODE',
+      hosted.modeId === 'tdm' && hosted.teamBased === true,
+      `${hosted.modeId}, teamBased=${hosted.teamBased}`);
+    check('the custom SCORE LIMIT is applied',
+      hosted.scoreLimit === 10, `score limit ${hosted.scoreLimit}`);
+    check('the custom TIME LIMIT is applied',
+      hosted.timeLimit === 300, `${hosted.timeLimit} s`);
+    check('the custom PLAYER COUNT is applied',
+      hosted.maxPlayers === 4 && hosted.players === 4,
+      `${hosted.players} players, cap ${hosted.maxPlayers}`);
+    check('a team mode actually splits players into two teams',
+      hosted.teams.length === 2 && hosted.teams.join('') === 'AB',
+      `teams: ${hosted.teams.join(' ')}`);
+    check('the chosen WEATHER changed the scene',
+      hosted.fogDensity > 0.01, `fog density ${hosted.fogDensity.toFixed(4)}`);
+  }
+
+  // --- [14] The server refuses absurd custom rules ------------------------
+  console.log('\n[13b] The custom match dialog never lies about the rules');
+  {
+    await page.evaluate(() => window.__OPERATOR__.quitToMenu());
+    await sleep(900);
+    await page.evaluate(() => {
+      [...document.querySelectorAll('.cod__mode')]
+        .find((n) => n.textContent.includes('CUSTOM MATCH'))?.click();
+    });
+    await sleep(600);
+
+    const readRows = () => page.evaluate(() => {
+      const rows = [...document.querySelectorAll('.custom__row')];
+      const lit = {};
+      for (const row of rows) {
+        const label = row.querySelector('.custom__label').textContent.trim();
+        lit[label] = [...row.querySelectorAll('.custom__choice--on')]
+          .map((c) => c.textContent.trim()).join(',');
+      }
+      return { lit, summary: document.querySelector('.custom__summary').textContent };
+    });
+
+    const ffa = await readRows();
+    check('every rule row shows a selection on open',
+      Object.values(ffa.lit).every((v) => v.length > 0),
+      Object.entries(ffa.lit).map(([k, v]) => `${k}=${v || 'NONE'}`).join(' '));
+
+    // Switching mode must re-point every dependent row. The bug this guards:
+    // PLAYERS stayed lit on FFA's 8 while the match actually ran TDM's 12.
+    await page.evaluate(() => {
+      const row = [...document.querySelectorAll('.custom__row')]
+        .find((r) => r.querySelector('.custom__label').textContent.includes('MODE'));
+      [...row.querySelectorAll('.custom__choice')]
+        .find((c) => c.textContent.includes('TEAM')).click();
+    });
+    await sleep(500);
+    const tdm = await readRows();
+
+    check('changing mode re-points the rule rows to that mode\'s defaults',
+      tdm.lit.PLAYERS === '12' && tdm.lit['SCORE LIMIT'] === '75',
+      `players=${tdm.lit.PLAYERS} score=${tdm.lit['SCORE LIMIT']}`);
+    check('the summary agrees with the lit choices',
+      tdm.summary.includes('12 players') && tdm.summary.includes('75 to win'),
+      tdm.summary);
+
+    await page.evaluate(() => {
+      for (const win of document.querySelectorAll('.mapwin')) win.remove();
+    });
+    await sleep(250);
+  }
+
+  console.log('\n[14] The server clamps what a client asks for');
+  {
+    const clamped = await page.evaluate(() => {
+      const server = window.__OPERATOR__.gameServer;
+      const before = server.match.getMode().id;
+      // A hostile client asking for a one-tick win and a bot army.
+      window.__OPERATOR__.gameClient.joinMatch('shipment', undefined, {
+        modeId: 'ffa',
+        rules: {
+          scoreLimit: -5, maxPlayers: 10000,
+          timeLimitSeconds: Number.NaN, respawnDelaySeconds: -100,
+        },
+      });
+      return { before };
+    });
+    void clamped;
+    await sleep(2500);
+
+    const limits = await page.evaluate(() => {
+      const mode = window.__OPERATOR__.gameServer.match.getMode();
+      return {
+        scoreLimit: mode.scoreLimit,
+        maxPlayers: mode.maxPlayers,
+        timeLimit: mode.timeLimitSeconds,
+        respawn: mode.respawnDelaySeconds,
+        agents: window.__OPERATOR__.gameServer.aiAgentCount,
+      };
+    });
+
+    check('a negative score limit is clamped to something winnable',
+      limits.scoreLimit >= 1, `score limit ${limits.scoreLimit}`);
+    check('an absurd player count is clamped',
+      limits.maxPlayers <= 32 && limits.agents <= 32,
+      `cap ${limits.maxPlayers}, ${limits.agents} agents spawned`);
+    check('a non-finite time limit is rejected, not stored',
+      Number.isFinite(limits.timeLimit) && limits.timeLimit >= 60,
+      `${limits.timeLimit} s`);
+    check('a negative respawn delay is clamped to zero or more',
+      limits.respawn >= 0, `${limits.respawn} s`);
+  }
 } catch (err) {
   console.error('\nHARNESS ERROR:', err.message);
+  console.error(err.stack?.split('\n').slice(0, 6).join('\n'));
   failed += 1;
 } finally {
   await browser.close();

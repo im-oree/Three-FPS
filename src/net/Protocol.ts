@@ -98,6 +98,15 @@ export type C2S =
     readonly t: 'joinMatch'; readonly levelId: string;
     readonly loadout?: LoadoutSpec; readonly name?: string;
     readonly modeId?: string;
+    /**
+     * Custom-match rules, applied over the chosen mode.
+     *
+     * Deliberately a PATCH rather than a whole definition: a client cannot
+     * invent a mode, only adjust the tunable fields of one the server
+     * already knows, so a hostile client cannot define a mode with a
+     * one-point score limit and instantly win.
+     */
+    readonly rules?: MatchRulesWire;
   }
   | { readonly t: 'leaveMatch' }
   | { readonly t: 'input'; readonly frame: InputFrame }
@@ -212,6 +221,19 @@ export type S2C =
   | { readonly t: 'respawned'; readonly pos: Vec3; readonly yaw: number }
   /** Someone died — feeds the killfeed. */
   | { readonly t: 'killfeed'; readonly entry: KillfeedWire };
+
+/**
+ * The tunable subset of a game mode, as a custom match sends it.
+ *
+ * Every field is clamped server-side. The client proposes; the server
+ * decides -- the same rule that governs everything else on this wire.
+ */
+export interface MatchRulesWire {
+  readonly scoreLimit?: number;
+  readonly timeLimitSeconds?: number;
+  readonly maxPlayers?: number;
+  readonly respawnDelaySeconds?: number;
+}
 
 /** One row of the scoreboard. */
 export interface ScoreRowWire {

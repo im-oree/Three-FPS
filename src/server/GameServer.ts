@@ -42,7 +42,9 @@ import { CombatSystem } from './systems/CombatSystem';
 import { AISystem } from './systems/AISystem';
 import { KillstreakSystem } from './systems/KillstreakSystem';
 import { MatchSystem } from './systems/MatchSystem';
-import { getGameMode, type GameModeDefinition } from './GameModes';
+import {
+  customise, getGameMode, sanitiseOverrides, type GameModeDefinition,
+} from './GameModes';
 import { NameAuthority, NameRandom } from './Identity';
 import { hashString, pickTier } from './ai/BotProfile';
 import { SeededRandom } from './ai/Difficulty';
@@ -298,7 +300,13 @@ export class GameServer {
 
       case 'joinMatch': {
         connection.joined = true;
-        this.startMatch(msg.levelId, msg.modeId);
+        // A custom match is the SAME mode definition with a clamped patch
+        // applied -- there is no separate custom-match code path, which is
+        // what makes every setting work rather than each needing plumbing.
+        const custom = msg.rules
+          ? customise(getGameMode(msg.modeId ?? 'ffa'), sanitiseOverrides(msg.rules))
+          : undefined;
+        this.startMatch(msg.levelId, msg.modeId, custom);
         const spawn = this.world.addPlayer(connection.id, msg.loadout);
         // A human is a player exactly as a bot is: same name authority, same
         // scoreboard, same spawn selection. Without this registration the
@@ -397,11 +405,23 @@ export class GameServer {
   // --- match lifecycle -----------------------------------------------------
 
   startMatch(levelId: string, modeId?: string, mode?: GameModeDefinition): void {
-    if (this.levelId === levelId && this.running) return;
+    // Re-joining a match already running on this level AND these rules is a
+    // no-op (a second client joining must not restart the match). But a
+    // different mode, or a custom rule set, IS a different match -- checking
+    // only the level meant replaying the same map as Team Deathmatch
+    // silently kept the previous match's free-for-all rules.
+    const requested = mode ?? getGameMode(modeId ?? this.match.getMode().id);
+    const current = this.match.getMode();
+    const sameRules = current.id === requested.id
+      && current.scoreLimit === requested.scoreLimit
+      && current.timeLimitSeconds === requested.timeLimitSeconds
+      && current.maxPlayers === requested.maxPlayers
+      && current.respawnDelaySeconds === requested.respawnDelaySeconds;
+    if (this.levelId === levelId && this.running && sameRules) return;
     // The mode has to be set BEFORE onMatchStart, because the match system
     // reads its time limit there. `mode` wins over `modeId` so a custom match
     // can pass an edited definition rather than a registry lookup.
-    this.match.setMode(mode ?? getGameMode(modeId ?? this.match.getMode().id));
+    this.match.setMode(requested);
     // A new match must never inherit the previous one's state. This is the
     // reset seam the client used to do by hand in quitToMenu(), and doing it
     // here means it cannot be forgotten by a caller.

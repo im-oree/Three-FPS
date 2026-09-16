@@ -23,6 +23,7 @@ import { TrainingDummy } from './TrainingDummy';
 import { getLevel, LEVELS, type LevelDefinition } from './LevelDefinition';
 import MapBuilder from './MapBuilder';
 import HDRISkyManager from './HDRISkyManager';
+import { getWeather, tintColour } from './Weather';
 import calloutZoneRegistry from '../world/CalloutZoneRegistry';
 import RAPIER from '@dimforge/rapier3d-compat';
 import { LAYER, setLayerRecursive } from '../core/RenderLayers';
@@ -76,6 +77,8 @@ export class LevelLoader {
   get currentDefinition(): LevelDefinition | null { return this.definition; }
   /** Stashed while an aerial view suppresses fog (Document I §6). */
   private suppressedFog: THREE.Scene["fog"] = null;
+  /** Active weather preset id, or null for the level's own look. */
+  private weatherId: string | null = null;
   private readonly dummies: TrainingDummy[] = [];
   private readonly disposables: Array<THREE.BufferGeometry | THREE.Material> = [];
   private readonly colliderHandles: number[] = [];
@@ -151,13 +154,29 @@ export class LevelLoader {
     for (const lod of this.lodNodes) lod.update(camera);
   }
 
+  /**
+   * Which weather preset the next load uses.
+   *
+   * Set before `load()`. Deliberately not applied to an already-loaded level:
+   * changing the weather mid-match would mean rebuilding lights and fog while
+   * players are shooting, and no mode needs that.
+   */
+  setWeather(id: string | null): void {
+    this.weatherId = id;
+  }
+
   async load(levelId: string): Promise<LevelDefinition> {
     this.unloadCurrentLevel();
     const def = getLevel(levelId);
     this.definition = def;
 
-    this.scene.background = new THREE.Color(def.skyColor);
-    this.scene.fog = new THREE.FogExp2(def.skyColor, def.fogDensity);
+    // Weather is a presentation layer OVER the level's own palette, applied
+    // as tints and multipliers rather than absolute values, so a preset works
+    // on every map instead of flattening each level's look into one.
+    const weather = getWeather(this.weatherId);
+    const sky = tintColour(def.skyColor, weather.skyTint);
+    this.scene.background = new THREE.Color(sky);
+    this.scene.fog = new THREE.FogExp2(sky, def.fogDensity * weather.fogScale);
 
     this.buildLights(def);
     // Each phase reports honestly as it completes. Yielding between phases
@@ -256,12 +275,17 @@ export class LevelLoader {
   }
 
   private buildLights(def: LevelDefinition): void {
+    const weather = getWeather(this.weatherId);
     // Ambient fill as well as the hemisphere: pure hemi + sun leaves every
     // surface facing away from the sun almost black, which made the first
     // playable build unreadable.
-    this.levelRoot.add(new THREE.AmbientLight(0x8e97a8, 0.55));
-    const hemi = new THREE.HemisphereLight(0xaab4c4, 0x4a4740, def.hemiIntensity);
-    const sun = new THREE.DirectionalLight(0xfff2e0, def.sunIntensity);
+    this.levelRoot.add(new THREE.AmbientLight(0x8e97a8, 0.55 * weather.ambientScale));
+    const hemi = new THREE.HemisphereLight(
+      0xaab4c4, 0x4a4740, def.hemiIntensity * weather.ambientScale,
+    );
+    const sun = new THREE.DirectionalLight(
+      0xfff2e0, def.sunIntensity * weather.sunScale,
+    );
     sun.position.set(18, 34, 12);
     sun.castShadow = true;
     this.levelRoot.add(hemi, sun);
