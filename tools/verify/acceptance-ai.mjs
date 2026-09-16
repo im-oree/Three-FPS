@@ -656,5 +656,52 @@ console.log('\n[15] Decisions last long enough to mean something');
   server.shutdown();
 }
 
+// --- [16] Pathfinding stays inside the frame budget -----------------------
+// Prototype is a 520 m map: 67,340 nav cells, 61,923 of them walkable. It is
+// the worst case in the game and the one that exposed both costs below.
+console.log('\n[16] Navigation scales to the biggest map');
+{
+  const t0 = Date.now();
+  const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+  let fire = () => {};
+  server.accept({
+    onMessage: (f) => { fire = f; return () => {}; },
+    onClose: () => () => {}, send: () => {}, close: () => {},
+  });
+  fire({ t: 'joinMatch', levelId: 'prototype', modeId: 'ffa' });
+  await server.whenLevelReady();
+  const loadMs = Date.now() - t0;
+
+  // Was 10.7 s: every one of the 67,340 cells walked a column of raycasts
+  // looking for the floor under a roof, on a map that is mostly open sky.
+  // Cells with no box overhead now take a single terrain height lookup.
+  check('the biggest map builds its navigation without stalling the server',
+    loadMs < 6000,
+    `prototype ready in ${(loadMs / 1000).toFixed(1)} s`);
+
+  server.match.beginLive?.();
+  const times = [];
+  for (let i = 0; i < 900; i += 1) {
+    const a = performance.now();
+    server.update(1 / 60);
+    times.push(performance.now() - a);
+  }
+  times.sort((x, y) => x - y);
+  const p99 = times[Math.floor(times.length * 0.99)];
+  const overBudget = times.filter((t) => t > 16.7).length;
+  // Two costs used to live here. A* kept its open set in a plain array -- a
+  // linear min-scan plus an includes() per expansion, so a search over
+  // 61,923 cells was O(n^2) and spiked 65 ms every 40 ticks. And every agent
+  // repathing on the same tick cost 227 ms in one hitch. A binary heap fixed
+  // the first; a shared per-tick node budget spread the second.
+  check('pathfinding stays inside the frame budget',
+    p99 < 16.7,
+    `p99 ${p99.toFixed(1)} ms with ${server.ai.agentIds.length} agents`);
+  check('a busy map does not stutter',
+    overBudget <= 2,
+    `${overBudget} of ${times.length} ticks over one frame`);
+  server.shutdown();
+}
+
 console.log(`\nAI ACCEPTANCE: ${passed}/${passed + failed} checks passed`);
 process.exit(failed === 0 ? 0 : 1);

@@ -24,7 +24,7 @@ import type { CollisionWorld } from '../CollisionWorld';
 import type { ServerSystem } from '../ServerSystem';
 import type { ServerWorld } from '../ServerWorld';
 import { AgentController, type AgentOptions } from '../ai/AgentController';
-import { NavGrid } from '../ai/Navigation';
+import { resetPathBudget, NavGrid } from '../ai/Navigation';
 import { setNavGrid } from '../ai/NavContext';
 import { SquadBlackboard } from '../ai/SquadBlackboard';
 
@@ -94,6 +94,11 @@ export class AISystem implements ServerSystem {
   tick(_dt: number, world: ServerWorld): void {
     if (this.agents.size === 0) return;
     this.tickCount += 1;
+    // Fresh pathfinding allowance for this tick. Without it, every agent
+    // repathing on the same tick (which happens on the first tick of a
+    // match, and whenever a map-wide event moves everyone) costs hundreds of
+    // milliseconds in one hitch.
+    resetPathBudget();
 
     const humans = collectHumanPositions(world, this.agents);
     let rayBudget = RAY_BUDGET_PER_TICK;

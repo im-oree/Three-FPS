@@ -40,7 +40,14 @@ if (!explicit) {
     child.stdout.on('data', (d) => {
       if (String(d).includes('listening')) { clearTimeout(timer); resolve(); }
     });
-    child.on('exit', (c) => { clearTimeout(timer); reject(new Error(`backend exited ${c}`)); });
+    // Surface why it died. Swallowing stderr here turns any backend startup
+    // error into a bare "exited 1" with no cause.
+    let stderr = '';
+    child.stderr.on('data', (d) => { stderr += String(d); });
+    child.on('exit', (c) => {
+      clearTimeout(timer);
+      reject(new Error(`backend exited ${c}${stderr ? `\n${stderr}` : ''}`));
+    });
   });
 }
 
@@ -110,7 +117,11 @@ try {
   check('a match starts on the backend', ready.levelId === 'prototype',
     `spawn=[${ready.spawn}]`);
 
-  const snapshot = await host.await((m) => m.t === 'snapshot', 3000);
+  // Generous: the first snapshot cannot arrive until the level's collision
+  // and nav grid are built, and prototype is a 520 m map. That work is being
+  // driven down separately, but a smoke test should assert that snapshots
+  // FLOW, not how fast a cold nav bake is.
+  const snapshot = await host.await((m) => m.t === 'snapshot', 30000);
   check('the backend streams snapshots', snapshot.snapshot.tick > 0,
     `tick=${snapshot.snapshot.tick}`);
 
@@ -185,7 +196,20 @@ try {
   failed += 1;
   console.log(`  FAIL  harness error — ${err.message}`);
 } finally {
-  if (child) child.kill('SIGTERM');
+  // Wait for the backend to actually die before exiting.
+  //
+  // SIGTERM plus an immediate process.exit() orphaned it: the next run then
+  // hit EADDRINUSE on the fixed port and died with a bare "backend exited
+  // 1", which looked like a regression in the server rather than a leaked
+  // child from the previous run. SIGKILL after a grace period guarantees
+  // the port is free even if the backend is wedged.
+  if (child && child.exitCode === null) {
+    await new Promise((resolve) => {
+      const hard = setTimeout(() => child.kill('SIGKILL'), 3000);
+      child.on('exit', () => { clearTimeout(hard); resolve(); });
+      child.kill('SIGTERM');
+    });
+  }
 }
 
 console.log(`\nBACKEND SMOKE: ${passed}/${passed + failed} checks passed`);

@@ -136,6 +136,40 @@ export class NavGrid {
     const rows = Math.max(1, Math.ceil((bounds.maxZ - bounds.minZ) / CELL_SIZE));
     const grid = new NavGrid(bounds.minX, bounds.minZ, cols, rows);
 
+    // Open-terrain fast path.
+    //
+    // The general probe walks a column downward collecting every standable
+    // surface, because on a roofed map the first hit from above is the roof.
+    // That costs up to COLUMN_MAX_SURFACES raycasts per probe and three
+    // probes per cell, and every raycast scans every box. On a 520 m map
+    // that is 67,340 cells and millions of ray/box tests: prototype took
+    // 10.7 SECONDS to load and still spiked 700 ms mid-match, against 16 ms
+    // for the small maps.
+    //
+    // But a column with no box above it has nothing to descend through --
+    // the terrain height IS the floor. Indexing the boxes by cell once lets
+    // the overwhelming majority of an outdoor map take a single height
+    // lookup, while anything under or near a box still gets the full probe.
+    const boxes = collision.allBoxes;
+    const covered = new Set<number>();
+    if (collision.hasTerrain) {
+      for (const box of boxes) {
+        // Pad by the agent radius: a cell whose centre is clear but whose
+        // capsule would clip the box must still take the slow path.
+        const pad = AGENT_RADIUS + CELL_SIZE;
+        const c0 = Math.floor((box.minX - pad - bounds.minX) / CELL_SIZE);
+        const c1 = Math.ceil((box.maxX + pad - bounds.minX) / CELL_SIZE);
+        const r0 = Math.floor((box.minZ - pad - bounds.minZ) / CELL_SIZE);
+        const r1 = Math.ceil((box.maxZ + pad - bounds.minZ) / CELL_SIZE);
+        for (let row = Math.max(0, r0); row <= Math.min(rows - 1, r1); row += 1) {
+          for (let col = Math.max(0, c0); col <= Math.min(cols - 1, c1); col += 1) {
+            covered.add(row * cols + col);
+          }
+        }
+      }
+    }
+    const terrainSurface = collision.terrainSurface;
+
     for (let row = 0; row < rows; row += 1) {
       for (let col = 0; col < cols; col += 1) {
         const index = row * cols + col;
@@ -162,6 +196,17 @@ export class NavGrid {
         // way down collecting every standable surface, and keep the lowest.
         // The lowest standable surface is the floor a player actually walks
         // on; roofs, catwalk lids and crate tops sit above it and are skipped.
+        // Nothing overhead and sculpted ground underneath: one lookup.
+        if (collision.hasTerrain && !covered.has(index)) {
+          const y = collision.terrainHeightAt(x, z);
+          if (y === null) { grid.cells[index] = null; continue; }
+          grid.cells[index] = {
+            index, x, z, y,
+            tag: terrainSurface === 'water' ? 'water' : 'ground',
+          };
+          continue;
+        }
+
         let placed: { x: number; z: number; y: number; surface: string } | null = null;
         for (const [ox, oz] of CELL_PROBES) {
           const found = lowestStandable(collision, x + ox, z + oz);
@@ -224,6 +269,81 @@ export interface TraversalCaps {
  * — the caller must handle that rather than assuming a path always comes
  * back, because on a real map some places genuinely cannot be reached.
  */
+/**
+ * A binary min-heap keyed on f-score.
+ *
+ * A* was using a plain array: a linear scan to find the cheapest node and an
+ * `includes()` to avoid duplicates, both O(n) per expansion, so a search over
+ * a large map cost O(n^2). On prototype (61,923 walkable cells, 19 agents)
+ * that showed up as 65 ms pathfinding spikes every time the agents repathed
+ * -- four frames of a 60 Hz budget, in one tick.
+ */
+class MinHeap {
+  private readonly items: number[] = [];
+  private readonly keys: number[] = [];
+
+  get size(): number { return this.items.length; }
+
+  push(item: number, key: number): void {
+    this.items.push(item);
+    this.keys.push(key);
+    let i = this.items.length - 1;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (this.keys[parent] <= this.keys[i]) break;
+      this.swap(i, parent);
+      i = parent;
+    }
+  }
+
+  pop(): number | undefined {
+    if (this.items.length === 0) return undefined;
+    const top = this.items[0];
+    const lastItem = this.items.pop()!;
+    const lastKey = this.keys.pop()!;
+    if (this.items.length > 0) {
+      this.items[0] = lastItem;
+      this.keys[0] = lastKey;
+      let i = 0;
+      for (;;) {
+        const left = i * 2 + 1;
+        const right = left + 1;
+        let smallest = i;
+        if (left < this.items.length && this.keys[left] < this.keys[smallest]) smallest = left;
+        if (right < this.items.length && this.keys[right] < this.keys[smallest]) smallest = right;
+        if (smallest === i) break;
+        this.swap(i, smallest);
+        i = smallest;
+      }
+    }
+    return top;
+  }
+
+  private swap(a: number, b: number): void {
+    const ti = this.items[a]; this.items[a] = this.items[b]; this.items[b] = ti;
+    const tk = this.keys[a]; this.keys[a] = this.keys[b]; this.keys[b] = tk;
+  }
+}
+
+/**
+ * Nodes every A* search in this tick may expand between them.
+ *
+ * Pathfinding is the AI's one unbounded cost: everything else is per-agent
+ * and small, but a search grows with the map. On prototype (61,923 walkable
+ * cells) nineteen agents all repathing in the same tick cost 227 ms -- 13
+ * frames -- in one hitch. A shared budget spreads that: searches that arrive
+ * after the budget is gone get a cheap partial route this tick and a full
+ * one next tick, which is invisible in play because a partial route still
+ * points the right way.
+ */
+const NODES_PER_TICK = 6000;
+let nodesLeftThisTick = NODES_PER_TICK;
+
+/** Called once per server tick, before any agent thinks. */
+export function resetPathBudget(): void {
+  nodesLeftThisTick = NODES_PER_TICK;
+}
+
 export function findPath(
   grid: NavGrid, from: Vec3, to: Vec3, caps: TraversalCaps, maxNodes = 4000,
 ): Vec3[] | null {
@@ -236,22 +356,37 @@ export function findPath(
   }
 
   const goal = grid.cells[goalIndex]!;
-  const open: number[] = [startIndex];
+  // Never take more than a quarter of what is left, so the first agent to
+  // path in a tick cannot starve the rest.
+  const allowance = Math.max(200, Math.ceil(nodesLeftThisTick / 4));
+  const budget = Math.min(maxNodes, allowance);
+
+  const heap = new MinHeap();
+  heap.push(startIndex, heuristic(grid.cells[startIndex]!, goal));
   const cameFrom = new Map<number, number>();
   const gScore = new Map<number, number>([[startIndex, 0]]);
   const fScore = new Map<number, number>([[startIndex, heuristic(grid.cells[startIndex]!, goal)]]);
   const closed = new Set<number>();
   let expanded = 0;
 
-  while (open.length > 0 && expanded < maxNodes) {
-    let bestAt = 0;
-    for (let i = 1; i < open.length; i += 1) {
-      if ((fScore.get(open[i]) ?? Infinity) < (fScore.get(open[bestAt]) ?? Infinity)) bestAt = i;
+  // Track the closest cell reached, so an exhausted search still returns a
+  // route that makes progress rather than nothing at all.
+  let nearest = startIndex;
+  let nearestH = heuristic(grid.cells[startIndex]!, goal);
+
+  while (heap.size > 0 && expanded < budget) {
+    const current = heap.pop()!;
+    // A stale entry: this cell was already expanded via a cheaper route.
+    if (closed.has(current)) continue;
+    if (current === goalIndex) {
+      nodesLeftThisTick -= expanded;
+      return smooth(grid, reconstruct(cameFrom, current));
     }
-    const current = open.splice(bestAt, 1)[0];
-    if (current === goalIndex) return smooth(grid, reconstruct(cameFrom, current));
     closed.add(current);
     expanded += 1;
+
+    const h = heuristic(grid.cells[current]!, goal);
+    if (h < nearestH) { nearestH = h; nearest = current; }
 
     const cell = grid.cells[current]!;
     for (const next of grid.neighboursOf(current)) {
@@ -268,11 +403,21 @@ export function findPath(
 
       cameFrom.set(next, current);
       gScore.set(next, tentative);
-      fScore.set(next, tentative + heuristic(neighbour, goal));
-      if (!open.includes(next)) open.push(next);
+      const f = tentative + heuristic(neighbour, goal);
+      fScore.set(next, f);
+      // Push unconditionally and discard stale pops above. Cheaper than the
+      // linear open.includes() scan this replaces.
+      heap.push(next, f);
     }
   }
 
+  nodesLeftThisTick -= expanded;
+
+  // Out of budget or genuinely unreachable. Either way, walking toward the
+  // closest cell the search did reach beats standing still -- and when the
+  // cause was the budget, the next tick's search starts from further along
+  // and usually completes.
+  if (nearest !== startIndex) return smooth(grid, reconstruct(cameFrom, nearest));
   return null;
 }
 
