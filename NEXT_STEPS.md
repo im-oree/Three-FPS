@@ -2,28 +2,59 @@
 
 The user's ordering is explicit; later items must not jump the queue.
 
-1. **Killstreak migration to the server** (Item 7, next system), 12 end-to-end
-   tests, then a UI polish pass.
+1. ~~**Killstreak migration to the server**~~ — DONE (`308742b`),
+   `verify:killstreaks` 20/20.
 2. **AI: rigorous testing and tuning across different situations.**
 3. **Game modes system** — only after 1 and 2.
 
 Map/presentation work folded in alongside:
 
-- [ ] `prototype` must never be picked by QUICK PLAY / random / any game mode.
-      It loads ONLY when explicitly clicked in the map list.
-- [ ] Replace `warehouse` with a 1:1 **Killhouse** (COD4 / CODM), renamed.
-      Build the warehouse SHELL with the shell builder, then walls/boxes/props
-      with the existing builders. Roof system with real colliders; all map
-      boundaries sealed.
-- [ ] **Per-map camera angles** for previews — planned per map, showing each
-      map at its best, not one aerial angle for all. Fix the washed-out colour.
+- [x] `prototype` never picked by QUICK PLAY / random. Implemented as an
+      `excludeFromRotation` flag plus an exported `ROTATION_LEVELS`; random
+      callers use that, never `LEVELS`. Verified in the browser.
+- [x] Replace `warehouse` with a 1:1 **Killhouse**. Built from
+      `tools/lib/KillhouseLayout.js` (floor plan as data) via
+      `tools/generateKillhouseShell.js`, on the existing shell builders.
+      150 colliders, sealed on all sides, `verify:killhouse` 26/26.
+- [x] **Per-map camera angles** for previews — a `PLANS` table in
+      `tools/generateMapPreviews.mjs`, including an INTERIOR camera for
+      Killhouse. Washed-out colour fixed (warmer key + rim light, fog pushed
+      from 0.35 to 0.55 of `far`, brightness lift for dark-skied maps).
+      Also fixed: previews shot with culling driven by the GAME camera, which
+      had been silently deleting geometry from every preview.
 - [ ] **Skybox system** integrated into every map that lacks it.
-- [ ] Killhouse roof: realistic **broken/missing roof panels** that open real
-      firing lanes for aerial streaks (matches the real map, whose roof has
-      giant window bays for exactly this reason).
-- [ ] Missile: **higher start altitude / longer approach** so the player has
-      time to plan a strike.
-- [ ] End-to-end test proving a missile can actually kill someone.
+- [x] Killhouse roof: 12 bays (10 clerestory + 2 collapsed) over 470
+      visual panels. Colliders merged into per-strip runs — 564 -> 150,
+      because the server linear-scans `boxes[]` on every raycast and a
+      piloted missile raycasts every tick. Proven both ways: a strike into
+      solid roof is stopped, a strike through a bay is not.
+- [x] Missile start altitude 210 -> 330 m, standoff 46 -> 62,
+      flight budget 9 -> 14 s.
+- [x] End-to-end kill test: a strike called through the centre bay kills a
+      player standing under it (149 damage, lethal) while a player under
+      solid roof on the far side is untouched. In `verify:killhouse`.
+
+### Still open
+
+- [ ] **Skybox system** integrated into every map that lacks it.
+- [ ] Killhouse is currently lit by the tropical HDRI borrowed from Firing
+      Range; it should get its own overcast UK sky.
+
+## Bugs found while building Killhouse (all fixed in `b0e7a9f`)
+
+These were pre-existing and affected every map, not just the new one:
+
+1. `CollisionWorld.raycast` returned **NaN distances** for axis-aligned rays.
+   The slab method divides by the direction component, so a ray with a zero
+   component starting exactly on that face's plane computes `0/0`. Every
+   comparison against NaN is false, so the guard clauses accepted the box and
+   reported a hit on geometry nowhere near the ray.
+2. `Perception` used forward `(-sin, -cos)` while the movement basis is
+   `(-sin, +cos)` — **the FOV cone pointed behind the bot.** Bots could only
+   notice enemies they had their back to. The AI suite passed because its own
+   fixture placed the target behind the bot, matching the bug.
+3. Map previews rendered with **culling still driven by the game camera**, so
+   anything outside the player's view was switched off mid-shoot.
 
 ## Research already done (Killhouse)
 
