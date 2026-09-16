@@ -14,12 +14,13 @@
  * The gun that does 35 damage on screen does 35 damage here, necessarily.
  */
 import type { ServerSystem } from '../ServerSystem';
-import type { ServerWorld, ServerPlayer } from '../ServerWorld';
+import type { ServerWorld, ServerPlayer, ServerEntity } from '../ServerWorld';
 import type { CollisionWorld } from '../CollisionWorld';
 import { Button, type EntityId, type PlayerId, type Vec3 } from '../../net/Protocol';
 import { PLAYER } from '../../utils/Constants';
 import { SERVER_WEAPONS, type ServerWeapon } from '../WeaponStats';
 import type { DamageSystem } from './DamageSystem';
+import { bodyOfEntity, intersectBody } from '../Bodies';
 
 /**
  * Hit zones as fractions of capsule height, measured from the feet.
@@ -151,7 +152,24 @@ export class CombatSystem implements ServerSystem {
     const wall = this.collision.raycast(eye, dir, weapon.maxRange);
     const limit = wall ? wall.distance : weapon.maxRange;
 
-    // Then players, nearest first, but only those in front of the wall.
+    // Then bodies, nearest first, but only those in front of the wall.
+    //
+    // Entities are tested with the same ray as players. Before this, a
+    // helicopter was invincible scenery: bullets went straight through
+    // anything that was not a player, so no killstreak could ever be shot
+    // down and the training dummies could not be shot at all.
+    let bestEntity: { entity: ServerEntity; distance: number } | null = null;
+    for (const entity of world.allEntities) {
+      if (entity.owner === shooter.id && entity.kind === 'care_package') continue;
+      const body = bodyOfEntity(entity);
+      if (!body) continue;
+      const distance = intersectBody(eye, dir, body, limit);
+      if (distance === null) continue;
+      if (!bestEntity || distance < bestEntity.distance) {
+        bestEntity = { entity, distance };
+      }
+    }
+
     let best: { player: ServerPlayer; distance: number; zone: HitZone } | null = null;
     for (const target of world.allPlayers) {
       if (target.id === shooter.id || !target.alive) continue;
@@ -160,6 +178,30 @@ export class CombatSystem implements ServerSystem {
       if (!best || hit.distance < best.distance) {
         best = { player: target, distance: hit.distance, zone: hit.zone };
       }
+    }
+
+    // An entity in front of the nearest player takes the bullet instead.
+    if (bestEntity && (!best || bestEntity.distance < best.distance)) {
+      const point: Vec3 = [
+        eye[0] + dir[0] * bestEntity.distance,
+        eye[1] + dir[1] * bestEntity.distance,
+        eye[2] + dir[2] * bestEntity.distance,
+      ];
+      world.raiseFx({ t: 'tracer', from: eye, to: point, weaponId: weapon.id });
+      const outcome = this.damage.apply(world, {
+        target: bestEntity.entity,
+        targetKind: 'entity',
+        amount: falloffDamage(weapon, bestEntity.distance),
+        type: 'bullet',
+        source: shooter.id,
+        at: point,
+      });
+      world.raiseFx({ t: 'hitMarker', lethal: outcome.lethal });
+      this.resolved.push({
+        shooter: shooter.id, victim: null, zone: null, damage: outcome.applied,
+        distance: bestEntity.distance, point, lethal: false,
+      });
+      return;
     }
 
     if (!best) {
@@ -234,6 +276,16 @@ export class CombatSystem implements ServerSystem {
    */
   onPlayerSpawn(id: PlayerId): void {
     this.weapons.delete(id);
+  }
+
+  /** Current magazine and reserve, for the HUD and for tests. */
+  ammoOf(id: PlayerId): { ammo: number; reserve: number } {
+    const state = this.weapons.get(id);
+    if (!state) {
+      const weapon = SERVER_WEAPONS[this.loadoutIds.get(id) ?? 'rifle'] ?? SERVER_WEAPONS.rifle;
+      return { ammo: weapon.magazineSize, reserve: weapon.reserveAmmo };
+    }
+    return { ammo: state.ammo, reserve: state.reserve };
   }
 
   /**

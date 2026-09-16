@@ -21,6 +21,17 @@ import type { DamageSystem } from './DamageSystem';
 const JUMP_VELOCITY = Math.sqrt(2 * JUMP.GRAVITY * JUMP.DESIRED_JUMP_HEIGHT);
 
 /** Grace period after leaving a ledge during which a jump still works. */
+/**
+ * How much of an overlap is resolved per tick.
+ *
+ * Full resolution. A partial push reaches an equilibrium where the walk
+ * input exactly cancels the separation and the mover sits permanently inside
+ * the other player -- measurably closer than their two radii allow. Players
+ * who spawn exactly on top of each other are handled by the deterministic
+ * tie-break below rather than by softening this.
+ */
+const SEPARATION_STRENGTH = 1;
+
 const COYOTE_SECONDS = 0.12;
 
 /** Below this downward speed a landing is free; above it, it hurts. */
@@ -218,6 +229,16 @@ export class MovementSystem implements ServerSystem {
     player.py = result.y;
     player.pz = result.z;
 
+    // Players are solid to each other. Until this existed you could walk
+    // clean through another player, which made bodies feel like holograms
+    // and let bots stack in the same doorway.
+    //
+    // Resolved as a soft push apart rather than as a wall: Call of Duty
+    // lets you squeeze past a teammate instead of being hard-stopped by
+    // them, and a hard stop here would let one player pin another against
+    // geometry with no way out.
+    this.separateFromOthers(world, player);
+
     // Kill sideways velocity into a wall, or the player accumulates speed
     // while pressed against it and shoots off when it ends.
     if (result.hitX) player.vx = 0;
@@ -233,6 +254,39 @@ export class MovementSystem implements ServerSystem {
     } else {
       if (result.hitY && player.vy > 0) player.vy = 0; // hit a ceiling
       player.fallPeakY = Math.max(player.fallPeakY, before);
+    }
+  }
+
+  /**
+   * Push a player out of anyone they are standing inside.
+   *
+   * Only the mover is displaced, so this stays order-independent: whoever is
+   * simulated next will push themselves out in turn. Vertical overlap is
+   * required, so a player on a catwalk does not shove someone below them.
+   */
+  private separateFromOthers(world: ServerWorld, player: ServerPlayer): void {
+    const radius = PLAYER.CAPSULE_RADIUS;
+    const minimum = radius * 2;
+    for (const other of world.allPlayers) {
+      if (other.id === player.id || !other.alive) continue;
+      // No vertical overlap means no collision at all.
+      if (player.py + player.height <= other.py) continue;
+      if (other.py + other.height <= player.py) continue;
+
+      let dx = player.px - other.px;
+      let dz = player.pz - other.pz;
+      let distance = Math.hypot(dx, dz);
+      if (distance >= minimum) continue;
+
+      if (distance < 1e-4) {
+        // Exactly co-located (a shared spawn point). Pick a deterministic
+        // direction from the ids so the two do not oscillate forever.
+        const bias = player.id < other.id ? 1 : -1;
+        dx = bias; dz = 0; distance = 1;
+      }
+      const push = (minimum - distance) * SEPARATION_STRENGTH;
+      player.px += (dx / distance) * push;
+      player.pz += (dz / distance) * push;
     }
   }
 

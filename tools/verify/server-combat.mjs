@@ -293,4 +293,107 @@ const RELOAD = 32;
   ctx.server.shutdown();
 }
 
+// --- everything physical shares one collision and damage model -------------
+// Before this, only players had a body and only players could be damaged: you
+// walked through other players like holograms, and bullets passed straight
+// through helicopters, which made every killstreak invincible scenery.
+{
+  const { server, shooter, target } = await arena();
+  shooter.px = 0; shooter.py = 0; shooter.pz = 0;
+  let seq = 900;
+  for (let i = 0; i < 180; i += 1) {
+    // Pin the target so this measures collision, not a shoving match.
+    target.px = 0; target.py = 0; target.pz = 3;
+    server.world.queueInput(shooter.id, {
+      seq: seq += 1, dt: 1 / 60, moveX: 0, moveZ: 1, yaw: 0, pitch: 0, buttons: 0,
+    });
+    server.update(1 / 60);
+  }
+  const gap = Math.hypot(shooter.px - target.px, shooter.pz - target.pz);
+  check('a player cannot walk through another player',
+    gap > 0.65, `closed to ${gap.toFixed(2)} m (two radii = 0.70 m)`);
+  server.shutdown();
+}
+
+{
+  const { server, shooter } = await arena();
+  const heli = server.world.spawnEntity('helicopter', [0, 3, 12]);
+  heli.health = 300;
+  heli.maxHealth = 300;
+  shooter.px = 0; shooter.py = 0; shooter.pz = 0;
+  shooter.yaw = 0;
+  shooter.pitch = Math.atan2(3 - 1.6, 12);
+  let seq = 900;
+  for (let i = 0; i < 120; i += 1) {
+    server.world.queueInput(shooter.id, {
+      seq: seq += 1, dt: 1 / 60, moveX: 0, moveZ: 0,
+      yaw: shooter.yaw, pitch: shooter.pitch, buttons: 1,
+    });
+    server.update(1 / 60);
+  }
+  check('bullets damage a helicopter instead of passing through it',
+    heli.health < 300, `helicopter at ${heli.health}/300`);
+  check('sustained fire destroys it',
+    heli.health === 0 && !heli.alive, `health ${heli.health}, alive ${heli.alive}`);
+  server.shutdown();
+}
+
+{
+  // Health regeneration. Without it a hurt bot stayed hurt for the whole
+  // match and deadlocked on Retreat, standing still forever.
+  const { server, shooter } = await arena();
+  // Damage it through the real path so the regeneration clock is armed the
+  // way a bullet would arm it. Setting .health directly would leave the
+  // "last hit" timestamp untouched and heal immediately.
+  server.damage.apply(server.world, {
+    target: shooter, targetKind: 'player', amount: 60, type: 'bullet', source: null,
+  });
+  check('the hit landed', shooter.health === 40, `health ${shooter.health}`);
+  for (let i = 0; i < 60 * 2; i += 1) server.update(1 / 60);
+  check('no health comes back during the regeneration delay',
+    shooter.health === 40, `health ${shooter.health}`);
+
+  for (let i = 0; i < 60 * 6; i += 1) server.update(1 / 60);
+  check('health regenerates to full once the delay passes',
+    shooter.health === shooter.maxHealth, `health ${shooter.health}`);
+
+  server.damage.apply(server.world, {
+    target: shooter, targetKind: 'player', amount: 30, type: 'bullet', source: null,
+  });
+  check('a hit interrupts regeneration',
+    server.damage.secondsSinceHit(shooter.id) === 0,
+    `${server.damage.secondsSinceHit(shooter.id)} s since hit`);
+  server.shutdown();
+}
+
+{
+  // A fresh life gets a fresh weapon. Ammunition used to persist across
+  // deaths, so the lobby ran dry after about a minute and stopped fighting.
+  const { server, shooter, target } = await arena();
+  // Aim at nothing. Killing the target would resupply the shooter -- that is
+  // the scavenging rule, and it would mask the drain this is measuring.
+  target.px = 500; target.pz = 500;
+  let seq = 900;
+  for (let i = 0; i < 60 * 25; i += 1) {
+    // Keep the shooter alive: a death mid-burst would refill them and the
+    // measurement would be of the wrong life.
+    shooter.health = shooter.maxHealth;
+    shooter.alive = true;
+    target.px = 500; target.pz = 500;
+    server.world.queueInput(shooter.id, {
+      seq: seq += 1, dt: 1 / 60, moveX: 0, moveZ: 0, yaw: 0, pitch: 0, buttons: 1,
+    });
+    server.update(1 / 60);
+  }
+  const spent = server.combat.ammoOf(shooter.id);
+  check('firing actually consumes the reserve',
+    spent.reserve < 90, `reserve ${spent.reserve}`);
+
+  server.notifySpawn(shooter.id);
+  const fresh = server.combat.ammoOf(shooter.id);
+  check('respawning restores a full magazine and reserve',
+    fresh.ammo === 30 && fresh.reserve === 90, `${fresh.ammo}/${fresh.reserve}`);
+  server.shutdown();
+}
+
 report('SERVER COMBAT');

@@ -137,6 +137,16 @@ export class GameServer {
   /** The single authority on health. Every damage source routes through it. */
   readonly damage: DamageSystem;
 
+  /**
+   * Tell every system a player's life has begun.
+   *
+   * Public because respawn is driven by match events, and because tests need
+   * to reproduce a spawn without faking a death.
+   */
+  notifySpawn(id: PlayerId): void {
+    for (const system of this.systems) system.onPlayerSpawn?.(id);
+  }
+
   /** Whether joining tops the lobby up with agents. See GameServerOptions. */
   private readonly autoFill: boolean;
 
@@ -273,7 +283,7 @@ export class GameServer {
     });
     this.match.addPlayer(id, displayName);
     // First life counts as a spawn too.
-    for (const system of this.systems) system.onPlayerSpawn?.(id);
+    this.notifySpawn(id);
     this.ai.addAgent(id, { ...options, tier: rolled, loadout });
     return id;
   }
@@ -374,7 +384,7 @@ export class GameServer {
           }
         }
         this.match.addPlayer(connection.id, player?.displayName);
-        for (const system of this.systems) system.onPlayerSpawn?.(connection.id);
+        this.notifySpawn(connection.id);
         this.match.identities.bind(connection.id, {
           identityId: `identity:${connection.id}`,
           displayName: player?.displayName ?? connection.id,
@@ -849,7 +859,7 @@ export class GameServer {
         // Tell every system a life began, so per-life state (ammunition,
         // equipment, regeneration timers) is rebuilt rather than inherited
         // from the corpse.
-        for (const system of this.systems) system.onPlayerSpawn?.(event.player);
+        this.notifySpawn(event.player);
         const connection = this.connections.get(event.player);
         const player = this.world.getPlayer(event.player);
         if (connection?.joined && player) {
