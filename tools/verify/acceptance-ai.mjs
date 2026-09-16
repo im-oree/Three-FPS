@@ -559,5 +559,102 @@ console.log('\n[13] Bots actually fight on every map');
   }
 }
 
+// --- [14] Motion quality: bots move like players, not like turrets --------
+// These are the numbers that separate "a thing walking around" from "a
+// player". Each one is a bug we actually shipped and fixed.
+console.log('\n[14] Bots move like players');
+for (const levelId of ['shipment', 'killhouse', 'facility']) {
+  const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+  let fire = () => {};
+  server.accept({
+    onMessage: (f) => { fire = f; return () => {}; },
+    onClose: () => () => {}, send: () => {}, close: () => {},
+  });
+  fire({ t: 'joinMatch', levelId, modeId: 'ffa' });
+  await server.whenLevelReady();
+  server.match.beginLive?.();
+  for (let i = 0; i < 60 * 8; i += 1) server.update(1 / 60);
+
+  const ids = server.ai.agentIds;
+  const cap = Math.max(...ids.map((id) => server.ai.getAgent(id)?.profile?.maxTurnDegPerSecond ?? 0));
+  const track = new Map(ids.map((id) => {
+    const p = server.world.getPlayer(id);
+    return [id, { yaw: p.yaw, x: p.px, z: p.pz, alive: p.alive, dist: 0, worst: 0 }];
+  }));
+
+  for (let t = 0; t < 60 * 30; t += 1) {
+    server.update(1 / 60);
+    for (const id of ids) {
+      const p = server.world.getPlayer(id);
+      const r = track.get(id);
+      // A respawn is a teleport by design: it is not a turn and not travel.
+      if (p.alive && r.alive) {
+        const dy = Math.abs(((p.yaw - r.yaw + Math.PI) % (2 * Math.PI)) - Math.PI);
+        r.worst = Math.max(r.worst, dy * 60 * 180 / Math.PI);
+        r.dist += Math.hypot(p.px - r.x, p.pz - r.z);
+      }
+      r.yaw = p.yaw; r.x = p.px; r.z = p.pz; r.alive = p.alive;
+    }
+  }
+
+  const rows = [...track.values()];
+  const worst = Math.max(...rows.map((r) => r.worst));
+  // Fairness by construction: a bot may never out-turn the shared clamp.
+  // Before this was fixed a throttled bot spent its whole think interval's
+  // turn budget in one tick and hit 2240 deg/s -- a 37x human snap.
+  check(`${levelId}: no bot out-turns the human turn-rate clamp`,
+    worst <= cap + 1,
+    `worst ${worst.toFixed(0)} deg/s, clamp ${cap} deg/s`);
+
+  const stuck = rows.filter((r) => r.dist < 20).length;
+  // Bots used to jam against a wall and press forward forever, because the
+  // unstick check measured distance-to-goal, which keeps shrinking while a
+  // body slides along a wall.
+  check(`${levelId}: no bot is stuck against the level`,
+    stuck === 0,
+    `${stuck} of ${rows.length} travelled under 20 m in 30 s`);
+
+  server.shutdown();
+}
+
+// --- [15] Bots commit to a decision instead of dithering ------------------
+console.log('\n[15] Decisions last long enough to mean something');
+{
+  const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+  let fire = () => {};
+  server.accept({
+    onMessage: (f) => { fire = f; return () => {}; },
+    onClose: () => () => {}, send: () => {}, close: () => {},
+  });
+  fire({ t: 'joinMatch', levelId: 'facility', modeId: 'ffa' });
+  await server.whenLevelReady();
+  server.match.beginLive?.();
+  for (let i = 0; i < 60 * 8; i += 1) server.update(1 / 60);
+
+  const ids = server.ai.agentIds;
+  const last = new Map();
+  const lives = [];
+  for (let t = 0; t < 60 * 30; t += 1) {
+    server.update(1 / 60);
+    for (const id of ids) {
+      const cur = server.ai.getAgent(id)?.currentCapabilityId ?? null;
+      const prev = last.get(id);
+      if (prev && prev.id !== cur) {
+        if (prev.id) lives.push(t - prev.start);
+        last.set(id, { id: cur, start: t });
+      } else if (!prev) last.set(id, { id: cur, start: t });
+    }
+  }
+  lives.sort((a, b) => a - b);
+  const median = (lives[lives.length >> 1] ?? 0) / 60;
+  // Measured at 0.02-0.08 s before the fix: decisionJitter (0.18) outweighed
+  // the incumbency bonus (0.08), so near-tied capabilities swapped every
+  // tick and MoveTo was rebuilt -- losing its path -- several times a second.
+  check('a capability survives longer than a couple of ticks',
+    median >= 0.25,
+    `median capability lifetime ${median.toFixed(2)} s over ${lives.length} decisions`);
+  server.shutdown();
+}
+
 console.log(`\nAI ACCEPTANCE: ${passed}/${passed + failed} checks passed`);
 process.exit(failed === 0 ? 0 : 1);

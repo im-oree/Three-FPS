@@ -22,6 +22,12 @@ import { findPath, type NavGrid, type TraversalCaps } from '../Navigation';
 /** How close counts as having reached a waypoint. */
 const WAYPOINT_TOLERANCE = 1.4;
 /** Recompute the route if the goal drifts further than this from the plan. */
+/**
+ * Below this much movement in a tick the body counts as jammed. Walk speed
+ * is 5.4 m/s, i.e. 0.09 m per tick, so this is roughly a fifth of walking.
+ */
+const MIN_PROGRESS_PER_TICK = 0.018;
+
 const REPLAN_DISTANCE = 4;
 
 export interface MoveToOptions {
@@ -40,7 +46,17 @@ export class MoveTo implements Behaviour {
   private failed = false;
   /** Seconds spent without the distance-to-goal improving. */
   private stuckFor = 0;
-  private lastDistance = Infinity;
+  /** Movement-tech timers. Per-behaviour so each bot has its own cadence. */
+  private lastPx = 0;
+  private lastPz = 0;
+  private unstickAttempts = 0;
+  private sidestepFor = 0;
+  private sidestepDir = 1;
+  private slideFor = 0;
+  private sinceTech = 0;
+  private techGap = 3;
+  private sinceHop = 0;
+  private hopGap = 2;
 
   constructor(
     private readonly grid: NavGrid | null,
@@ -60,7 +76,53 @@ export class MoveTo implements Behaviour {
     if (moved > REPLAN_DISTANCE) this.repath(ctx);
   }
 
+  /**
+   * Slide and hop while travelling, on this bot's skill budget.
+   *
+   * Timers live on the behaviour, so the cadence is per-bot and survives
+   * across ticks; the RNG is the agent's seeded stream, so a replay of the
+   * same match moves identically.
+   */
+  private techButtons(ctx: AgentContext, sprinting: boolean, distance: number): number {
+    const { skill } = ctx;
+
+    // A slide has to be finished before anything else is considered.
+    if (this.slideFor > 0) {
+      this.slideFor -= ctx.dt;
+      return Button.Sprint | Button.Crouch;
+    }
+
+    this.sinceTech += ctx.dt;
+
+    // Slide: only worth it at sprint, with somewhere to be, and only for
+    // players who have the hands. Recruits sit at 0.05 and never qualify.
+    if (sprinting && distance > 9 && skill.slideUsageSkill > 0.15
+      && this.sinceTech > this.techGap) {
+      if (ctx.rng.next() < skill.slideUsageSkill * 0.5) {
+        this.slideFor = 0.4 + skill.slideUsageSkill * 0.35;
+        this.sinceTech = 0;
+        this.techGap = ctx.rng.range(2.5, 6.0);
+        return Button.Sprint | Button.Crouch;
+      }
+      // Failed the roll -- wait a beat before rolling again so a bot does
+      // not spam the dice every single tick.
+      this.sinceTech = this.techGap * 0.5;
+    }
+
+    // Bunny hop: pros keep momentum by hopping as they travel.
+    if (sprinting && skill.bunnyHopSkill > 0.2 && ctx.self.grounded
+      && this.sinceHop > this.hopGap) {
+      this.sinceHop = 0;
+      this.hopGap = ctx.rng.range(1.2, 3.5) / Math.max(0.2, skill.bunnyHopSkill);
+      return Button.Sprint | Button.Jump;
+    }
+    this.sinceHop += ctx.dt;
+
+    return 0;
+  }
+
   private repath(ctx: AgentContext): void {
+    // A fresh, longer route means real progress is possible again.
     this.index = 0;
     if (!this.grid) {
       // No grid (a level with no baked geometry): steer straight at the goal.
@@ -92,15 +154,50 @@ export class MoveTo implements Behaviour {
     const dz = wp[2] - self.pz;
     const distance = Math.hypot(dx, dz);
 
-    // Unstick: if progress has stalled (a doorway clipped, a prop in the way)
-    // rebuild the route rather than grinding against the obstacle forever.
-    if (distance >= this.lastDistance - 0.01) {
+    // Unstick, measured on the BODY rather than on the goal.
+    //
+    // Distance-to-goal shrinks while a bot slides along a wall, so the old
+    // check was satisfied even when the body was pinned -- killhouse bots
+    // stood pressing forward into a wall indefinitely. What matters is
+    // whether the body actually went anywhere.
+    const travelled = Math.hypot(self.px - this.lastPx, self.pz - this.lastPz);
+    this.lastPx = self.px;
+    this.lastPz = self.pz;
+
+    if (travelled < MIN_PROGRESS_PER_TICK) {
       this.stuckFor += ctx.dt;
-      if (this.stuckFor > 1.2) { this.stuckFor = 0; this.repath(ctx); return {}; }
+      if (this.stuckFor > 0.6) {
+        this.stuckFor = 0;
+        this.unstickAttempts += 1;
+        // Give up rather than grinding forever. Some goals simply cannot be
+        // walked to -- the nav grid is a 2 m approximation, so a route can
+        // clip a wall the body cannot pass. Failing here lets the capability
+        // end and the bot choose a different goal, instead of shuffling
+        // against the same corner for the rest of the match.
+        if (this.unstickAttempts > 3) { this.failed = true; return {}; }
+        this.repath(ctx);
+        // A repath alone does not help when the route is fine and the body
+        // is simply jammed on a corner. Sidestep for a moment: pick a
+        // direction, commit to it, and let the next ticks carry the body
+        // clear before resuming. This is what a human does when they clip a
+        // doorframe.
+        this.sidestepFor = 0.35;
+        this.sidestepDir = ctx.rng.next() < 0.5 ? -1 : 1;
+      }
     } else {
       this.stuckFor = 0;
     }
-    this.lastDistance = distance;
+
+    // Serve an in-progress sidestep before anything else.
+    if (this.sidestepFor > 0) {
+      this.sidestepFor -= ctx.dt;
+      return {
+        moveX: this.sidestepDir,
+        moveZ: -0.35,
+        yaw: self.yaw,
+        buttons: 0,
+      };
+    }
 
     // Yaw convention, derived from MovementSystem rather than guessed:
     // it computes wishX = moveX*cos - moveZ*sin and wishZ = moveX*sin +
@@ -129,7 +226,17 @@ export class MoveTo implements Behaviour {
     }
 
     let buttons = 0;
-    if (this.options.sprint && distance > 6) buttons |= Button.Sprint;
+    const sprinting = this.options.sprint === true && distance > 6;
+    if (sprinting) buttons |= Button.Sprint;
+
+    // Movement tech, applied to every capability that travels rather than
+    // competing with them as separate goals.
+    //
+    // This is the only locomotion path in the AI, so putting slide and hop
+    // here is what makes bots stop looking like they are on rails -- and it
+    // means a future capability gets the same hands for free. Each is gated
+    // on this bot's own skill roll, so recruits still trudge in a line.
+    buttons |= this.techButtons(ctx, sprinting, distance);
 
     return { moveX, moveZ, yaw, buttons };
   }

@@ -15,6 +15,7 @@ import type { Behaviour, Capability, InputIntent } from '../Capability';
 import { MoveTo } from '../behaviours/MoveTo';
 import { navContext } from '../NavContext';
 import { getNavGrid } from '../NavContext';
+import { findPath } from '../Navigation';
 
 /**
  * Move around the map when there is nothing better to do.
@@ -72,11 +73,28 @@ function pickPatrolPoint(ctx: AgentContext): Vec3 | null {
 
   // Sample a handful rather than scanning every cell: with a 2 m grid a large
   // map has thousands, and this runs for every idle bot.
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  //
+  // The minimum distance relaxes as attempts fail. On a small map like
+  // killhouse (24 m across) almost nothing is 12 m away AND reachable AND
+  // unclaimed, so a fixed floor left four of eleven bots with no patrol
+  // point at all -- they stood still in Patrol pressing nothing, which is
+  // exactly the "dull AI" behaviour this is meant to prevent.
+  const ATTEMPTS = 24;
+  for (let attempt = 0; attempt < ATTEMPTS; attempt += 1) {
     const cell = walkable[Math.floor(ctx.rng.next() * walkable.length)]!;
     const distance = Math.hypot(cell.x - ctx.self.px, cell.z - ctx.self.pz);
-    if (distance < 12) continue;
+    const minimum = attempt < 8 ? 12 : attempt < 16 ? 6 : 3;
+    if (distance < minimum) continue;
     const pos: Vec3 = [cell.x, cell.y, cell.z];
+    // Reachability has to be checked HERE. Nav islands are real -- killhouse
+    // has 19, mostly crate tops -- so a random walkable cell is often on a
+    // rooftop this bot cannot climb to. MoveTo would then build an empty
+    // path, finish instantly, and Patrol would restart on a new impossible
+    // cell every tick, which reads as a bot vibrating on the spot.
+    const route = findPath(
+      grid, [ctx.self.px, ctx.self.py, ctx.self.pz], pos, navContext(ctx).caps,
+    );
+    if (!route || route.length === 0) continue;
     if (!ctx.squad.claimPosition(pos, ctx.id, ctx.world.time, 6)) continue;
     return pos;
   }
@@ -196,6 +214,12 @@ export class RetreatCapability implements Capability {
       isDone(c: AgentContext): boolean {
         if (elapsed > 6) return true;
         if (!move) return elapsed > 3;
+        // Do not abandon the retreat the instant the threat lapses: threat
+        // drops the moment line of sight breaks, which is the first thing
+        // running away achieves. Ending there meant Retreat lived 0.02s and
+        // the bot bounced back into the open. Commit to actually getting
+        // out, then reassess.
+        if (elapsed < 1.5) return false;
         return move.isDone(c) || !c.needs.underThreat();
       },
     };

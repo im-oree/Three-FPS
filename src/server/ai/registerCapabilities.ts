@@ -15,6 +15,7 @@ import {
 import {
   EnterVehicleCapability, PatrolCapability, RetreatCapability,
 } from './capabilities/MovementCapabilities';
+import { DropshotCapability } from './capabilities/TechCapabilities';
 
 let registered = false;
 
@@ -28,4 +29,8 @@ export function registerBuiltinCapabilities(): void {
   CapabilityRegistry.register('Retreat', () => new RetreatCapability());
   CapabilityRegistry.register('Patrol', () => new PatrolCapability());
   CapabilityRegistry.register('EnterVehicle', () => new EnterVehicleCapability());
+
+  // Combat tech, gated on each bot's skill roll. Travel tech (slide, hop)
+  // is part of MoveTo, not a capability, so every mover inherits it.
+  CapabilityRegistry.register('Dropshot', () => new DropshotCapability());
 }

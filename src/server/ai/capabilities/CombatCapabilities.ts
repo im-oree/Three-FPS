@@ -151,6 +151,13 @@ export class HuntCapability implements Capability {
       : null;
     let chasing = lead?.id ?? null;
 
+    // An unreachable lead has to be BURNED, not just skipped. hasLead() is
+    // still true the next tick, so a Hunt that ends because it could not
+    // path restarts immediately and the bot stands still re-deciding
+    // forever -- measured as 209 starts with a 0.05s median life. Dropping
+    // the lead here makes a failed hunt fall through to Patrol instead.
+    if (!move && lead) ctx.beliefs.clearLead(lead.id);
+
     return {
       tick(c: AgentContext): InputIntent {
         if (!move) return {};
