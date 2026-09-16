@@ -40,6 +40,7 @@ import { LevelStore, type LevelFetcher } from './LevelStore';
 import { MovementSystem } from './systems/MovementSystem';
 import { CombatSystem } from './systems/CombatSystem';
 import { AISystem } from './systems/AISystem';
+import { KillstreakSystem } from './systems/KillstreakSystem';
 import { registerBuiltinCapabilities } from './ai/registerCapabilities';
 import type { AgentOptions } from './ai/AgentController';
 
@@ -99,6 +100,14 @@ export class GameServer {
     // movement must have consumed this tick's input before combat runs.
     this.combat = new CombatSystem(this.collision);
     this.addSystem(this.combat);
+    // Killstreaks run after combat so a kill scored this tick counts toward
+    // the streak this tick, and so a blast resolves against the same health
+    // values bullets just wrote.
+    this.killstreaks = new KillstreakSystem(this.collision);
+    // Kills scored by bullets feed streak progress. Injected so the streak
+    // system never imports combat, and so objective scoring can feed it too.
+    this.killstreaks.setKillSource(() => this.combat.lastShots);
+    this.addSystem(this.killstreaks);
     // AI runs last: it reads the world the other systems just produced and
     // queues input for the NEXT tick, exactly like a network client whose
     // packet arrives between frames. Registering it here rather than leaving
@@ -111,6 +120,8 @@ export class GameServer {
 
   /** Bots. Public so a room can fill empty slots. */
   readonly ai: AISystem;
+  /** Killstreak authority: earning, cooldowns and blast damage. */
+  readonly killstreaks: KillstreakSystem;
 
   /**
    * Add a bot to the match.
