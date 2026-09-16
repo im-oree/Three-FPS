@@ -201,6 +201,14 @@ export type S2C =
   | { readonly t: 'snapshot'; readonly snapshot: Snapshot }
   | { readonly t: 'killstreakState'; readonly slots: readonly KillstreakSlotState[] }
   | { readonly t: 'playerState'; readonly state: PlayerPublicState }
+  /**
+   * Everyone in the match, including you.
+   *
+   * Without this a client knows only about itself and renders an empty map
+   * full of invisible people shooting it. Sent every snapshot: positions are
+   * the one thing that is never "unchanged".
+   */
+  | { readonly t: 'playerStates'; readonly states: readonly PlayerPublicState[] }
   /** The server confirming whether the world is actually running. */
   | { readonly t: 'simulationState'; readonly running: boolean; readonly reason: string }
   | { readonly t: 'roomJoined'; readonly room: RoomInfo; readonly playerId: PlayerId }
@@ -281,6 +289,14 @@ export interface KillfeedWire {
   readonly victimName: string;
   readonly weaponId: string | null;
   readonly headshot: boolean;
+  /** Player ids, so the client can tell if either party is the local player
+   *  without comparing display names (which are not unique by construction
+   *  on the wire, only by policy). */
+  readonly killerId: string | null;
+  readonly victimId: string;
+  /** Sides, for COD's friendly/enemy colouring. */
+  readonly killerTeam: 'A' | 'B' | 'FFA' | null;
+  readonly victimTeam: 'A' | 'B' | 'FFA';
 }
 
 /** Everything a lobby needs to show about a room, and nothing more. */
@@ -301,6 +317,13 @@ export interface KillstreakSlotState {
 }
 
 export interface PlayerPublicState {
+  /**
+   * Which side this player is on, or 'FFA'.
+   *
+   * Public because everything that renders a player needs it: the killfeed
+   * colours by side, and a team mode must not draw a teammate as a target.
+   */
+  readonly team?: 'A' | 'B' | 'FFA';
   readonly id: PlayerId;
   /**
    * The name shown on nameplates, the killfeed and the scoreboard.

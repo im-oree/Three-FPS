@@ -711,4 +711,98 @@ console.log('\n[15] Starting a new match leaves nothing behind');
   server.shutdown();
 }
 
+// --- nobody moves during the countdown --------------------------------------
+// COD freezes the lobby until the round starts. This was decorative: the
+// "MATCH STARTING 3..2..1" overlay showed while bots sprinted off spawn and
+// killed each other. The second half guards the bug that hid inside the fix:
+// the countdown expiring set phase='live' inline instead of calling
+// beginLive(), so the freeze was never lifted and NOBODY could move all match.
+{
+  const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+  let fire = () => {};
+  server.accept({
+    onMessage: (f) => { fire = f; return () => {}; },
+    onClose: () => () => {},
+    send: () => {},
+    close: () => {},
+  });
+  fire({ t: 'joinMatch', levelId: 'shipment', modeId: 'ffa' });
+  await server.whenLevelReady();
+
+  const before = server.world.playerIds()
+    .map((id) => { const p = server.world.getPlayer(id); return [p.px, p.pz, p.yaw]; });
+  for (let i = 0; i < 60 * 4; i += 1) server.update(1 / 60);
+  const during = server.world.playerIds()
+    .map((id) => { const p = server.world.getPlayer(id); return [p.px, p.pz, p.yaw]; });
+
+  const movedDuring = before
+    .filter((p, i) => Math.hypot(during[i][0] - p[0], during[i][1] - p[1]) > 0.15).length;
+  check('nobody moves during the pre-match countdown',
+    movedDuring === 0, `${movedDuring} of ${before.length} players moved`);
+  check('nobody is killed during the pre-match countdown',
+    server.match.deathLog.length === 0, `${server.match.deathLog.length} deaths`);
+  // A zeroed input frame would snap every player to face north. Facing has to
+  // survive the freeze.
+  const turned = before.filter((p, i) => Math.abs(during[i][2] - p[2]) > 0.01).length;
+  check('the freeze does not reset which way players are facing',
+    turned === 0, `${turned} players spun`);
+
+  for (let i = 0; i < 60 * 20; i += 1) server.update(1 / 60);
+  const after = server.world.playerIds()
+    .map((id) => { const p = server.world.getPlayer(id); return [p.px, p.pz]; });
+  const movedAfter = during
+    .filter((p, i) => Math.hypot(after[i][0] - p[0], after[i][1] - p[1]) > 0.5).length;
+  check('the freeze lifts the moment the match goes live',
+    !server.world.frozen && movedAfter >= 4,
+    `frozen=${server.world.frozen}, ${movedAfter} of ${during.length} moved`);
+  server.shutdown();
+}
+
+// --- the client is told about everyone, not just itself ---------------------
+// The bug this guards is the one that made the game unplayable: the server
+// only ever sent `playerState` for the receiving connection, so a client knew
+// of exactly one player -- itself. The lobby was invisible. You were shot by
+// people who were never drawn.
+{
+  const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+  const sent = [];
+  let fire = () => {};
+  server.accept({
+    onMessage: (f) => { fire = f; return () => {}; },
+    onClose: () => () => {},
+    send: (msg) => sent.push(msg),
+    close: () => {},
+  });
+  fire({ t: 'joinMatch', levelId: 'shipment', modeId: 'ffa' });
+  await server.whenLevelReady();
+  for (let i = 0; i < 60; i += 1) server.update(1 / 60);
+
+  const broadcasts = sent.filter((m) => m.t === 'playerStates');
+  check('the server broadcasts every player, not just the receiver',
+    broadcasts.length > 0, `${broadcasts.length} playerStates messages`);
+
+  const last = broadcasts[broadcasts.length - 1];
+  check('the broadcast covers the whole lobby',
+    last.states.length === server.world.playerIds().length,
+    `${last.states.length} states for ${server.world.playerIds().length} players`);
+
+  // Bots must be described exactly as humans are, or the client can tell them
+  // apart and the whole "they are just players" contract is a lie.
+  const fields = new Set(last.states.flatMap((s) => Object.keys(s)));
+  check('no field on the wire identifies a player as a bot',
+    ![...fields].some((f) => /bot|ai|npc/i.test(f)), [...fields].join(','));
+
+  check('every broadcast player carries what the renderer needs',
+    last.states.every((s) => typeof s.operatorId === 'string'
+      && Array.isArray(s.pos) && typeof s.yaw === 'number'
+      && typeof s.alive === 'boolean'),
+    `sample ${JSON.stringify(last.states[0])}`.slice(0, 110));
+
+  // Operators must vary, or a lobby is eight identical bodies.
+  const operators = new Set(last.states.map((s) => s.operatorId));
+  check('the lobby uses a spread of operators',
+    operators.size >= 3, [...operators].join(','));
+  server.shutdown();
+}
+
 report('MATCH');

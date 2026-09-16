@@ -694,6 +694,10 @@ export class GameServer {
 
   private broadcastSnapshot(): void {
     const entities: EntityState[] = this.world.collectEntityStates();
+    // Built once per tick, not once per connection: the list is identical for
+    // everyone, and a 32-player lobby would otherwise rebuild it 32 times.
+    const allStates = this.world.getAllPlayerPublicStates()
+      .map((state) => ({ ...state, team: this.match.teamOf(state.id) }));
     const removed = this.world.consumeRemovedIds();
     const fx: FxEvent[] = this.world.consumeFxEvents();
 
@@ -711,6 +715,10 @@ export class GameServer {
 
       const playerState = this.world.getPlayerPublicState(connection.id);
       if (playerState) this.sendTo(connection, { t: 'playerState', state: playerState });
+
+      // ...and everyone else, or the client renders an empty map while the
+      // killfeed fills with names it has never seen a body for.
+      this.sendTo(connection, { t: 'playerStates', states: allStates });
 
       const slots = this.world.getKillstreakSlots(connection.id);
       if (slots) this.sendTo(connection, { t: 'killstreakState', slots });
@@ -778,6 +786,10 @@ export class GameServer {
           victimName: this.match.identities.nameOf(record.victim),
           weaponId: record.weaponId,
           headshot: record.headshot,
+          killerId: record.killer,
+          victimId: record.victim,
+          killerTeam: record.killer ? this.match.teamOf(record.killer) : null,
+          victimTeam: this.match.teamOf(record.victim),
         };
         for (const connection of this.connections.values()) {
           if (!connection.joined) continue;

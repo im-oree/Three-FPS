@@ -31,6 +31,9 @@ async function arena(boxes = FLOOR) {
   }
   await settle();
   server.collision.load(boxes);
+  // Put the match live: the pre-match countdown freezes input (as COD does),
+  // and this suite is testing ballistics, not the countdown.
+  server.match.beginLive();
   const [shooter, target] = [...server.world.allPlayers];
   // Both on the floor, shooter at origin, target 10 m along +Z.
   shooter.px = 0; shooter.py = 0; shooter.pz = 0; shooter.yaw = 0; shooter.pitch = 0;

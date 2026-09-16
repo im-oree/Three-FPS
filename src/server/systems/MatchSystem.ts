@@ -78,8 +78,12 @@ export interface MatchSnapshot {
 export class MatchSystem implements ServerSystem {
   readonly name = 'match';
 
+  attach(world: ServerWorld): void { this.world = world; }
+
   private mode: GameModeDefinition = FREE_FOR_ALL;
   private phase: MatchPhase = 'warmup';
+  /** Set by the server when systems are wired; used to freeze the countdown. */
+  private world: ServerWorld | null = null;
   private clock = 0;
   private countdown = 0;
 
@@ -155,6 +159,10 @@ export class MatchSystem implements ServerSystem {
   beginCountdown(): void {
     this.phase = 'countdown';
     this.countdown = this.mode.startCountdownSeconds;
+    // Nobody moves or shoots until the round starts, as in COD. Without this
+    // the "MATCH STARTING 3..2..1" overlay is decorative: bots sprint off
+    // their spawns and can be killed before the match has begun.
+    this.world?.setFrozen(true);
     this.clock = this.mode.timeLimitSeconds;
   }
 
@@ -162,6 +170,7 @@ export class MatchSystem implements ServerSystem {
   beginLive(): void {
     this.phase = 'live';
     this.countdown = 0;
+    this.world?.setFrozen(false);
     this.clock = this.mode.timeLimitSeconds;
     this.emit({ kind: 'started' });
   }
@@ -219,8 +228,11 @@ export class MatchSystem implements ServerSystem {
         this.emit({ kind: 'countdown', secondsLeft: after });
       }
       if (this.countdown <= 0) {
-        this.phase = 'live';
-        this.emit({ kind: 'started' });
+        // beginLive(), not an inline copy of it. The duplicate here set the
+        // phase and emitted the event but skipped everything else the real
+        // transition does -- most importantly lifting the countdown freeze,
+        // which left the whole lobby unable to move for the entire match.
+        this.beginLive();
       }
       return;
     }

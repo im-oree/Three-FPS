@@ -27,6 +27,8 @@ export interface GameClientEvents {
   onMatchEnded?: (reason: string) => void;
   onFx?: (events: readonly FxEvent[]) => void;
   onPlayerState?: (state: PlayerPublicState) => void;
+  /** Every player in the match, including the local one. */
+  onPlayerStates?: (states: readonly PlayerPublicState[]) => void;
   onKillstreaks?: (slots: readonly KillstreakSlotState[]) => void;
   onSimulationState?: (running: boolean, reason: string) => void;
   onRejected?: (reason: string) => void;
@@ -57,6 +59,8 @@ export class GameClient {
   private previous: Snapshot | null = null;
   /** Entity state indexed for O(1) lookup during rendering. */
   private readonly byId = new Map<string, EntityState>();
+  /** Everyone in the match, as the server last described them. */
+  private players_: readonly PlayerPublicState[] = [];
 
   private playerId: string | null = null;
   private welcomed = false;
@@ -193,6 +197,11 @@ export class GameClient {
         this.events.onPlayerState?.(msg.state);
         break;
 
+      case 'playerStates':
+        this.players_ = msg.states;
+        this.events.onPlayerStates?.(msg.states);
+        break;
+
       case 'killstreakState':
         this.events.onKillstreaks?.(msg.slots);
         break;
@@ -233,6 +242,9 @@ export class GameClient {
   get tick(): number { return this.latest?.tick ?? 0; }
   get serverTime(): number { return this.latest?.time ?? 0; }
   get snapshot(): Snapshot | null { return this.latest; }
+
+  /** Everyone in the match. Empty until the first snapshot arrives. */
+  get players(): readonly PlayerPublicState[] { return this.players_; }
   /** Latest scoreboard/clock/phase, or null before the first one arrives. */
   get match(): MatchStateWire | null { return this.matchState; }
   get previousSnapshot(): Snapshot | null { return this.previous; }

@@ -36,6 +36,9 @@ export class LoadingScreen implements Screen {
   private readonly pct = div('deploy__pct', '0%');
   private readonly stageLabel = div('deploy__stage', 'Preparing');
   private readonly mapName = el('h1', 'deploy__map');
+  /** The mode being deployed into. COD names the mode on its loading screen;
+   *  "deploying to Shipment" alone does not say what you are about to play. */
+  private readonly modeName = div('deploy__mode');
   private readonly mapDesc = div('deploy__desc');
   private readonly fallback = div('deploy__fallback', 'Click anywhere to deploy');
 
@@ -56,6 +59,7 @@ export class LoadingScreen implements Screen {
     panel.append(
       div('deploy__kicker', 'DEPLOYING TO'),
       this.mapName,
+      this.modeName,
       this.mapDesc,
       bar,
       foot,
@@ -101,6 +105,12 @@ export class LoadingScreen implements Screen {
     // The generated aerial preview. Compulsory for every map: the generator's
     // --verify mode fails when one is missing.
     this.backdrop.style.backgroundImage = `url('${previewUrl(levelId)}')`;
+  }
+
+  /** The game mode this deployment is for. */
+  setMode(displayName: string | null): void {
+    this.modeName.textContent = displayName ? displayName.toUpperCase() : '';
+    this.modeName.style.display = displayName ? '' : 'none';
   }
 
   /** Back-compat for callers that only have a name. */

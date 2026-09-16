@@ -100,6 +100,21 @@ export class ServerWorld {
   /** Entities destroyed this tick, so the client can release its visuals. */
   private readonly removed: EntityId[] = [];
 
+  /**
+   * Whether players may act at all.
+   *
+   * False during the pre-match countdown, as in Call of Duty: the round has
+   * not begun, so nobody moves and nobody shoots. It lives on the world
+   * rather than in MatchSystem because the systems that must obey it
+   * (movement, combat) already receive the world and deliberately know
+   * nothing about scoring.
+   */
+  private inputsFrozen = false;
+
+  get frozen(): boolean { return this.inputsFrozen; }
+
+  setFrozen(frozen: boolean): void { this.inputsFrozen = frozen; }
+
   private tickNumber = 0;
   private timeSeconds = 0;
 
@@ -307,6 +322,21 @@ export class ServerWorld {
       ...(p.vehicleId && p.vehicleSeat
         ? { vehicle: { id: p.vehicleId, seat: p.vehicleSeat } } : {}),
     };
+  }
+
+  /**
+   * Public state for EVERY player in the match.
+   *
+   * The renderer needs all of them, not just the local one: a client that is
+   * only told about itself draws an empty map.
+   */
+  getAllPlayerPublicStates(): PlayerPublicState[] {
+    const out: PlayerPublicState[] = [];
+    for (const id of this.players.keys()) {
+      const state = this.getPlayerPublicState(id);
+      if (state) out.push(state);
+    }
+    return out;
   }
 
   getKillstreakSlots(id: PlayerId): KillstreakSlotState[] | null {

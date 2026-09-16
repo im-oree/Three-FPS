@@ -28,6 +28,11 @@ async function makeServer(boxes = FLOOR) {
   pair.client.send({ t: 'joinMatch', levelId: 'test' });
   await settle();
   server.collision.load(boxes);
+  // Skip the pre-match countdown. A real match freezes every player until the
+  // round starts (as COD does), and this suite is testing movement mechanics,
+  // not the countdown -- so it puts the match live exactly as the countdown
+  // expiring would.
+  server.match.beginLive();
   const id = [...server.world.allPlayers][0].id;
   return { server, client: pair.client, player: server.world.getPlayer(id), id };
 }

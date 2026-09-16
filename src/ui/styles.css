@@ -558,6 +558,19 @@ input[type='checkbox'] { pointer-events: auto; width: 17px; height: 17px; accent
 /* Any HUD layer can be suppressed for a cinematic without losing its own
    PLAYING-state gating — the two rules compose rather than fight. */
 .hud--suppressed { display: none !important; }
+/* In-match HUD, shown outside a match. The scoreboard, clock and killfeed
+   are not part of the main menu or the loading screen. */
+.hud--offmatch { display: none !important; }
+
+/* Loading screen: the mode, under the map name. */
+.deploy__mode {
+  margin-top: 0.15rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: var(--ui-accent);
+  text-transform: uppercase;
+}
 
 /* --- Live minimap settings preview ----------------------------------- */
 .field__section {
@@ -1402,11 +1415,35 @@ input[type='checkbox'] { pointer-events: auto; width: 17px; height: 17px; accent
   to { opacity: 1; transform: none; }
 }
 
-.killfeed__killer { font-weight: 700; }
-.killfeed__killer--you { color: var(--ui-accent); }
-.killfeed__victim--you { color: var(--ui-danger); font-weight: 700; }
-.killfeed__weapon { color: var(--ui-dim); text-transform: uppercase; }
-.killfeed__headshot { color: var(--ui-accent); font-weight: 700; }
+/* A row the local player is part of. COD lights these so your own kills are
+   findable in a feed that is otherwise other people's. */
+.killfeed__row--mine {
+  background: rgba(228, 162, 42, 0.16);
+  box-shadow: inset 2px 0 0 var(--ui-accent);
+}
+
+.killfeed__name { font-weight: 700; }
+/* Colour by SIDE, as COD does: your team blue, theirs red, you highlighted. */
+.killfeed__name--ally { color: #6fb2ff; }
+.killfeed__name--enemy { color: #e8573f; }
+.killfeed__name--you { color: #ffffff; }
+
+/* The weapon silhouette. Masked, not <img>, so one SVG inherits the row's
+   colour instead of shipping a red, blue and white copy of every gun. */
+.killfeed__icon {
+  width: 34px;
+  height: 11px;
+  flex: none;
+  background-color: rgba(228, 232, 238, 0.92);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+
+.killfeed__headshot { font-size: 0.66rem; line-height: 1; }
 
 /* ---------- match clock / score banner ------------------------------------ */
 

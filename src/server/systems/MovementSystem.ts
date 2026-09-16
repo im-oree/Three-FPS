@@ -80,6 +80,20 @@ export class MovementSystem implements ServerSystem {
       // A player in a vehicle is moved by the vehicle, not by their own feet.
       if (player.vehicleId !== null) { player.pendingInput.length = 0; continue; }
 
+      // Frozen (pre-match countdown): discard intent but KEEP simulating, so
+      // gravity, ground snapping and collision all still run. Skipping the
+      // step entirely would leave a player hovering if they spawned above the
+      // floor, and would desync the client's own prediction.
+      if (world.frozen) {
+        player.pendingInput.length = 0;
+        // `null`, not a zeroed frame: step() copies frame.yaw onto the player,
+        // so a zeroed frame would snap everyone to face north during the
+        // countdown. Passing null keeps their facing and applies no intent.
+        player.lastButtons = 0;
+        this.step(player, null, dt);
+        continue;
+      }
+
       if (player.pendingInput.length === 0) {
         // No input this tick (packet loss, or the player is idle): keep
         // simulating with the last known intent rather than freezing, or

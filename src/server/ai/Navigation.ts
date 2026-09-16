@@ -24,13 +24,69 @@
  */
 import type { Vec3 } from '../../net/Protocol';
 import type { CollisionWorld } from '../CollisionWorld';
+import { PLAYER } from '../../utils/Constants';
 
 export const CELL_SIZE = 2;
 /** Capsule radius used when testing whether a cell is standable. */
 const AGENT_RADIUS = 0.42;
 const AGENT_HEIGHT = 1.8;
-/** Largest step the mover can climb, matching MovementSystem. */
-const STEP_HEIGHT = 0.35;
+/**
+ * Largest step the mover can climb.
+ *
+ * Read from the SAME constant MovementSystem uses rather than copied. When
+ * these drifted apart (nav 0.35 vs mover 0.45) the graph refused edges the
+ * body could actually walk, which chopped Killhouse into 22 disconnected
+ * islands -- bots spawned in pockets they could not path out of and the map
+ * produced 2 kills a minute against Shipment's 12.
+ */
+const STEP_HEIGHT = PLAYER.MAX_STEP_HEIGHT;
+
+/**
+ * Where inside a cell to look for standable ground, centre first.
+ *
+ * The offsets stay inside the cell (0.45 m of a 1 m half-extent) so a cell
+ * never represents ground that belongs to its neighbour.
+ */
+/** Where a column scan starts, and how far down it reaches. */
+const COLUMN_TOP = 60;
+const COLUMN_DEPTH = 200;
+/** Safety bound on how many stacked surfaces one column may report. */
+const COLUMN_MAX_SURFACES = 24;
+
+const CELL_PROBES: readonly (readonly [number, number])[] = [
+  [0, 0],
+  [-0.45, 0], [0.45, 0], [0, -0.45], [0, 0.45],
+  [-0.45, -0.45], [0.45, -0.45], [-0.45, 0.45], [0.45, 0.45],
+];
+
+/**
+ * The lowest surface in a column that a capsule can stand on.
+ *
+ * Walks downward hit by hit rather than trusting the first one, because the
+ * first hit from above is the roof on any enclosed map.
+ */
+function lowestStandable(
+  collision: CollisionWorld,
+  x: number,
+  z: number,
+): { x: number; z: number; y: number; surface: string } | null {
+  let best: { x: number; z: number; y: number; surface: string } | null = null;
+  let from = COLUMN_TOP;
+  // Bounded: a pathological column of thin shelves cannot spin forever.
+  for (let step = 0; step < COLUMN_MAX_SURFACES; step += 1) {
+    const hit = collision.raycast([x, from, z], [0, -1, 0], COLUMN_DEPTH);
+    if (!hit) break;
+    const y = hit.point[1];
+    if (collision.fits(x, y + 0.05, z, AGENT_RADIUS, AGENT_HEIGHT)) {
+      best = { x, z, y, surface: hit.surface };
+    }
+    // Drop just past this surface and keep looking for something lower.
+    const next = y - 0.05;
+    if (next >= from) break;
+    from = next;
+  }
+  return best;
+}
 
 export interface NavCell {
   readonly index: number;
@@ -86,16 +142,37 @@ export class NavGrid {
         const x = bounds.minX + col * CELL_SIZE + CELL_SIZE * 0.5;
         const z = bounds.minZ + row * CELL_SIZE + CELL_SIZE * 0.5;
 
-        // Probe downward for a floor, then confirm the capsule fits there.
-        const from: Vec3 = [x, 60, z];
-        const hit = collision.raycast(from, [0, -1, 0], 200);
-        if (!hit) { grid.cells[index] = null; continue; }
-        const y = hit.point[1];
-        if (!collision.fits(x, y + 0.05, z, AGENT_RADIUS, AGENT_HEIGHT)) {
-          grid.cells[index] = null;
-          continue;
+        // Find the FLOOR of this column.
+        //
+        // Two failures used to happen here, and together they made indoor
+        // maps nearly unplayable for bots.
+        //
+        // 1. A cell is 2 m across but the capsule is only 0.84 m wide, so a
+        //    cell whose exact centre clips a crate corner or a pillar can
+        //    still be walkable slightly off-centre. Sampling the centre alone
+        //    punched holes through doorways.
+        // 2. The probe took the FIRST thing a downward ray hit. Killhouse is
+        //    a roofed warehouse, so that was the roof at y=10.75 -- the roof
+        //    became the map's largest walkable region while the real floor
+        //    beneath it was cut into disconnected pockets. Bots spawned in
+        //    those pockets, could not path out, and the map produced 2 kills
+        //    a minute against Shipment's 12.
+        //
+        // So: sample several points across the cell, walk each column all the
+        // way down collecting every standable surface, and keep the lowest.
+        // The lowest standable surface is the floor a player actually walks
+        // on; roofs, catwalk lids and crate tops sit above it and are skipped.
+        let placed: { x: number; z: number; y: number; surface: string } | null = null;
+        for (const [ox, oz] of CELL_PROBES) {
+          const found = lowestStandable(collision, x + ox, z + oz);
+          if (!found) continue;
+          if (!placed || found.y < placed.y) placed = found;
         }
-        grid.cells[index] = { index, x, z, y, tag: hit.surface === 'water' ? 'water' : 'ground' };
+        if (!placed) { grid.cells[index] = null; continue; }
+        grid.cells[index] = {
+          index, x: placed.x, z: placed.z, y: placed.y,
+          tag: placed.surface === 'water' ? 'water' : 'ground',
+        };
       }
     }
 

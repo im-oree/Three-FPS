@@ -9,7 +9,7 @@
  *
  * Runs against the real compiled server — no mocks, no stubs.
  */
-import { buildServerBundle } from './server-harness.mjs';
+import { buildServerBundle, diskLevelFetcher } from './server-harness.mjs';
 
 let passed = 0;
 let failed = 0;
@@ -52,6 +52,9 @@ function makeServer(boxes = ROOM) {
   server.startMatch('testroom');
   server.collision.load(boxes);
   server.ai.buildNavigation();
+  // Live, not counting down: a real match freezes every player until the
+  // round starts, and these checks are about how bots move once it has.
+  server.match.beginLive();
   return server;
 }
 
@@ -443,6 +446,117 @@ console.log('\n[11] Bot profiles make individuals, not clones');
   check('mistake rate governs how often a bot picks a worse option',
     flawlessKept === 100 && sloppyKept === 0,
     `flawless kept ${flawlessKept}/100, sloppy kept ${sloppyKept}/100`);
+}
+
+console.log('\n[12] Navigation maps the floor, not the roof');
+
+{
+  // The bug this guards: NavGrid probed each column with a single downward
+  // ray and kept the FIRST hit. On a roofed map that is the roof -- Killhouse
+  // ended up with its roof (y=10.75) as the largest "walkable" region while
+  // the actual floor was cut into 22 disconnected pockets. Bots spawned in
+  // pockets they could not path out of, and the map produced 2 kills/minute
+  // against Shipment's 12.
+  const { getNavGrid } = bundle;
+
+  const islandsOf = (grid) => {
+    const comp = new Array(grid.cells.length).fill(-1);
+    const sizes = [];
+    let next = 0;
+    for (let i = 0; i < grid.cells.length; i += 1) {
+      if (!grid.cells[i] || comp[i] >= 0) continue;
+      let n = 0;
+      const stack = [i];
+      comp[i] = next;
+      while (stack.length) {
+        const k = stack.pop();
+        n += 1;
+        for (const nb of grid.neighbours[k]) {
+          if (comp[nb] < 0) { comp[nb] = next; stack.push(nb); }
+        }
+      }
+      sizes.push(n);
+      next += 1;
+    }
+    return { comp, sizes };
+  };
+
+  for (const levelId of ['killhouse', 'facility', 'shipment']) {
+    const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+    let fire = () => {};
+    server.accept({
+      onMessage: (f) => { fire = f; return () => {}; },
+      onClose: () => () => {},
+      send: () => {},
+      close: () => {},
+    });
+    fire({ t: 'joinMatch', levelId, modeId: 'ffa' });
+    await server.whenLevelReady();
+    server.ai.buildNavigation();
+
+    const grid = getNavGrid();
+    const { comp, sizes } = islandsOf(grid);
+    const main = sizes.indexOf(Math.max(...sizes));
+
+    const ids = server.world.playerIds();
+    const stranded = ids.filter((id) => {
+      const p = server.world.getPlayer(id);
+      const idx = grid.indexAt(p.px, p.pz);
+      return idx < 0 || comp[idx] !== main;
+    });
+    check(`${levelId}: every player spawns on the main walkable region`,
+      stranded.length === 0, `${stranded.length} of ${ids.length} stranded`);
+
+    const mainYs = grid.cells
+      .filter((c, i) => c && comp[i] === main)
+      .map((c) => c.y)
+      .sort((a, b) => a - b);
+    const spawnY = server.world.getPlayer(ids[0]).py;
+    const medianY = mainYs[Math.floor(mainYs.length / 2)];
+    check(`${levelId}: the main region is the floor, not the roof`,
+      Math.abs(medianY - spawnY) < 2.5,
+      `main region y=${medianY.toFixed(2)} vs spawn y=${spawnY.toFixed(2)}`);
+
+    server.shutdown();
+  }
+}
+
+console.log('\n[13] Bots actually fight on every map');
+
+{
+  // A map where bots cannot reach each other looks fine in a screenshot and
+  // is dead to play. Measured against the real server at the real tick rate.
+  for (const [levelId, floor] of [['killhouse', 8], ['shipment', 8], ['facility', 4]]) {
+    const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+    let fire = () => {};
+    server.accept({
+      onMessage: (f) => { fire = f; return () => {}; },
+      onClose: () => () => {},
+      send: () => {},
+      close: () => {},
+    });
+    fire({ t: 'joinMatch', levelId, modeId: 'ffa' });
+    await server.whenLevelReady();
+
+    const ids = server.world.playerIds();
+    const before = ids.map((id) => {
+      const p = server.world.getPlayer(id);
+      return [p.px, p.pz];
+    });
+    for (let i = 0; i < 60 * 60; i += 1) server.update(1 / 60);
+    const moved = ids.filter((id, k) => {
+      const p = server.world.getPlayer(id);
+      return Math.hypot(p.px - before[k][0], p.pz - before[k][1]) > 1;
+    }).length;
+
+    check(`${levelId}: a minute of play produces real fighting`,
+      server.match.deathLog.length >= floor,
+      `${server.match.deathLog.length} deaths in 60 s (floor ${floor})`);
+    check(`${levelId}: bots leave their spawn`,
+      moved >= Math.ceil(ids.length * 0.75),
+      `${moved} of ${ids.length} moved`);
+    server.shutdown();
+  }
 }
 
 console.log(`\nAI ACCEPTANCE: ${passed}/${passed + failed} checks passed`);

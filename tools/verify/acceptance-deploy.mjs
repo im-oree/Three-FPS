@@ -202,7 +202,10 @@ try {
       rows: document.querySelectorAll('.killfeed__row').length,
       text: [...document.querySelectorAll('.killfeed__row')]
         .map((n) => n.textContent.replace(/\s+/g, ' ').trim()),
-      youHighlighted: !!document.querySelector('.killfeed__victim--you'),
+      // The row you are involved in is highlighted, and your own name is
+      // drawn in the "you" colour rather than the ally/enemy colours.
+      youHighlighted: !!document.querySelector('.killfeed__row--mine')
+        && !!document.querySelector('.killfeed__name--you'),
     }));
     check('the kill appears in the killfeed',
       feedNow.rows >= 1, feedNow.text.join(' | ') || 'no rows');

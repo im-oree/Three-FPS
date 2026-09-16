@@ -107,6 +107,7 @@ import AnimationStateMachine from './animation/AnimationStateMachine';
 import AnimationBlender from './animation/AnimationBlender';
 import AnimationLayerCompositor from './animation/AnimationLayerCompositor';
 import ThirdPersonBody from './character/ThirdPersonBody';
+import RemotePlayers from './character/RemotePlayers';
 import PerspectiveController from './player/PerspectiveController';
 import PerspectiveSync from './animation/PerspectiveSync';
 import type { ResolvedAnimationDescriptor, AnimationTarget } from './animation/AnimationBlender';
@@ -124,6 +125,9 @@ import Killfeed from './ui/hud/Killfeed';
 import MatchBar from './ui/hud/MatchBar';
 import { WEAPON_LABELS } from './ui/menus/LoadoutMenu';
 import type { DeathWire, MatchRulesWire, Vec3 } from './net/Protocol';
+// Mode metadata is shared DATA, not server behaviour: the client reads it to
+// label the loading screen. Same direction as the menu already reads it.
+import { getGameMode } from './server/GameModes';
 
 const canvas = document.getElementById('game-canvas') as HTMLCanvasElement | null;
 if (!canvas) throw new Error('[main] #game-canvas element missing from index.html');
@@ -327,6 +331,10 @@ void handsRig.load().then(() => {
 // the perspectives structurally incapable of desyncing.
 // ---------------------------------------------------------------------------
 const thirdPersonBody = new ThirdPersonBody(engine.assetLoader);
+// Everyone who is not you. Until this existed the client drew a single
+// character and the lobby was invisible.
+const remotePlayers = new RemotePlayers(engine.assetLoader);
+remotePlayers.attach(arena.scene);
 const perspective = new PerspectiveController(
   engine.sceneManager.getCamera(),
   engine.inputManager,
@@ -1284,19 +1292,34 @@ const sessionReady = createLocalSession({
     matchBar.render(state, session?.client.id ?? null);
     eventBus.emit('net:matchState', state);
   },
+  onPlayerStates: (states) => {
+    remotePlayers.setLocalId(session?.client.id ?? '');
+    remotePlayers.sync(states);
+  },
   onDied: (death, respawnIn) => beginDeathPresentation(death, respawnIn),
   onRespawned: (pos, yaw) => endDeathPresentation(pos, yaw),
   onKillfeed: (entry) => {
-    const localName = session?.client.id
-      ? session.client.match?.standings.find((r) => r.id === session?.client.id)?.name
-      : undefined;
+    // Compare IDS, not display names. Names are unique by policy, not by
+    // construction, and a duplicate would highlight the wrong row.
+    const myId = session?.client.id ?? null;
+    const myTeam = entry.killerId === myId ? entry.killerTeam
+      : entry.victimId === myId ? entry.victimTeam
+        : (session?.client.players.find((p) => p.id === myId)?.team ?? 'FFA');
+    // In FFA nobody is an ally, so "friendly" means "is me".
+    const friendly = (team: 'A' | 'B' | 'FFA' | null, id: string | null): boolean => {
+      if (id === myId) return true;
+      if (!team || team === 'FFA' || myTeam === 'FFA') return false;
+      return team === myTeam;
+    };
     killfeed.push({
       killerName: entry.killerName,
       victimName: entry.victimName,
-      weaponLabel: entry.weaponId ? (WEAPON_LABELS[entry.weaponId] ?? null) : null,
+      weaponId: entry.weaponId,
       headshot: entry.headshot,
-      killerIsLocal: !!localName && entry.killerName === localName,
-      victimIsLocal: !!localName && entry.victimName === localName,
+      killerIsLocal: entry.killerId === myId,
+      victimIsLocal: entry.victimId === myId,
+      killerIsFriendly: friendly(entry.killerTeam, entry.killerId),
+      victimIsFriendly: friendly(entry.victimTeam, entry.victimId),
     });
   },
 }, { levelFetcher: httpLevelFetcher() }).then((s) => {
@@ -1326,6 +1349,10 @@ engine.registerAlwaysUpdatable({
 
     deathCamera.update(dt);
     killfeed.update(dt);
+    // Always updated, never gated on PLAYING: the death camera orbits a body
+    // while other players keep moving, and frozen bodies during the respawn
+    // countdown would look like the game had hung.
+    remotePlayers.update(dt);
     if (awaitingRespawn) {
       deathOverlay.setRespawnIn(respawnAt - performance.now() / 1000);
     }
@@ -1345,6 +1372,7 @@ const beginLoad = async (levelId: string): Promise<void> => {
   activeLevelId = levelId;
   const level = getLevel(levelId);
   loadingScreen.setLevel(level.displayName, level.description, levelId);
+  loadingScreen.setMode(getGameMode(activeModeId).displayName);
   gameStateManager.setState(GameState.LOADING);
 
   // Declare the whole run up front so the bar is weighted by real work
@@ -1435,6 +1463,8 @@ const quitToMenu = (): void => {
   deathCamera.end();
   deathOverlay.hide();
   killfeed.clear();
+  // Bodies belong to the match that made them.
+  remotePlayers.clear();
   inputRelay?.setEnabled(true);
   // Leaving the match ends it server-side too, which runs the authoritative
   // cleanup (entities pooled, players dropped, effect queues drained, bot
@@ -1538,20 +1568,20 @@ ui.register('settings', settingsMenu, GameState.SETTINGS);
 ui.register('loading', loadingScreen, GameState.LOADING);
 ui.register('pause', pauseMenu, GameState.PAUSED);
 ui.register('gameOver', gameOverScreen, GameState.GAME_OVER);
-ui.registerPersistent(hud.element);
-ui.registerPersistent(killstreakHUD.element);
-ui.registerPersistent(equipmentHUD.element);
-ui.registerPersistent(minimap.element);
-ui.registerPersistent(disorientOverlays.element);
-ui.registerPersistent(missileHUD.element);
-ui.registerPersistent(missileHUD.barsElement);
-ui.registerPersistent(matchBar.element);
-ui.registerPersistent(matchBar.countdownElement);
-ui.registerPersistent(killfeed.element);
+ui.registerMatchHud(hud.element);
+ui.registerMatchHud(killstreakHUD.element);
+ui.registerMatchHud(equipmentHUD.element);
+ui.registerMatchHud(minimap.element);
+ui.registerMatchHud(disorientOverlays.element);
+ui.registerMatchHud(missileHUD.element);
+ui.registerMatchHud(missileHUD.barsElement);
+ui.registerMatchHud(matchBar.element);
+ui.registerMatchHud(matchBar.countdownElement);
+ui.registerMatchHud(killfeed.element);
 // The death overlay is PERSISTENT, not a routed screen: the death camera is
 // still rendering the world behind it, and a routed screen would hide the
 // canvas. That distinction is the whole reason death is no longer a screen.
-ui.registerPersistent(deathOverlay.element);
+ui.registerMatchHud(deathOverlay.element);
 equipmentHUD.setKeyLabel(
   prettyKey(engine.inputManager.getBindings().throwTactical),
 );
@@ -1818,6 +1848,7 @@ void sessionReady.then((s) => {
 // Document 5 surfaces, for the acceptance harness.
 Object.assign((window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__, {
   audioManager, hud, ui, matchStats, playerHealth, loadoutManager, skinManager,
+  remotePlayers,
   settingsStore, levelLoader, mainMenu, loadingScreen, settingsMenu, loadoutMenu,
   // Document N: the acceptance harness ray-casts the live world to verify
   // terrain relief, door openings and perimeter containment — assertions a

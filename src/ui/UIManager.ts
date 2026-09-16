@@ -24,6 +24,8 @@ export class UIManager {
   private readonly screens = new Map<string, Screen>();
   /** state -> screen name. */
   private readonly routes = new Map<GameStateValue, string>();
+  /** Persistent elements that belong to a match, hidden outside one. */
+  private readonly matchHud: HTMLElement[] = [];
   /** Screens that render ON TOP of the routed screen (pause > settings). */
   private readonly overlays: string[] = [];
   private activeName: string | null = null;
@@ -45,6 +47,33 @@ export class UIManager {
   /** A persistent element that is not part of state routing (e.g. the HUD). */
   registerPersistent(element: HTMLElement): void {
     this.root.appendChild(element);
+  }
+
+  /**
+   * A persistent element that belongs to the MATCH, not to the shell.
+   *
+   * The HUD, killfeed, match clock and scoreboard are "persistent" in the
+   * sense that they are not a screen and must survive a pause -- but they are
+   * not part of the main menu or the loading screen, and leaving them mounted
+   * there showed a live scoreboard and killfeed over the lobby. Registering
+   * them here keeps them in the DOM (so they never rebuild) while hiding them
+   * whenever the game is not actually in a match.
+   */
+  registerMatchHud(element: HTMLElement): void {
+    this.root.appendChild(element);
+    this.matchHud.push(element);
+    this.applyMatchHudVisibility(gameStateManager.getState());
+  }
+
+  /** States during which the in-match HUD is allowed on screen. */
+  private applyMatchHudVisibility(state: GameStateValue): void {
+    // PAUSED counts: the pause menu sits OVER the match, and COD keeps the
+    // HUD visible behind it. Everything else (menus, loading, debrief) is
+    // outside the match.
+    const inMatch = state === GameState.PLAYING || state === GameState.PAUSED;
+    for (const element of this.matchHud) {
+      element.classList.toggle('hud--offmatch', !inMatch);
+    }
   }
 
   start(): void {
@@ -70,6 +99,7 @@ export class UIManager {
     // Any state change dismisses overlays; they belong to the state that
     // opened them.
     for (const name of [...this.overlays]) this.popOverlay(name);
+    this.applyMatchHudVisibility(state);
 
     const next = this.routes.get(state) ?? null;
     if (next === this.activeName) return;

@@ -25,6 +25,7 @@ export { LevelStore } from '${src('src/server/LevelStore.ts')}';
 export { RoomManager } from '${src('src/server/RoomManager.ts')}';
 export { MovementSystem } from '${src('src/server/systems/MovementSystem.ts')}';
 export { AISystem } from '${src('src/server/systems/AISystem.ts')}';
+export { getNavGrid } from '${src('src/server/ai/NavContext.ts')}';
 export { KillstreakSystem } from '${src('src/server/systems/KillstreakSystem.ts')}';
 export { SERVER_KILLSTREAKS, DEFAULT_KILLSTREAK_IDS, blastDamageAt } from '${src('src/server/KillstreakStats.ts')}';
 export { SquadBlackboard } from '${src('src/server/ai/SquadBlackboard.ts')}';

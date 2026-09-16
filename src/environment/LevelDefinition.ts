@@ -167,6 +167,10 @@ function stairs(
 // --- WAREHOUSE: crates, catwalk supports, mantle-height stacks --------------
 const KILLHOUSE: LevelDefinition = {
   id: 'killhouse',
+  // Killhouse is a small, deliberately frantic warehouse -- COD runs it as a
+  // 10-12 player brawl, and the encounter rate is the point of the map. Eight
+  // players in here still left long quiet stretches.
+  recommendedPlayers: 12,
   displayName: 'Killhouse',
   description: 'SAS live-fire training warehouse. Tight, symmetrical, brutal.',
   ambientSoundKey: 'ambient_warehouse',
