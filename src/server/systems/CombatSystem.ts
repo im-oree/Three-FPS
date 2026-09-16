@@ -19,6 +19,7 @@ import type { CollisionWorld } from '../CollisionWorld';
 import { Button, type EntityId, type PlayerId, type Vec3 } from '../../net/Protocol';
 import { PLAYER } from '../../utils/Constants';
 import { SERVER_WEAPONS, type ServerWeapon } from '../WeaponStats';
+import type { DamageSystem } from './DamageSystem';
 
 /**
  * Hit zones as fractions of capsule height, measured from the feet.
@@ -70,10 +71,20 @@ export class CombatSystem implements ServerSystem {
   readonly name = 'combat';
 
   private readonly weapons = new Map<PlayerId, WeaponState>();
+  /** Which weapon id each player last fired, for resupply caps. */
+  private readonly loadoutIds = new Map<PlayerId, string>();
   /** Shots resolved this tick, exposed for tests and scoring. */
   private readonly resolved: ShotResult[] = [];
 
-  constructor(private readonly collision: CollisionWorld) {}
+  constructor(
+    private readonly collision: CollisionWorld,
+    /**
+     * Every point of damage in the world goes through here. Combat does not
+     * subtract health itself: friendly fire, regeneration timers and death
+     * reporting are one shared set of rules, not per-system copies.
+     */
+    private readonly damage: DamageSystem,
+  ) {}
 
   get lastShots(): readonly ShotResult[] { return this.resolved; }
 
@@ -168,13 +179,10 @@ export class CombatSystem implements ServerSystem {
       return;
     }
 
-    const damage = Math.round(
+    const raw = Math.round(
       falloffDamage(weapon, best.distance) * zoneMultiplier(best.zone),
     );
     const victim = best.player;
-    victim.health = Math.max(0, victim.health - damage);
-    const lethal = victim.health === 0;
-    if (lethal) victim.alive = false;
 
     const point: Vec3 = [
       eye[0] + dir[0] * best.distance,
@@ -182,18 +190,67 @@ export class CombatSystem implements ServerSystem {
       eye[2] + dir[2] * best.distance,
     ];
     world.raiseFx({ t: 'tracer', from: eye, to: point, weaponId: weapon.id });
-    world.raiseFx({ t: 'damage', target: victim.id, amount: damage, at: point });
-    world.raiseFx({ t: 'hitMarker', lethal });
+
+    const outcome = this.damage.apply(world, {
+      target: victim,
+      targetKind: 'player',
+      amount: raw,
+      type: 'bullet',
+      source: shooter.id,
+      at: point,
+      zone: best.zone,
+    });
+
+    // A blocked hit (friendly fire) still drew a tracer, but it must not
+    // report a hit marker or a damage number -- the shooter needs to see
+    // that nothing happened.
+    if (outcome.blocked) {
+      this.resolved.push({
+        shooter: shooter.id, victim: null, zone: null, damage: 0,
+        distance: best.distance, point, lethal: false,
+      });
+      return;
+    }
+
+    world.raiseFx({ t: 'hitMarker', lethal: outcome.lethal });
 
     this.resolved.push({
       shooter: shooter.id, victim: victim.id, zone: best.zone,
-      damage, distance: best.distance, point, lethal,
+      damage: outcome.applied, distance: best.distance, point,
+      lethal: outcome.lethal,
     });
   }
 
   private weaponFor(player: ServerPlayer): ServerWeapon {
     const id = player.loadout?.primaryId ?? 'rifle';
+    this.loadoutIds.set(player.id, id);
     return SERVER_WEAPONS[id] ?? SERVER_WEAPONS.rifle;
+  }
+
+  /**
+   * A fresh life gets a fresh weapon: full magazine, full reserve, nothing
+   * mid-reload. Without this, ammunition carried across deaths and the whole
+   * lobby eventually ran dry.
+   */
+  onPlayerSpawn(id: PlayerId): void {
+    this.weapons.delete(id);
+  }
+
+  /**
+   * Scavenge from a kill, the way a player picks the dead man's gun up.
+   *
+   * Without any resupply a long life ends with the player standing in the
+   * open holding an empty rifle: bots that ran dry stayed in Engage forever,
+   * unable to shoot and unwilling to do anything else, and the match's kill
+   * rate flatlined. Topping the reserve up on a kill is Call of Duty's own
+   * answer (Scavenger, and simply walking over the body) and it keeps a
+   * good player armed without ever granting infinite ammunition.
+   */
+  resupplyOnKill(id: PlayerId): void {
+    const state = this.weapons.get(id);
+    if (!state) return;
+    const weapon = SERVER_WEAPONS[this.loadoutIds.get(id) ?? 'rifle'] ?? SERVER_WEAPONS.rifle;
+    state.reserve = Math.min(weapon.reserveAmmo, state.reserve + weapon.magazineSize);
   }
 
   private stateFor(id: PlayerId, weapon: ServerWeapon): WeaponState {

@@ -14,6 +14,7 @@
  * one's entities, cooldowns and pooled objects.
  */
 import type { ServerWorld } from './ServerWorld';
+import type { PlayerId } from '../net/Protocol';
 
 export interface ServerSystem {
   /** Stable name, for debugging and profiling. */
@@ -27,6 +28,16 @@ export interface ServerSystem {
 
   /** A match is starting on this level. */
   onMatchStart?(levelId: string): void;
+
+  /**
+   * A player just (re)spawned and must be returned to a fighting state.
+   *
+   * Systems that hold per-life state implement this. Weapon ammunition is
+   * the obvious one: without it, magazines and reserves persisted across
+   * deaths, so after about a minute every bot in the match was standing
+   * around at 0/0 with nothing to shoot and the kill count simply stopped.
+   */
+  onPlayerSpawn?(id: PlayerId): void;
 
   /** The match ended. Release anything match-scoped. */
   onMatchEnd?(reason: string): void;

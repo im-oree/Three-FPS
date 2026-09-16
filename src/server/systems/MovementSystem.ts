@@ -15,6 +15,7 @@ import type { ServerWorld, ServerPlayer } from '../ServerWorld';
 import type { CollisionWorld } from '../CollisionWorld';
 import { Button, type InputFrame } from '../../net/Protocol';
 import { MOVEMENT, PLAYER, JUMP, CLOCK } from '../../utils/Constants';
+import type { DamageSystem } from './DamageSystem';
 
 /** Derived once: the impulse that reaches DESIRED_JUMP_HEIGHT under GRAVITY. */
 const JUMP_VELOCITY = Math.sqrt(2 * JUMP.GRAVITY * JUMP.DESIRED_JUMP_HEIGHT);
@@ -62,7 +63,11 @@ export class MovementSystem implements ServerSystem {
    */
   fellOutOfWorld: ((player: ServerPlayer) => void) | null = null;
 
-  constructor(private readonly collision: CollisionWorld) {}
+  constructor(
+    private readonly collision: CollisionWorld,
+    /** Fall damage goes through the same path as every other damage source. */
+    private readonly damage: DamageSystem,
+  ) {}
 
   tick(dt: number, world: ServerWorld): void {
     for (const player of world.allPlayers) {
@@ -90,7 +95,7 @@ export class MovementSystem implements ServerSystem {
         // so a zeroed frame would snap everyone to face north during the
         // countdown. Passing null keeps their facing and applies no intent.
         player.lastButtons = 0;
-        this.step(player, null, dt);
+        this.step(world, player, null, dt);
         continue;
       }
 
@@ -98,19 +103,21 @@ export class MovementSystem implements ServerSystem {
         // No input this tick (packet loss, or the player is idle): keep
         // simulating with the last known intent rather than freezing, or
         // gravity would pause mid-fall every time a packet went missing.
-        this.step(player, null, dt);
+        this.step(world, player, null, dt);
         continue;
       }
       for (const raw of player.pendingInput) {
         const frame = sanitise(raw);
-        this.step(player, frame, dt);
+        this.step(world, player, frame, dt);
         player.lastProcessedSeq = frame.seq;
       }
       player.pendingInput.length = 0;
     }
   }
 
-  private step(player: ServerPlayer, frame: InputFrame | null, dt: number): void {
+  private step(
+    world: ServerWorld, player: ServerPlayer, frame: InputFrame | null, dt: number,
+  ): void {
     if (frame) {
       player.yaw = frame.yaw;
       player.pitch = frame.pitch;
@@ -220,7 +227,7 @@ export class MovementSystem implements ServerSystem {
     player.grounded = result.grounded;
 
     if (result.grounded) {
-      if (wasAirborne) this.onLanded(player);
+      if (wasAirborne) this.onLanded(world, player);
       player.vy = 0;
       player.fallPeakY = player.py;
     } else {
@@ -230,14 +237,23 @@ export class MovementSystem implements ServerSystem {
   }
 
   /** Fall damage, scaled by how far the player actually dropped. */
-  private onLanded(player: ServerPlayer): void {
+  private onLanded(world: ServerWorld, player: ServerPlayer): void {
     const drop = player.fallPeakY - player.py;
     if (drop <= FALL_DAMAGE_MIN_DROP) return;
     const damage = drop >= FALL_DAMAGE_LETHAL_DROP
       ? player.maxHealth
       : Math.round((drop - FALL_DAMAGE_MIN_DROP) * FALL_DAMAGE_PER_METRE);
     if (damage <= 0) return;
-    player.health = Math.max(0, player.health - damage);
-    if (player.health === 0) player.alive = false;
+    // Fall damage is damage. Routing it through the shared system means the
+    // match hears about the death and the regeneration clock resets, neither
+    // of which happened when this subtracted health by hand.
+    this.damage.apply(world, {
+      target: player,
+      targetKind: 'player',
+      amount: damage,
+      type: 'fall',
+      source: null,
+      ignoreTeams: true,
+    });
   }
 }

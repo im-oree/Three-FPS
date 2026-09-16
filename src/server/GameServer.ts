@@ -56,6 +56,7 @@ import type {
   KillfeedWire, LoadoutSpec, MatchStateWire, Vec3,
 } from '../net/Protocol';
 import type { MatchEvent } from './systems/MatchSystem';
+import { DamageSystem } from './systems/DamageSystem';
 
 /**
  * Weapons and operators a bot may be issued.
@@ -133,6 +134,8 @@ export class GameServer {
   private levelLoad: Promise<void> | null = null;
   /** Kept for ammo queries; also registered as an ordinary system. */
   readonly combat: CombatSystem;
+  /** The single authority on health. Every damage source routes through it. */
+  readonly damage: DamageSystem;
 
   /** Whether joining tops the lobby up with agents. See GameServerOptions. */
   private readonly autoFill: boolean;
@@ -157,7 +160,13 @@ export class GameServer {
     // does not move players is not a server, and making it opt-in would let
     // the backend and the browser boot with different system sets -- exactly
     // the divergence this architecture exists to prevent.
-    const movement = new MovementSystem(this.collision);
+    // Damage is a single shared verb. Every source -- bullets, blasts, fall,
+    // vehicles -- goes through this one system, so friendly fire, health
+    // regeneration and death reporting have exactly one implementation.
+    // It is constructed before every system that can hurt something.
+    this.damage = new DamageSystem();
+    this.addSystem(this.damage);
+    const movement = new MovementSystem(this.collision, this.damage);
     // Falling out of the world is a death, and the match owns deaths. Wiring
     // it here keeps MovementSystem ignorant of scoring while still making the
     // rule server-authoritative for every player, human or AI alike.
@@ -167,15 +176,22 @@ export class GameServer {
     this.addSystem(movement);
     // Order matters: combat reads the button mask movement publishes, so
     // movement must have consumed this tick's input before combat runs.
-    this.combat = new CombatSystem(this.collision);
+    this.combat = new CombatSystem(this.collision, this.damage);
     this.addSystem(this.combat);
     // Killstreaks run after combat so a kill scored this tick counts toward
     // the streak this tick, and so a blast resolves against the same health
     // values bullets just wrote.
-    this.killstreaks = new KillstreakSystem(this.collision);
+    this.killstreaks = new KillstreakSystem(this.collision, this.damage);
     // Kills scored by bullets feed streak progress. Injected so the streak
     // system never imports combat, and so objective scoring can feed it too.
     this.killstreaks.setKillSource(() => this.combat.lastShots);
+    // Scavenging: a kill tops the killer's reserve up. Driven off the shared
+    // damage system so a blast kill resupplies exactly like a bullet kill.
+    this.damage.onDeath((death) => {
+      if (death.source && death.source !== death.target.id) {
+        this.combat.resupplyOnKill(death.source);
+      }
+    });
     this.addSystem(this.killstreaks);
     // AI runs last: it reads the world the other systems just produced and
     // queues input for the NEXT tick, exactly like a network client whose
@@ -191,6 +207,19 @@ export class GameServer {
     // second consumer would silently starve whichever ran second.
     this.match.onEvent((event) => this.dispatchMatchEvents(event));
     this.match.setKillSource(() => this.combat.lastShots);
+    // Teams come from the match, because they are a MODE concept. The damage
+    // system must not know what a game mode is; it just asks.
+    // In a free-for-all every player is their own side, so nobody is ever a
+    // teammate. MatchSystem reports the literal team 'FFA' for everyone in
+    // that mode, which would otherwise make the whole lobby friendly and
+    // block every bullet in the game.
+    this.damage.configure(
+      (id) => {
+        const team = this.match.teamOf(id);
+        return team === 'FFA' ? null : team;
+      },
+      false,
+    );
     this.addSystem(this.match);
 
     registerBuiltinCapabilities();
@@ -243,6 +272,8 @@ export class GameServer {
       botProfileId: name ?? displayName,
     });
     this.match.addPlayer(id, displayName);
+    // First life counts as a spawn too.
+    for (const system of this.systems) system.onPlayerSpawn?.(id);
     this.ai.addAgent(id, { ...options, tier: rolled, loadout });
     return id;
   }
@@ -343,6 +374,7 @@ export class GameServer {
           }
         }
         this.match.addPlayer(connection.id, player?.displayName);
+        for (const system of this.systems) system.onPlayerSpawn?.(connection.id);
         this.match.identities.bind(connection.id, {
           identityId: `identity:${connection.id}`,
           displayName: player?.displayName ?? connection.id,
@@ -814,6 +846,10 @@ export class GameServer {
           });
         }
       } else if (event.kind === 'respawn') {
+        // Tell every system a life began, so per-life state (ammunition,
+        // equipment, regeneration timers) is rebuilt rather than inherited
+        // from the corpse.
+        for (const system of this.systems) system.onPlayerSpawn?.(event.player);
         const connection = this.connections.get(event.player);
         const player = this.world.getPlayer(event.player);
         if (connection?.joined && player) {

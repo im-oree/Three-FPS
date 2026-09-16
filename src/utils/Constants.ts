@@ -1194,9 +1194,21 @@ export const SCOPE = {
 /** Player health (Document 5 §8.1) — the minimal damageable-player concept. */
 export const HEALTH = {
   MAX: 100,
-  /** Seconds without taking damage before regeneration begins. */
-  REGEN_DELAY_SECONDS: 4,
-  REGEN_PER_SECOND: 12,
+  /**
+   * Seconds without taking damage before regeneration begins, then how fast
+   * it refills. Call of Duty's own numbers: MWIII uses a 3 s delay and
+   * 75 hp/s, BO6 3.5 s and 40 hp/s, MW2019 ~4.5 s. The delay is what
+   * actually governs the pace -- it is long enough that losing a fight and
+   * running away costs you the next few seconds, and short enough that a
+   * won fight does not leave you crippled.
+   *
+   * The rate must stay high. A slow trickle (the 12/s this used to be) means
+   * a player hurt once is hurt for the rest of the match, which deadlocked
+   * the bots: Retreat is available only while hurt, so a permanently-hurt
+   * bot re-picked it forever and never moved again.
+   */
+  REGEN_DELAY_SECONDS: 3.5,
+  REGEN_PER_SECOND: 60,
   /** Fraction below which the low-health vignette engages. */
   LOW_THRESHOLD: 0.3,
   /** Debug damage applied by the F6 test bind. */

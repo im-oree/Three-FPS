@@ -30,6 +30,7 @@ import {
   SERVER_KILLSTREAKS, DEFAULT_KILLSTREAK_IDS, MAX_CONCURRENT_STREAKS,
   blastDamageAt, type EarnMode, type ServerKillstreak,
 } from '../KillstreakStats';
+import type { DamageSystem } from './DamageSystem';
 
 /** A streak in flight, tracked so it can expire and free its slot. */
 interface ActiveStreak {
@@ -103,6 +104,8 @@ export class KillstreakSystem implements ServerSystem {
 
   constructor(
     private readonly collision: CollisionWorld,
+    /** Shared damage rules: blasts hurt exactly like bullets do. */
+    private readonly damage: DamageSystem,
     private earnMode: EarnMode = 'open',
   ) {}
 
@@ -292,11 +295,19 @@ export class KillstreakSystem implements ServerSystem {
 
       const damage = Math.round(raw);
       if (damage <= 0) continue;
-      victim.health = Math.max(0, victim.health - damage);
-      const lethal = victim.health === 0;
-      if (lethal) victim.alive = false;
-      hits.push({ id: victim.id, damage, lethal });
-      world.raiseFx({ t: 'damage', target: victim.id, amount: damage, at: centre });
+      // Through the shared damage system, so a blast obeys the same friendly
+      // fire rules as a bullet and resets the same regeneration timer.
+      const outcome = this.damage.apply(world, {
+        target: victim,
+        targetKind: 'player',
+        amount: damage,
+        type: 'explosive',
+        source: entry.owner,
+        at: centre,
+      });
+      if (outcome.blocked) continue;
+      const lethal = outcome.lethal;
+      hits.push({ id: victim.id, damage: outcome.applied, lethal });
       if (lethal && victim.id !== entry.owner) this.creditKill(entry.owner);
     }
 
