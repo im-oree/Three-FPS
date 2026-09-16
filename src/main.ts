@@ -117,6 +117,13 @@ import loadProgress, { DEPLOY_STAGES } from './core/LoadProgress';
 import { OperatorShowcase } from './ui/showcase/OperatorShowcase';
 import OperatorsMenu from './ui/menus/OperatorsMenu';
 import operatorRoster from './customization/OperatorRoster';
+import { WORLD_PASS_MASK } from './core/RenderLayers';
+import DeathCamera from './player/DeathCamera';
+import DeathOverlay from './ui/hud/DeathOverlay';
+import Killfeed from './ui/hud/Killfeed';
+import MatchBar from './ui/hud/MatchBar';
+import { WEAPON_LABELS } from './ui/menus/LoadoutMenu';
+import type { DeathWire, Vec3 } from './net/Protocol';
 
 const canvas = document.getElementById('game-canvas') as HTMLCanvasElement | null;
 if (!canvas) throw new Error('[main] #game-canvas element missing from index.html');
@@ -389,7 +396,29 @@ perspective.setBoomProbe((origin, direction, maxDistance) => {
 });
 
 // The world pass now shows/hides the body purely by layer mask (§1).
-engine.setWorldPassMaskProvider(() => perspective.worldPassMask);
+/**
+ * Which layers the world pass draws.
+ *
+ * Normally the perspective controller decides — first person hides the head
+ * (you cannot see inside your own skull) and the body's arms (the viewmodel
+ * supplies those).
+ *
+ * But those exclusions are only correct for a camera INSIDE the player's
+ * head. The moment the camera is somewhere else — the death cam orbiting the
+ * body, a killstreak cinematic, a future killcam — they become a bug: the
+ * character renders as a headless, armless torso. That was exactly the
+ * reported symptom, "other cameras must see the full body, not just the
+ * torso".
+ *
+ * So an external camera forces the third-person mask. One rule, applied
+ * wherever the camera actually is, rather than every external-camera feature
+ * having to remember to fix the layers itself.
+ */
+engine.setWorldPassMaskProvider(() => (
+  cinematicCamera.isActive || cinematicCamera.isDetached
+    ? WORLD_PASS_MASK.THIRD
+    : perspective.worldPassMask
+));
 
 // §4 cross-perspective desync prevention: gameplay's HARD logical durations
 // are registered once per weapon; both perspectives' clips are time-scaled to
@@ -946,6 +975,7 @@ engine.registerUpdatable({
       traversalKind: playerController.isVaulting()
         ? (characterState.traversal === 'MANTLE' ? 'mantle' : 'vault')
         : null,
+      deathBlend: deathCollapse,
     });
 
     animationEngine.update(dt);
@@ -1049,9 +1079,14 @@ engine.registerUpdatable({
     } else {
       missileHUD.setVisible(false);
       levelLoader.setFogSuppressed(false);
+      // The combat HUD belongs to a LIVING player: a crosshair over your own
+      // corpse and a killstreak tray you cannot press both read as bugs. The
+      // match bar and killfeed are deliberately NOT in this list -- the match
+      // is still running without you, and showing that is the point of the
+      // death cam.
       for (const el of [hud.element, killstreakHUD.element,
         minimap.element, equipmentHUD.element]) {
-        el.classList.remove('hud--suppressed');
+        el.classList.toggle('hud--suppressed', awaitingRespawn);
       }
     }
     statusEffects.update(dt);
@@ -1157,6 +1192,13 @@ const hud = new HUDManager({
 // The HUD ticks even while paused so a hit marker cannot freeze mid-flash.
 engine.registerAlwaysUpdatable(hud);
 
+// --- match presentation ----------------------------------------------------
+// These exist BEFORE the session because the session's callbacks drive them.
+const deathCamera = new DeathCamera(cinematicCamera);
+const deathOverlay = new DeathOverlay();
+const killfeed = new Killfeed();
+const matchBar = new MatchBar();
+
 // --- authoritative session -------------------------------------------------
 // The server is driven from the ALWAYS-updatables list, never the gated one.
 // Engine's gated list only ticks in PLAYING, which would make pausing stop
@@ -1170,12 +1212,93 @@ let simulationRunning = true;
 
 let inputRelay: InputRelay | null = null;
 
+/**
+ * The death presentation, driven entirely by the server.
+ *
+ * `respawnAt` is a client-local deadline derived from the server's
+ * `respawnIn`: the countdown has to tick every frame, and asking the server
+ * for the remaining time sixty times a second would be absurd. The SERVER
+ * still decides when you actually respawn — this is only the display, and if
+ * the two ever disagree the server's `respawned` message wins, because that
+ * is what moves the player.
+ */
+let respawnAt = 0;
+let awaitingRespawn = false;
+/**
+ * 0 = standing, 1 = collapsed. Eased every frame rather than set outright so
+ * the body falls over instead of snapping flat the instant health hits zero.
+ */
+let deathCollapse = 0;
+
+const beginDeathPresentation = (death: DeathWire, respawnIn: number): void => {
+  awaitingRespawn = true;
+  respawnAt = performance.now() / 1000 + respawnIn;
+
+  // Stop driving a body that is no longer alive: without this the corpse
+  // keeps walking because the input relay never stopped sending intent.
+  inputRelay?.setEnabled(false);
+  document.exitPointerLock?.();
+
+  deathCamera.begin({
+    subject: new THREE.Vector3(...death.victimPos),
+    from: death.killerPos ? new THREE.Vector3(...death.killerPos) : null,
+    victimYaw: playerController.getYaw(),
+  });
+
+  deathOverlay.show({
+    killerName: death.killerName,
+    weaponLabel: death.weaponId ? (WEAPON_LABELS[death.weaponId] ?? null) : null,
+    headshot: death.headshot,
+    distance: death.distance,
+    // The killer's health is not in the wire payload yet; a killcam will
+    // carry it. Null hides the bar rather than showing a wrong one.
+    killerHealth: null,
+  });
+  deathOverlay.setRespawnIn(respawnIn);
+};
+
+const endDeathPresentation = (pos: Vec3, yaw: number): void => {
+  awaitingRespawn = false;
+  deathCamera.end();
+  deathOverlay.hide();
+  // Put the body where the server says it is. The server picked this spawn
+  // with the full spawn-selection model (enemy sightlines, recent deaths,
+  // teammate positions); the client's job is to agree with it.
+  playerController.debugTeleport(pos[0], pos[1], pos[2]);
+  playerController.debugSetOrientation(yaw, 0);
+  playerHealth.reset();
+  weaponManager.refillAllAmmo();
+  inputRelay?.setEnabled(true);
+  if (gameStateManager.is(GameState.PLAYING)) {
+    engine.inputManager.requestPointerLock(canvas);
+  }
+};
+
 const sessionReady = createLocalSession({
   onSimulationState: (running, reason) => {
     simulationRunning = running;
     eventBus.emit('net:simulationState', { running, reason });
   },
   onMatchEnded: (reason) => { eventBus.emit('net:matchEnded', { reason }); },
+  onMatchState: (state) => {
+    matchBar.render(state, session?.client.id ?? null);
+    eventBus.emit('net:matchState', state);
+  },
+  onDied: (death, respawnIn) => beginDeathPresentation(death, respawnIn),
+  onRespawned: (pos, yaw) => endDeathPresentation(pos, yaw),
+  onKillfeed: (entry) => {
+    const localName = session?.client.id
+      ? session.client.match?.standings.find((r) => r.id === session?.client.id)?.name
+      : undefined;
+    killfeed.push({
+      killerName: entry.killerName,
+      victimName: entry.victimName,
+      weaponLabel: entry.weaponId ? (WEAPON_LABELS[entry.weaponId] ?? null) : null,
+      headshot: entry.headshot,
+      killerIsLocal: !!localName && entry.killerName === localName,
+      victimIsLocal: !!localName && entry.victimName === localName,
+    });
+  },
 }, { levelFetcher: httpLevelFetcher() }).then((s) => {
   session = s;
   // The relay reports INTENT every frame; the server decides the outcome.
@@ -1190,12 +1313,30 @@ engine.registerAlwaysUpdatable({
     // steering. The SERVER still ticks regardless, which is the whole point.
     if (gameStateManager.getState() === GameState.PLAYING) inputRelay?.update(dt);
     session?.update(dt);
+
+    // The death camera is on the ALWAYS list for the same reason the server
+    // is: it must keep moving while the player has no control. A death cam
+    // that freezes because input stopped is just a screenshot.
+    // Collapse over ~0.45 s on death, and pop straight back up on respawn:
+    // a body that eases UP out of the ground looks like it is being winched.
+    const collapseTarget = awaitingRespawn ? 1 : 0;
+    deathCollapse = collapseTarget > deathCollapse
+      ? Math.min(1, deathCollapse + dt / 0.45)
+      : 0;
+
+    deathCamera.update(dt);
+    killfeed.update(dt);
+    if (awaitingRespawn) {
+      deathOverlay.setRespawnIn(respawnAt - performance.now() / 1000);
+    }
   },
 });
 
 // --- screens ---------------------------------------------------------------
 const ui = new UIManager();
 let activeLevelId = LEVELS[0].id;
+/** Which game mode the next match runs. FFA is the default, as in COD. */
+let activeModeId = 'ffa';
 
 /** Start (or restart) a match on a level: load it, then show the click gate. */
 const beginLoad = async (levelId: string): Promise<void> => {
@@ -1243,7 +1384,18 @@ const enterMatch = (): void => {
   // The server owns match state; the client asks to join and resets its own
   // presentation. Every authoritative reset (entities, pools, effect queues)
   // happens server-side in response to this.
-  session?.client.joinMatch(activeLevelId);
+  // Join with the operator and weapons the player actually chose. This is
+  // what makes the operator selection REAL rather than a menu that changes a
+  // picture: the server stores it, puts it in the public player state, and
+  // every other client renders you as that operator.
+  const chosen = loadoutManager.getCurrentLoadout();
+  session?.client.joinMatch(activeLevelId, {
+    primaryId: chosen.primaryId,
+    secondaryId: chosen.secondaryId,
+    tacticalId: 'flash',
+    killstreakIds: killstreakManager.slots.map((s) => s.id),
+    operatorId: operatorRoster.selectedId_,
+  }, { modeId: activeModeId });
   gameStateManager.setState(GameState.PLAYING);
 };
 
@@ -1264,10 +1416,19 @@ const quitToMenu = (): void => {
   killstreakTablet.forceLower();
   if (cinematicCamera.isActive || cinematicCamera.isDetached) cinematicCamera.cancel();
   inputContexts.reset();
+  // Clear the death presentation, or a player who quits while dead returns
+  // to a menu with a death overlay and an orbiting camera still on top.
+  awaitingRespawn = false;
+  deathCamera.end();
+  deathOverlay.hide();
+  killfeed.clear();
+  inputRelay?.setEnabled(true);
   // Leaving the match ends it server-side too, which runs the authoritative
-  // cleanup (entities pooled, players dropped, effect queues drained). Quit
-  // used to unwind only the client's half, so server-owned state would have
-  // ridden back into the next session.
+  // cleanup (entities pooled, players dropped, effect queues drained, bot
+  // roster discarded, scoreboard wiped). Quit used to unwind only the
+  // client's half, so server-owned state would have ridden back into the
+  // next session -- which is precisely how "starting a new game reopens the
+  // previous one" happened.
   session?.client.leaveMatch();
   levelLoader.unloadCurrentLevel();
   audioManager.stopAll();
@@ -1275,11 +1436,46 @@ const quitToMenu = (): void => {
   gameStateManager.setState(GameState.MAIN_MENU);
 };
 
+/**
+ * Show the debrief.
+ *
+ * Called ONLY when the match is genuinely over — the score limit, the clock,
+ * or the player ending it. Death does not come here any more; it runs the
+ * death camera and a respawn countdown instead.
+ */
 const endMatch = (reason: string): void => {
+  // Whatever the death cam was doing, it is not doing it any more.
+  awaitingRespawn = false;
+  deathCamera.end();
+  deathOverlay.hide();
+  inputRelay?.setEnabled(true);
   gameOverScreen.setReason(reason);
+  // The final standings are the server's, not ours.
+  gameOverScreen.setFinalState(
+    session?.client.match ?? null, session?.client.id ?? null,
+  );
   document.exitPointerLock?.();
   gameStateManager.setState(GameState.GAME_OVER);
 };
+
+// The SERVER decides a match is over (score limit, clock). Before this the
+// event was emitted and nothing listened, so a match could reach its limit
+// server-side and the player would simply keep playing.
+eventBus.on('net:matchEnded', (payload) => {
+  const reason = (payload as { reason?: string })?.reason ?? 'Match Over';
+  // 'match empty' is our own leaveMatch echoing back while we are already on
+  // our way to the menu; showing a debrief for it would fight the transition.
+  if (reason === 'match empty' || reason === 'server shutdown') return;
+  if (gameStateManager.is(GameState.MAIN_MENU)) return;
+  endMatch(prettyEndReason(reason));
+});
+
+/** Server reasons are terse and lower-case; the debrief is not. */
+function prettyEndReason(reason: string): string {
+  if (reason.includes('score limit')) return 'Score Limit Reached';
+  if (reason.includes('time')) return 'Time Expired';
+  return reason.replace(/^./, (c) => c.toUpperCase());
+}
 
 const pauseMenu = new PauseMenu({
   onResume: () => {
@@ -1336,6 +1532,13 @@ ui.registerPersistent(minimap.element);
 ui.registerPersistent(disorientOverlays.element);
 ui.registerPersistent(missileHUD.element);
 ui.registerPersistent(missileHUD.barsElement);
+ui.registerPersistent(matchBar.element);
+ui.registerPersistent(matchBar.countdownElement);
+ui.registerPersistent(killfeed.element);
+// The death overlay is PERSISTENT, not a routed screen: the death camera is
+// still rendering the world behind it, and a routed screen would hide the
+// canvas. That distinction is the whole reason death is no longer a screen.
+ui.registerPersistent(deathOverlay.element);
 equipmentHUD.setKeyLabel(
   prettyKey(engine.inputManager.getBindings().throwTactical),
 );
@@ -1369,6 +1572,11 @@ window.addEventListener('keydown', (e) => {
 // Losing pointer lock unexpectedly (alt-tab, browser Escape) must pause, or
 // the player keeps taking damage behind a window they cannot see.
 eventBus.on('input:pointerlock:lost', () => {
+  // Dying releases pointer lock on purpose -- the death camera is running and
+  // the player has no body to steer. Pausing here would drop the menu over
+  // the death cam and, worse, read as the match being interrupted by the
+  // player rather than by the bullet.
+  if (awaitingRespawn) return;
   if (gameStateManager.getState() === GameState.PLAYING) {
     session?.client.requestPause(true);
     gameStateManager.setState(GameState.PAUSED);
@@ -1387,7 +1595,14 @@ explosionDamage.setPlayerTarget(
   (amount) => playerHealth.takeDamage(amount, undefined),
 );
 
-eventBus.on('player:died', () => endMatch('You Died'));
+// Dying is NOT the end of the match. This used to be
+// `endMatch('You Died')`, which tore down the whole session — the single
+// worst bug in the client, and the reason a new game could open on top of
+// the previous one. The server now owns death entirely and tells us about
+// it; all the client does is present it.
+//
+// The local health system still emits `player:died` for its own HUD
+// purposes, but it no longer decides anything.
 
 // Debug damage bind (F6): a guaranteed trigger path for the HUD's health,
 // vignette and damage-direction widgets, per §8.1's requirement that at least
@@ -1584,6 +1799,16 @@ Object.assign((window as unknown as { __OPERATOR__: Record<string, unknown> })._
   // Killstreak behaviour harness: reads the shared hittable registry to prove
   // the gunship is destructible by the same path as everything else.
   ballistics,
+  // Match/death/respawn harness: the death presentation and the killfeed are
+  // pure UI, so the only way to prove they ran is to read them.
+  deathCamera, deathOverlay, killfeed, matchBar, gameOverScreen,
+  operatorRoster,
+  isAwaitingRespawn: () => awaitingRespawn,
+  getWorldPassMask: () => (
+    cinematicCamera.isActive || cinematicCamera.isDetached
+      ? WORLD_PASS_MASK.THIRD
+      : perspective.worldPassMask
+  ),
 });
 // ---------------------------------------------------------------------------
 // End TEMPORARY block.

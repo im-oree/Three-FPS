@@ -30,7 +30,7 @@ import type SkinManager from '../../customization/SkinManager';
 import type { AssetLoader } from '../../core/AssetLoader';
 import type { Screen } from '../UIManager';
 
-const WEAPON_LABELS: Record<string, string> = {
+export const WEAPON_LABELS: Record<string, string> = {
   rifle: 'Assault Rifle',
   smg: 'Submachine Gun',
   shotgun: 'Pump Shotgun',

@@ -141,9 +141,18 @@ export class AISystem implements ServerSystem {
     for (const agent of this.agents.values()) agent.reset();
   }
 
+  /**
+   * Full reset between matches: the roster is DISCARDED, not just cleared.
+   *
+   * Keeping the agents alive here was the "starting a new game reopens the
+   * previous one" bug: `resetAll()` wiped the world's players but left the
+   * AI controllers registered, so the next match began with agents driving
+   * player ids that no longer existed. A new match builds a new roster.
+   */
   reset(): void {
     this.squad.reset();
     for (const agent of this.agents.values()) agent.reset();
+    this.agents.clear();
     this.tickCount = 0;
   }
 

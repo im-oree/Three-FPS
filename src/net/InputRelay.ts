@@ -18,6 +18,7 @@ export class InputRelay {
   /** Sequence numbers of frames sent but not yet acknowledged. */
   private readonly unacked: { seq: number; dt: number }[] = [];
   private accumulator = 0;
+  private enabled = true;
 
   constructor(
     private readonly client: GameClient,
@@ -35,8 +36,22 @@ export class InputRelay {
    * clamps dt anyway, and sending at the render rate keeps latency at one
    * frame instead of up to a whole tick.
    */
+  /**
+   * Stop or resume reporting intent.
+   *
+   * Disabled while dead: a corpse that keeps sending movement keeps walking,
+   * because the relay has no idea the player is not alive — and it should
+   * not, since liveness is the server's business, not the relay's.
+   */
+  setEnabled(enabled: boolean): void {
+    this.enabled = enabled;
+    // Drop the partial frame, so resuming does not send one huge dt that
+    // covers the entire time the player spent dead.
+    this.accumulator = 0;
+  }
+
   update(dt: number): void {
-    if (!this.client.isConnected) return;
+    if (!this.enabled || !this.client.isConnected) return;
 
     this.accumulator += dt;
     // Never send a zero-length frame; it costs bandwidth and means nothing.

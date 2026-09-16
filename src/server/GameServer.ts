@@ -49,7 +49,10 @@ import { SeededRandom } from './ai/Difficulty';
 import { registerBuiltinCapabilities } from './ai/registerCapabilities';
 import type { AgentOptions } from './ai/AgentController';
 import type { SpawnPoint } from './ServerWorld';
-import type { LoadoutSpec, Vec3 } from '../net/Protocol';
+import type {
+  KillfeedWire, LoadoutSpec, MatchStateWire, Vec3,
+} from '../net/Protocol';
+import type { MatchEvent } from './systems/MatchSystem';
 
 /**
  * Weapons and operators a bot may be issued.
@@ -104,6 +107,15 @@ interface Connection {
 export interface GameServerOptions {
   /** Supplies baked collision data. Omit for a server with no geometry. */
   readonly levelFetcher?: LevelFetcher;
+  /**
+   * Top the lobby up to the mode's player count when someone joins.
+   *
+   * On by default, because a match is supposed to be a populated lobby. Off
+   * for tests that need an exactly-known population -- a two-player ballistics
+   * arena must contain two players, not two plus six that wandered into the
+   * line of fire.
+   */
+  readonly fillLobby?: boolean;
 }
 
 export class GameServer {
@@ -115,6 +127,9 @@ export class GameServer {
   private levelLoad: Promise<void> | null = null;
   /** Kept for ammo queries; also registered as an ordinary system. */
   readonly combat: CombatSystem;
+
+  /** Whether joining tops the lobby up with agents. See GameServerOptions. */
+  private readonly autoFill: boolean;
 
   private readonly connections = new Map<PlayerId, Connection>();
   private readonly systems: ServerSystem[] = [];
@@ -157,7 +172,11 @@ export class GameServer {
     // The match owns score, the clock, death and respawn. It runs after
     // combat and killstreaks (so a kill scored this tick is counted this
     // tick) and before AI, so a bot's brain sees the post-death world.
+    this.autoFill = options.fillLobby ?? true;
     this.match = new MatchSystem(this.collision);
+    // Subscribe rather than drain: consumeEvents() is destructive, so a
+    // second consumer would silently starve whichever ran second.
+    this.match.onEvent((event) => this.dispatchMatchEvents(event));
     this.match.setKillSource(() => this.combat.lastShots);
     this.addSystem(this.match);
 
@@ -198,7 +217,12 @@ export class GameServer {
     const loadout = options.loadout ?? randomLoadout(id);
     this.world.addPlayer(id, loadout);
     const spawned = this.world.getPlayer(id);
-    if (spawned) spawned.displayName = displayName;
+    if (spawned) {
+      spawned.displayName = displayName;
+      // Spread them out properly rather than stacking on the world's single
+      // fallback spawn point.
+      this.match.placePlayer(this.world, spawned);
+    }
     this.match.identities.bind(id, {
       identityId: `id_${id}`,
       displayName,
@@ -274,10 +298,41 @@ export class GameServer {
 
       case 'joinMatch': {
         connection.joined = true;
-        this.startMatch(msg.levelId);
+        this.startMatch(msg.levelId, msg.modeId);
         const spawn = this.world.addPlayer(connection.id, msg.loadout);
+        // A human is a player exactly as a bot is: same name authority, same
+        // scoreboard, same spawn selection. Without this registration the
+        // human would be missing from their own match's scoreboard, which is
+        // the kind of asymmetry that makes bots detectable.
+        const chosen = msg.loadout?.operatorId;
+        const player = this.world.getPlayer(connection.id);
+        if (player) {
+          player.displayName = msg.name
+            ? this.names.claim(msg.name, this.nameRng)
+            : this.names.generateUnique(this.nameRng);
+          this.match.placePlayer(this.world, player);
+          if (chosen && player.loadout) {
+            player.loadout = { ...player.loadout, operatorId: chosen };
+          }
+        }
+        this.match.addPlayer(connection.id, player?.displayName);
+        this.match.identities.bind(connection.id, {
+          identityId: `identity:${connection.id}`,
+          displayName: player?.displayName ?? connection.id,
+          isBot: false,
+        });
+        // Fill the lobby to the mode's player count, so a solo player joins a
+        // populated match rather than an empty map.
+        if (this.autoFill) this.fillLobby();
+        // Report where the player ACTUALLY is, not the world's fallback
+        // spawn: placePlayer may have moved them, and a client told the wrong
+        // spawn teleports itself somewhere the server does not agree with.
+        const placed = player ?? null;
         this.sendTo(connection, {
-          t: 'matchReady', levelId: msg.levelId, spawn: spawn.pos, spawnYaw: spawn.yaw,
+          t: 'matchReady',
+          levelId: msg.levelId,
+          spawn: placed ? [placed.px, placed.py, placed.pz] : spawn.pos,
+          spawnYaw: placed ? placed.yaw : spawn.yaw,
         });
         break;
       }
@@ -285,6 +340,7 @@ export class GameServer {
       case 'leaveMatch': {
         connection.joined = false;
         this.world.removePlayer(connection.id);
+        this.match.removePlayer(connection.id);
         // A match with nobody in it is over. Without this, quitting to the
         // menu would leave the simulation running with zero players -- and on
         // a hosted backend that is a room that never frees its slot.
@@ -386,6 +442,11 @@ export class GameServer {
       this.collision.load(data.boxes, data.terrain);
       this.world.setSpawnPoints([{ pos: data.spawn, yaw: data.spawnYaw }]);
       this.applySpawnSets(data);
+      // Players who joined while this was in flight were placed against the
+      // temporary floor, which has no spawn sets -- so they are all standing
+      // on the same fallback point. Now that the real geometry and its spawn
+      // sets are here, place them properly.
+      this.replaceAllSpawns();
       // Navigation is derived from the collision that just landed, so it can
       // never describe a different world than the one players collide with.
       this.ai.buildNavigation();
@@ -415,8 +476,45 @@ export class GameServer {
     this.match.spawns.loadSets({ ffa: single, teamA: single, teamB: single });
   }
 
+  /**
+   * Re-place every player using the now-loaded spawn sets.
+   *
+   * Only safe at the very start of a match, which is the only time it is
+   * called: teleporting a player mid-fight would be indefensible.
+   */
+  private replaceAllSpawns(): void {
+    for (const player of this.world.allPlayers) {
+      this.match.placePlayer(this.world, player);
+      const connection = this.connections.get(player.id);
+      if (connection?.joined) {
+        this.sendTo(connection, {
+          t: 'respawned', pos: [player.px, player.py, player.pz], yaw: player.yaw,
+        });
+      }
+    }
+  }
+
   /** Resolves once any in-flight level load has settled. For tests. */
   whenLevelReady(): Promise<void> { return this.levelLoad ?? Promise.resolve(); }
+
+  /**
+   * Top the lobby up to the mode's player count.
+   *
+   * Call of Duty does not drop you into an empty map, and neither should we:
+   * FFA is an eight-player mode, so eight players is what a match has. The
+   * ones the matchmaker could not find humans for are filled in — which is
+   * exactly what COD does too, and exactly why they must be indistinguishable
+   * from the humans they are standing in for.
+   */
+  fillLobby(): void {
+    const target = this.match.getMode().maxPlayers;
+    let present = 0;
+    for (const connection of this.connections.values()) {
+      if (connection.joined) present += 1;
+    }
+    present += this.ai.agentCount;
+    for (let i = present; i < target; i += 1) this.addBot();
+  }
 
   /** End the match once the last player has gone. */
   private endMatchIfEmpty(): void {
@@ -454,6 +552,13 @@ export class GameServer {
     this.tick = 0;
     this.elapsed = 0;
     this.pausedBySolo = false;
+    // Bot numbering restarts, so a second match's roster is `p1..p8` again
+    // rather than continuing from where the last one stopped.
+    this.botCounter = 0;
+    // Forget the last scoreboard we pushed. Without this the first state of
+    // a NEW match can be suppressed as a duplicate of the old one's, and the
+    // scoreboard silently shows the previous match until someone scores.
+    this.lastMatchFingerprint = '';
   }
 
   /** Full shutdown. The client calls this when the tab/game closes. */
@@ -499,6 +604,9 @@ export class GameServer {
     if (ticked) this.broadcastSnapshot();
   }
 
+  /** Last pushed match state, so unchanged scoreboards are not resent. */
+  private lastMatchFingerprint = '';
+
   private broadcastSnapshot(): void {
     const entities: EntityState[] = this.world.collectEntityStates();
     const removed = this.world.consumeRemovedIds();
@@ -522,6 +630,107 @@ export class GameServer {
       const slots = this.world.getKillstreakSlots(connection.id);
       if (slots) this.sendTo(connection, { t: 'killstreakState', slots });
     }
+
+    this.broadcastMatchState();
+  }
+
+  /**
+   * Push scoreboard/clock/phase, but only when it actually changed.
+   *
+   * The clock is quantised to whole seconds for this comparison: it changes
+   * continuously, and a client that re-renders the scoreboard sixty times a
+   * second to move a timer that displays whole seconds is burning frames for
+   * nothing.
+   */
+  private broadcastMatchState(): void {
+    const snap = this.match.snapshot();
+    const state: MatchStateWire = {
+      phase: snap.phase,
+      modeId: snap.modeId,
+      modeName: snap.modeName,
+      timeRemaining: snap.timeRemaining,
+      countdown: this.match.countdownRemaining,
+      scoreLimit: snap.scoreLimit,
+      teamBased: snap.teamBased,
+      teamScores: snap.teamScores,
+      standings: snap.standings.map((row) => ({
+        id: row.id,
+        name: row.name,
+        team: row.team,
+        kills: row.kills,
+        deaths: row.deaths,
+        assists: row.assists,
+        score: row.score,
+        streak: row.streak,
+      })),
+    };
+
+    const fingerprint = `${state.phase}|${Math.ceil(state.timeRemaining)}`
+      + `|${Math.ceil(state.countdown)}|${state.teamScores.A}|${state.teamScores.B}|`
+      + state.standings.map((r) => `${r.id}:${r.score}:${r.kills}:${r.deaths}`).join(',');
+    if (fingerprint === this.lastMatchFingerprint) return;
+    this.lastMatchFingerprint = fingerprint;
+
+    for (const connection of this.connections.values()) {
+      if (!connection.joined) continue;
+      this.sendTo(connection, { t: 'matchState', state });
+    }
+  }
+
+  /**
+   * Turn the match system's events into client messages.
+   *
+   * Death is the one that matters: the victim is TOLD they died, by whom, and
+   * when they may return. The client never decides any of that, which is what
+   * makes a death impossible to desync.
+   */
+  private dispatchMatchEvents(event: MatchEvent): void {
+    {
+      if (event.kind === 'death') {
+        const record = event.record;
+        const entry: KillfeedWire = {
+          killerName: record.killer ? this.match.identities.nameOf(record.killer) : null,
+          victimName: this.match.identities.nameOf(record.victim),
+          weaponId: record.weaponId,
+          headshot: record.headshot,
+        };
+        for (const connection of this.connections.values()) {
+          if (!connection.joined) continue;
+          this.sendTo(connection, { t: 'killfeed', entry });
+        }
+        const victimConnection = this.connections.get(record.victim);
+        if (victimConnection?.joined) {
+          this.sendTo(victimConnection, {
+            t: 'died',
+            death: {
+              victim: record.victim,
+              victimName: entry.victimName,
+              killer: record.killer,
+              killerName: entry.killerName,
+              weaponId: record.weaponId,
+              headshot: record.headshot,
+              distance: record.distance,
+              victimPos: [...record.victimPos] as Vec3,
+              killerPos: record.killerPos ? [...record.killerPos] as Vec3 : null,
+            },
+            respawnIn: Math.max(0, event.respawnAt - this.elapsed),
+          });
+        }
+      } else if (event.kind === 'respawn') {
+        const connection = this.connections.get(event.player);
+        const player = this.world.getPlayer(event.player);
+        if (connection?.joined && player) {
+          this.sendTo(connection, {
+            t: 'respawned', pos: [player.px, player.py, player.pz], yaw: player.yaw,
+          });
+        }
+      } else if (event.kind === 'ended') {
+        for (const connection of this.connections.values()) {
+          if (!connection.joined) continue;
+          this.sendTo(connection, { t: 'matchEnded', reason: event.reason });
+        }
+      }
+    }
   }
 
   private sendTo(connection: Connection, message: S2C): void {
@@ -538,6 +747,8 @@ export class GameServer {
 
   get currentTick(): number { return this.tick; }
   get isRunning(): boolean { return this.running && !this.pausedBySolo; }
+  /** How many agents are on the roster. Reset between matches. */
+  get aiAgentCount(): number { return this.ai.agentCount; }
   get playerCount(): number { return this.connections.size; }
   get activeLevelId(): string | null { return this.levelId; }
   get isMatchActive(): boolean { return this.running; }

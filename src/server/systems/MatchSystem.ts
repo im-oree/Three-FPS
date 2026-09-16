@@ -26,6 +26,9 @@ import { FREE_FOR_ALL, type GameModeDefinition, type TeamId } from '../GameModes
 import { IdentityRegistry } from '../Identity';
 import { SpawnSelector, type SpawnSetName } from '../SpawnSelector';
 
+/** Cap on the undrained event queue, so an unsubscribed server cannot leak. */
+const MAX_PENDING_EVENTS = 128;
+
 export type MatchPhase = 'warmup' | 'countdown' | 'live' | 'ended';
 
 export interface PlayerScore {
@@ -85,6 +88,7 @@ export class MatchSystem implements ServerSystem {
   private readonly respawnAt = new Map<PlayerId, number>();
   private readonly deaths: DeathRecord[] = [];
   private events: MatchEvent[] = [];
+  private readonly listeners = new Set<(event: MatchEvent) => void>();
 
   readonly spawns = new SpawnSelector();
   readonly identities = new IdentityRegistry();
@@ -159,13 +163,48 @@ export class MatchSystem implements ServerSystem {
     this.phase = 'live';
     this.countdown = 0;
     this.clock = this.mode.timeLimitSeconds;
-    this.events.push({ kind: 'started' });
+    this.emit({ kind: 'started' });
   }
 
+  /**
+   * Drain the queue.
+   *
+   * Prefer `onEvent` for anything that must not miss an event: this is
+   * destructive, so two callers cannot both use it — the first to drain wins
+   * and the second sees nothing. The subscription path has no such hazard,
+   * which is why the server's own dispatch uses it and this remains for
+   * tests and one-off inspection.
+   */
   consumeEvents(): MatchEvent[] {
     const out = this.events;
     this.events = [];
     return out;
+  }
+
+  /**
+   * Subscribe to match events. Returns an unsubscribe function.
+   *
+   * Every subscriber sees every event, so the network dispatch and any number
+   * of other listeners coexist without fighting over one queue.
+   */
+  onEvent(listener: (event: MatchEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+
+  private emit(event: MatchEvent): void {
+    this.events.push(event);
+    // Cap the drain-based queue: if nobody ever calls consumeEvents (the
+    // normal case in production, where the server subscribes instead), it
+    // must not grow without bound for the life of the match.
+    if (this.events.length > MAX_PENDING_EVENTS) this.events.shift();
+    for (const listener of [...this.listeners]) {
+      try {
+        listener(event);
+      } catch (err) {
+        console.error('[MatchSystem] event listener threw:', err);
+      }
+    }
   }
 
   /** The most recent deaths, newest last. Killcam source. */
@@ -177,11 +216,11 @@ export class MatchSystem implements ServerSystem {
       this.countdown -= dt;
       const after = Math.ceil(this.countdown);
       if (after !== before && after >= 0) {
-        this.events.push({ kind: 'countdown', secondsLeft: after });
+        this.emit({ kind: 'countdown', secondsLeft: after });
       }
       if (this.countdown <= 0) {
         this.phase = 'live';
-        this.events.push({ kind: 'started' });
+        this.emit({ kind: 'started' });
       }
       return;
     }
@@ -274,7 +313,7 @@ export class MatchSystem implements ServerSystem {
 
     const respawnTime = world.time + this.mode.respawnDelaySeconds;
     this.respawnAt.set(victim.id, respawnTime);
-    this.events.push({ kind: 'death', record, respawnAt: respawnTime });
+    this.emit({ kind: 'death', record, respawnAt: respawnTime });
   }
 
   // --- respawn ---------------------------------------------------------------
@@ -288,6 +327,19 @@ export class MatchSystem implements ServerSystem {
       this.respawnPlayer(world, player);
       this.respawnAt.delete(id);
     }
+  }
+
+  /**
+   * Place a player at the safest point the selector can find.
+   *
+   * Used for the INITIAL spawn as well as every respawn, deliberately: the
+   * world's own `addPlayer` round-robins a static list, which for a level
+   * whose sets have not loaded yet is a single point — so an eight-player
+   * lobby all started life stacked on one tile, visibly inside each other.
+   * One placement path means the first spawn is as well chosen as the tenth.
+   */
+  placePlayer(world: ServerWorld, player: ServerPlayer): void {
+    this.respawnPlayer(world, player);
   }
 
   /** Put a player back in the world at the safest point the selector can find. */
@@ -320,7 +372,7 @@ export class MatchSystem implements ServerSystem {
     player.vx = 0; player.vy = 0; player.vz = 0;
     player.grounded = false;
     player.fallPeakY = player.py;
-    this.events.push({ kind: 'respawn', player: player.id });
+    this.emit({ kind: 'respawn', player: player.id });
   }
 
   // --- match end -------------------------------------------------------------
@@ -348,7 +400,7 @@ export class MatchSystem implements ServerSystem {
   end(reason: string): void {
     if (this.phase === 'ended') return;
     this.phase = 'ended';
-    this.events.push({ kind: 'ended', reason, standings: this.standings() });
+    this.emit({ kind: 'ended', reason, standings: this.standings() });
   }
 
   /** Sorted leaderboard: score, then fewest deaths, then name for stability. */
@@ -359,6 +411,9 @@ export class MatchSystem implements ServerSystem {
       || a.name.localeCompare(b.name)
     ));
   }
+
+  /** Seconds left on the pre-match countdown. */
+  get countdownRemaining(): number { return Math.max(0, this.countdown); }
 
   snapshot(): MatchSnapshot {
     return {
@@ -381,14 +436,27 @@ export class MatchSystem implements ServerSystem {
     return a <= b ? 'A' : 'B';
   }
 
+  /**
+   * A match begins in its pre-match countdown, not in warmup.
+   *
+   * `warmup` is the state a MatchSystem is in before anyone starts a match —
+   * it is the constructed state, not a phase a real match passes through.
+   * Leaving the phase there was a real bug: `tick()` returns early for
+   * anything that is not 'live', so the clock never moved, respawns never
+   * processed and no kill was ever credited. The match looked like it was
+   * running because players could move (movement is a different system) while
+   * nothing that made it a MATCH was happening.
+   */
   onMatchStart(): void {
     this.reset();
     this.clock = this.mode.timeLimitSeconds;
+    this.beginCountdown();
   }
 
   onMatchEnd(): void { this.phase = 'ended'; }
 
   reset(): void {
+    this.events.length = 0;
     this.phase = 'warmup';
     this.clock = this.mode.timeLimitSeconds;
     this.countdown = 0;

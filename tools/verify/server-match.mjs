@@ -572,8 +572,13 @@ console.log('\n[15] Starting a new match leaves nothing behind');
   check('a new match starts with no death log',
     server.match.deathLog.length === 0, `${server.match.deathLog.length} deaths`);
 
-  check('a new match starts in warmup, with a full clock',
-    server.match.currentPhase === 'warmup'
+  // A new match opens in its pre-match COUNTDOWN, not in warmup. 'warmup' is
+  // the state of a MatchSystem nobody has started yet, not a phase a real
+  // match passes through -- and leaving a started match there was a genuine
+  // bug, because tick() returns early for any non-live phase, so the clock
+  // never ran and no kill was ever credited. The browser suite caught it.
+  check('a new match starts in its countdown, with a full clock',
+    server.match.currentPhase === 'countdown'
     && server.match.timeRemaining === FREE_FOR_ALL.timeLimitSeconds,
     `phase=${server.match.currentPhase} clock=${server.match.timeRemaining}`);
 

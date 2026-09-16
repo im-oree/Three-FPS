@@ -202,6 +202,9 @@ export class ServerWorld {
   get allPlayers(): IterableIterator<ServerPlayer> { return this.players.values(); }
   get playerCount(): number { return this.players.size; }
 
+  /** Every player id currently in the world. */
+  playerIds(): PlayerId[] { return [...this.players.keys()]; }
+
   setSpawnPoints(points: readonly SpawnPoint[]): void {
     if (points.length) this.spawnPoints = [...points];
     this.nextSpawnIndex = 0;

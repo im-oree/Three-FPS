@@ -41,6 +41,15 @@ const REUSE_MEMORY_SECONDS = 5;
 /** Ranked candidates to rotate between when everything is contested. */
 const ROTATION_POOL = 3;
 
+/**
+ * A spawn point with a living player inside this radius is unusable.
+ *
+ * Larger than a player capsule on purpose: not clipping into someone is the
+ * minimum bar, but spawning two metres from a stranger in a free-for-all is
+ * still a bad spawn.
+ */
+const OCCUPIED_RADIUS = 4.5;
+
 export type SpawnSetName = 'ffa' | 'teamA' | 'teamB';
 
 export interface SpawnSets {
@@ -116,11 +125,23 @@ export class SpawnSelector {
       .map((point) => this.scorePoint(point, enemies, friends, collision, now))
       .sort((a, b) => b.score - a.score);
 
+    // HARD rule, applied before any scoring is allowed to matter: a point
+    // with a living body on it is not a spawn point. Scoring alone cannot
+    // express this -- a penalty is a preference, and eight players placed in
+    // the same instant will happily all accept the same "slightly penalised"
+    // best point and end up standing inside each other. Which is exactly
+    // what happened: eight players, closest pair 0.4 m apart.
+    const free = ranked.filter((entry) => !this.isOccupied(entry.point, enemies, friends));
+    // If every point is occupied (tiny map, full lobby) fall back to the
+    // ranking rather than refusing to spawn: being crowded beats being
+    // nowhere.
+    const usable = free.length ? free : ranked;
+
     // Rotate among the top few rather than always taking the single best.
     // Always taking the maximum makes spawns predictable, which is exactly
     // how spawn camping starts.
-    const poolSize = Math.min(ROTATION_POOL, ranked.length);
-    const chosen = ranked[this.cursor % poolSize];
+    const poolSize = Math.min(ROTATION_POOL, usable.length);
+    const chosen = usable[this.cursor % poolSize];
     this.cursor += 1;
 
     this.recentlyUsed.push({ x: chosen.point.pos[0], z: chosen.point.pos[2], at: now });
@@ -139,6 +160,30 @@ export class SpawnSelector {
     return points
       .map((p) => this.scorePoint(p, enemies, friends, collision, now))
       .sort((a, b) => b.score - a.score);
+  }
+
+  /**
+   * Is somebody already standing here?
+   *
+   * Uses a generous radius: two players 2 m apart are not intersecting, but
+   * spawning that close to a stranger is still a bad spawn — in FFA it is an
+   * instant free kill for whoever turns around first.
+   */
+  private isOccupied(
+    point: SpawnPoint,
+    enemies: readonly ServerPlayer[],
+    friends: readonly ServerPlayer[],
+  ): boolean {
+    const [px, , pz] = point.pos;
+    for (const other of enemies) {
+      if (!other.alive) continue;
+      if (Math.hypot(other.px - px, other.pz - pz) < OCCUPIED_RADIUS) return true;
+    }
+    for (const other of friends) {
+      if (!other.alive) continue;
+      if (Math.hypot(other.px - px, other.pz - pz) < OCCUPIED_RADIUS) return true;
+    }
+    return false;
   }
 
   private scorePoint(

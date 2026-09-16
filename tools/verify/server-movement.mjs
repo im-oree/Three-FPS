@@ -16,7 +16,10 @@ const FLOOR = [{ minX: -50, minY: -1, minZ: -50, maxX: 50, maxY: 0, maxZ: 50, su
 
 /** A server with a floor and one joined player, ready to receive input. */
 async function makeServer(boxes = FLOOR) {
-  const server = new GameServer();
+  // fillLobby off: this suite needs an exactly-known population. A match
+  // normally tops itself up to eight players, which would put six extra
+  // bodies in the line of fire.
+  const server = new GameServer({ fillLobby: false });
   const pair = createLocalTransportPair();
   server.accept(pair.server);
   await pair.server.connect();
@@ -279,7 +282,7 @@ async function run(ctx, ticks, over = {}) {
   world.load(level.boxes);
 
   // Drop a capsule from high above the spawn and see where it settles.
-  const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+  const server = new GameServer({ fillLobby: false, levelFetcher: diskLevelFetcher() });
   const pair = createLocalTransportPair();
   server.accept(pair.server);
   await pair.server.connect();
@@ -290,14 +293,23 @@ async function run(ctx, ticks, over = {}) {
   await server.whenLevelReady();
 
   const player = [...server.world.allPlayers][0];
-  player.py = 20;
+  // Where the spawn system actually put them -- prototype is a terrain map
+  // whose ground runs from -7.5 m to +26.6 m, so there is no single "floor
+  // height" to assert against. The check is that the player lands ON the
+  // ground near their spawn, not that the ground is at a particular y: the
+  // old test hardcoded `py > -1`, which only held while every player spawned
+  // on one fixed point.
+  const spawnY = player.py;
+  player.py = spawnY + 20;
   for (let i = 0; i < 180; i += 1) server.update(Protocol.TICK_SECONDS);
 
   check('a real baked level loads with geometry',
     level.boxes.length > 20, `${level.boxes.length} boxes in "prototype"`);
   check('the server stands a player on real level geometry',
-    player.grounded && player.py > -1 && player.py < 5,
-    `settled at y=${player.py.toFixed(2)}, grounded=${player.grounded}`);
+    player.grounded && Math.abs(player.py - spawnY) < 1.5,
+    `dropped from y=${(spawnY + 20).toFixed(2)}, settled at `
+    + `y=${player.py.toFixed(2)} (spawn ground y=${spawnY.toFixed(2)}), `
+    + `grounded=${player.grounded}`);
   server.shutdown();
 }
 

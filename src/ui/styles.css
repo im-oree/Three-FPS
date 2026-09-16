@@ -1256,3 +1256,303 @@ input[type='checkbox'] { pointer-events: auto; width: 17px; height: 17px; accent
 .screen--loadout .skin-swatch--active { outline: 2px solid var(--cod-accent); outline-offset: 1px; }
 
 .screen--loadout .cod__footer { cursor: pointer; }
+
+/* ---------- death overlay + respawn countdown ----------------------------- */
+/*
+ * An OVERLAY, not a .screen: the death camera is rendering the body behind it,
+ * so the canvas must stay visible. Hence no opaque background — only a
+ * vignette that darkens the edges and lifts the text off the scene.
+ */
+
+.death-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  z-index: 24;
+  background: radial-gradient(
+    ellipse at 50% 45%,
+    rgba(0, 0, 0, 0) 32%,
+    rgba(80, 8, 8, 0.28) 74%,
+    rgba(40, 0, 0, 0.62) 100%
+  );
+  animation: death-fade-in 0.35s ease-out both;
+}
+
+@keyframes death-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.death-banner {
+  margin-top: 5.5vh;
+  font-size: 0.82rem;
+  letter-spacing: 0.42em;
+  font-weight: 700;
+  color: var(--ui-accent);
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);
+}
+
+.death-card {
+  margin-top: 7vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 0 2rem;
+}
+
+.death-title {
+  font-size: 0.78rem;
+  letter-spacing: 0.34em;
+  color: rgba(232, 234, 238, 0.68);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.9);
+}
+
+.death-killer {
+  margin-top: 0.45rem;
+  font-size: 2.6rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  line-height: 1.05;
+  text-shadow: 0 3px 18px rgba(0, 0, 0, 0.95);
+}
+
+/* The killer's remaining health — "you nearly had them". */
+.death-killer-health {
+  margin-top: 0.7rem;
+  width: 190px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.death-killer-health-fill {
+  height: 100%;
+  width: 100%;
+  background: var(--ui-good);
+  transition: width 0.25s ease-out;
+}
+
+.death-killer-health-fill.critical { background: var(--ui-danger); }
+
+.death-detail {
+  margin-top: 0.75rem;
+  font-size: 0.74rem;
+  letter-spacing: 0.2em;
+  color: var(--ui-dim);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.9);
+}
+
+.death-countdown {
+  position: absolute;
+  bottom: 12vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.death-countdown-label {
+  font-size: 0.68rem;
+  letter-spacing: 0.32em;
+  color: rgba(232, 234, 238, 0.6);
+}
+
+.death-countdown-number {
+  font-family: var(--ui-mono);
+  font-size: 3.4rem;
+  font-weight: 700;
+  line-height: 1;
+  margin-top: 0.3rem;
+  color: var(--ui-text);
+  text-shadow: 0 3px 18px rgba(0, 0, 0, 0.95);
+}
+
+/* ---------- killfeed ------------------------------------------------------ */
+
+.killfeed {
+  position: absolute;
+  top: 3.2rem;
+  right: 1.6rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  pointer-events: none;
+}
+
+.killfeed__row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 3px 8px;
+  background: rgba(8, 10, 14, 0.58);
+  border-radius: 2px;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  animation: killfeed-in 0.18s ease-out both;
+}
+
+@keyframes killfeed-in {
+  from { opacity: 0; transform: translateX(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+.killfeed__killer { font-weight: 700; }
+.killfeed__killer--you { color: var(--ui-accent); }
+.killfeed__victim--you { color: var(--ui-danger); font-weight: 700; }
+.killfeed__weapon { color: var(--ui-dim); text-transform: uppercase; }
+.killfeed__headshot { color: var(--ui-accent); font-weight: 700; }
+
+/* ---------- match clock / score banner ------------------------------------ */
+
+.match-bar {
+  position: absolute;
+  top: 0.8rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  padding: 0.35rem 1.1rem;
+  background: rgba(8, 10, 14, 0.55);
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+.match-bar__clock {
+  font-family: var(--ui-mono);
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.match-bar__clock--urgent { color: var(--ui-danger); }
+
+.match-bar__score {
+  font-family: var(--ui-mono);
+  font-size: 1.05rem;
+  font-weight: 700;
+  min-width: 2.2rem;
+  text-align: center;
+}
+
+.match-bar__score--a { color: var(--ui-accent); }
+.match-bar__score--b { color: #6fa8d8; }
+.match-bar__mode {
+  font-size: 0.62rem;
+  letter-spacing: 0.24em;
+  color: var(--ui-dim);
+}
+
+/* The pre-match countdown, centre screen. */
+.match-countdown {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.match-countdown__number {
+  font-family: var(--ui-mono);
+  font-size: 6rem;
+  font-weight: 800;
+  line-height: 1;
+  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.95);
+  animation: countdown-pop 0.9s ease-out both;
+}
+
+@keyframes countdown-pop {
+  from { opacity: 0; transform: scale(1.5); }
+  30% { opacity: 1; transform: scale(1); }
+  to { opacity: 0.85; transform: scale(1); }
+}
+
+.match-countdown__label {
+  margin-top: 0.6rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.34em;
+  color: var(--ui-dim);
+}
+
+/* ---------- final scoreboard (debrief) ------------------------------------ */
+
+.debrief-placement {
+  margin-top: 0.2rem;
+  font-size: 1.0rem;
+  font-weight: 800;
+  letter-spacing: 0.24em;
+  color: var(--ui-dim);
+}
+
+.debrief-placement--win { color: var(--ui-accent); }
+
+.scoreboard {
+  margin-top: 1.1rem;
+  width: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scoreboard__row {
+  display: grid;
+  grid-template-columns: 1fr 44px 44px 58px 68px;
+  align-items: center;
+  padding: 5px 10px;
+  background: rgba(255, 255, 255, 0.035);
+  border-radius: 2px;
+  font-size: 0.82rem;
+}
+
+.scoreboard__row--head {
+  background: none;
+  font-size: 0.62rem;
+  letter-spacing: 0.2em;
+  color: var(--ui-dim);
+  padding-bottom: 2px;
+}
+
+/* Your own row is picked out, so the board answers "how did I do" instantly. */
+.scoreboard__row--you {
+  background: var(--ui-accent-dim);
+  box-shadow: inset 2px 0 0 var(--ui-accent);
+}
+
+.scoreboard__row--team-a { box-shadow: inset 2px 0 0 var(--ui-accent); }
+.scoreboard__row--team-b { box-shadow: inset 2px 0 0 #6fa8d8; }
+
+.scoreboard__cell--num {
+  text-align: right;
+  font-family: var(--ui-mono);
+}
+
+.scoreboard__cell--name {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.scoreboard__rank {
+  font-family: var(--ui-mono);
+  font-size: 0.7rem;
+  color: var(--ui-dim);
+  min-width: 1.1rem;
+}
+
+.scoreboard__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+

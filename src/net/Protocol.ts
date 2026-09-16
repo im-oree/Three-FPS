@@ -89,7 +89,16 @@ export const Button = {
 
 export type C2S =
   | { readonly t: 'hello'; readonly version: number; readonly name?: string }
-  | { readonly t: 'joinMatch'; readonly levelId: string; readonly loadout?: LoadoutSpec }
+  /**
+   * `name` is a REQUEST, not an assignment. The server's name authority
+   * decides the final name (uniqueness, sanitisation), exactly as it does for
+   * every other player, and reports it back in the player state.
+   */
+  | {
+    readonly t: 'joinMatch'; readonly levelId: string;
+    readonly loadout?: LoadoutSpec; readonly name?: string;
+    readonly modeId?: string;
+  }
   | { readonly t: 'leaveMatch' }
   | { readonly t: 'input'; readonly frame: InputFrame }
   | { readonly t: 'setLoadout'; readonly loadout: LoadoutSpec }
@@ -188,7 +197,69 @@ export type S2C =
   | { readonly t: 'roomJoined'; readonly room: RoomInfo; readonly playerId: PlayerId }
   | { readonly t: 'roomLeft'; readonly reason: string }
   | { readonly t: 'roomList'; readonly rooms: readonly RoomInfo[] }
-  | { readonly t: 'roomUpdated'; readonly room: RoomInfo };
+  | { readonly t: 'roomUpdated'; readonly room: RoomInfo }
+  /** Scoreboard, clock and phase. Sent on change, not every tick. */
+  | { readonly t: 'matchState'; readonly state: MatchStateWire }
+  /**
+   * You died. Carries everything the death cam and a future killcam need:
+   * who did it, from where, with what, and when you are allowed back.
+   *
+   * The client does NOT decide any of this. It is told, which is why a death
+   * cannot desync into "the UI thinks I'm dead but the server doesn't".
+   */
+  | { readonly t: 'died'; readonly death: DeathWire; readonly respawnIn: number }
+  /** You are alive again, here. */
+  | { readonly t: 'respawned'; readonly pos: Vec3; readonly yaw: number }
+  /** Someone died — feeds the killfeed. */
+  | { readonly t: 'killfeed'; readonly entry: KillfeedWire };
+
+/** One row of the scoreboard. */
+export interface ScoreRowWire {
+  readonly id: PlayerId;
+  readonly name: string;
+  readonly team: string;
+  readonly kills: number;
+  readonly deaths: number;
+  readonly assists: number;
+  readonly score: number;
+  readonly streak: number;
+}
+
+export interface MatchStateWire {
+  readonly phase: 'warmup' | 'countdown' | 'live' | 'ended';
+  readonly modeId: string;
+  readonly modeName: string;
+  /** Seconds left on the match clock. */
+  readonly timeRemaining: number;
+  /** Seconds left on the pre-match countdown, when phase is 'countdown'. */
+  readonly countdown: number;
+  readonly scoreLimit: number;
+  readonly teamBased: boolean;
+  readonly teamScores: { readonly A: number; readonly B: number };
+  readonly standings: readonly ScoreRowWire[];
+}
+
+/** A death, as the victim's client is told about it. */
+export interface DeathWire {
+  readonly victim: PlayerId;
+  readonly victimName: string;
+  readonly killer: PlayerId | null;
+  readonly killerName: string | null;
+  readonly weaponId: string | null;
+  readonly headshot: boolean;
+  readonly distance: number;
+  /** Where the body is — the death cam orbits this. */
+  readonly victimPos: Vec3;
+  /** Where the shot came from — the death cam faces this way. */
+  readonly killerPos: Vec3 | null;
+}
+
+export interface KillfeedWire {
+  readonly killerName: string | null;
+  readonly victimName: string;
+  readonly weaponId: string | null;
+  readonly headshot: boolean;
+}
 
 /** Everything a lobby needs to show about a room, and nothing more. */
 export interface RoomInfo {

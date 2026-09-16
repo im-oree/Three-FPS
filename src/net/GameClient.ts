@@ -17,7 +17,8 @@
 import {
   PROTOCOL_VERSION,
   type ClientTransport, type EntityState, type FxEvent, type InputFrame,
-  type KillstreakSlotState, type LoadoutSpec, type PlayerPublicState,
+  type DeathWire, type KillfeedWire, type KillstreakSlotState, type LoadoutSpec,
+  type MatchStateWire, type PlayerPublicState,
   type S2C, type Snapshot, type Vec3,
 } from './Protocol';
 
@@ -31,6 +32,17 @@ export interface GameClientEvents {
   onRejected?: (reason: string) => void;
   /** The server accepted us and assigned an identity. */
   onWelcome?: (playerId: string) => void;
+  /** Scoreboard, clock and phase changed. */
+  onMatchState?: (state: MatchStateWire) => void;
+  /**
+   * You died. The death cam runs off this, and a killcam will too: the
+   * payload already identifies the killer and both positions.
+   */
+  onDied?: (death: DeathWire, respawnIn: number) => void;
+  /** You are alive again at this spawn. */
+  onRespawned?: (pos: Vec3, yaw: number) => void;
+  /** Somebody died — killfeed row. */
+  onKillfeed?: (entry: KillfeedWire) => void;
 }
 
 export class GameClient {
@@ -39,6 +51,7 @@ export class GameClient {
   private lastAckSeq = -1;
 
   /** Latest authoritative snapshot. Read by the renderer, never written. */
+  private matchState: MatchStateWire | null = null;
   private latest: Snapshot | null = null;
   /** Previous snapshot, kept so the renderer can interpolate between them. */
   private previous: Snapshot | null = null;
@@ -80,8 +93,14 @@ export class GameClient {
 
   // --- outbound intent -----------------------------------------------------
 
-  joinMatch(levelId: string, loadout?: LoadoutSpec): void {
-    this.transport.send({ t: 'joinMatch', levelId, loadout });
+  joinMatch(
+    levelId: string,
+    loadout?: LoadoutSpec,
+    options: { name?: string; modeId?: string } = {},
+  ): void {
+    this.transport.send({
+      t: 'joinMatch', levelId, loadout, name: options.name, modeId: options.modeId,
+    });
   }
 
   leaveMatch(): void {
@@ -178,6 +197,23 @@ export class GameClient {
         this.events.onSimulationState?.(msg.running, msg.reason);
         break;
 
+      case 'matchState':
+        this.matchState = msg.state;
+        this.events.onMatchState?.(msg.state);
+        break;
+
+      case 'died':
+        this.events.onDied?.(msg.death, msg.respawnIn);
+        break;
+
+      case 'respawned':
+        this.events.onRespawned?.(msg.pos, msg.yaw);
+        break;
+
+      case 'killfeed':
+        this.events.onKillfeed?.(msg.entry);
+        break;
+
       default:
         break;
     }
@@ -192,6 +228,8 @@ export class GameClient {
   get tick(): number { return this.latest?.tick ?? 0; }
   get serverTime(): number { return this.latest?.time ?? 0; }
   get snapshot(): Snapshot | null { return this.latest; }
+  /** Latest scoreboard/clock/phase, or null before the first one arrives. */
+  get match(): MatchStateWire | null { return this.matchState; }
   get previousSnapshot(): Snapshot | null { return this.previous; }
   get entities(): readonly EntityState[] { return this.latest?.entities ?? []; }
   get removedEntities(): readonly string[] { return this.latest?.removed ?? []; }

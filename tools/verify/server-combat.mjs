@@ -15,7 +15,10 @@ const FLOOR = [{ minX: -80, minY: -1, minZ: -80, maxX: 80, maxY: 0, maxZ: 80, su
 
 /** A server with two joined players on a floor. */
 async function arena(boxes = FLOOR) {
-  const server = new GameServer();
+  // fillLobby off: this suite needs an exactly-known population. A match
+  // normally tops itself up to eight players, which would put six extra
+  // bodies in the line of fire.
+  const server = new GameServer({ fillLobby: false });
   const clients = [];
   for (let i = 0; i < 2; i += 1) {
     const pair = createLocalTransportPair();

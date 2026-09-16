@@ -25,6 +25,7 @@
  */
 import eventBus from '../../core/EventBus';
 import { div, el } from '../dom';
+import { previewUrl } from '../../environment/LevelDefinition';
 import type { Screen } from '../UIManager';
 
 export class LoadingScreen implements Screen {
@@ -99,7 +100,7 @@ export class LoadingScreen implements Screen {
     this.mapDesc.textContent = description;
     // The generated aerial preview. Compulsory for every map: the generator's
     // --verify mode fails when one is missing.
-    this.backdrop.style.backgroundImage = `url('assets/previews/${levelId}.jpg')`;
+    this.backdrop.style.backgroundImage = `url('${previewUrl(levelId)}')`;
   }
 
   /** Back-compat for callers that only have a name. */
