@@ -273,6 +273,22 @@ export class KillstreakManager {
   }
 
   /**
+   * Debug state from whichever active controller exposes it.
+   *
+   * Tests need the aircraft's own orbit centre, which moves with the owner;
+   * inferring it from a position track breaks the moment the owner walks or
+   * respawns. Reading it from the controller is both simpler and honest.
+   */
+  debugControllerState(): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const entry of this.active) {
+      const orbit = (entry.controller as { debugOrbit?: unknown }).debugOrbit;
+      if (orbit) out[entry.definition.id] = orbit;
+    }
+    return out;
+  }
+
+  /**
    * A NEW MATCH starts clean: no running streaks, no cooldowns, no earned
    * streak count. Called when the player leaves for the main menu and again,
    * defensively, at match entry — a streak state surviving across matches is

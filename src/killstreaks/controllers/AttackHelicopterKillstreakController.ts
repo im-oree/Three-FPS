@@ -46,8 +46,33 @@ export class AttackHelicopterKillstreakController extends KillstreakControllerIn
   private animator: VehicleAnimator | null = null;
   /** Centre of the orbit; eases toward the owner every frame. */
   private readonly orbitCentre = new THREE.Vector3();
+  /**
+   * Where that centre was last frame, to bound how fast it may move.
+   *
+   * Per instance, not a shared module scratch vector: two gunships in the air
+   * at once would otherwise clamp against each other's centre.
+   */
+  private readonly previousCentre = new THREE.Vector3();
   /** Current angle around that centre, radians. Integrated, never snapped. */
   private orbitAngle = 0;
+
+  /**
+   * The point the aircraft is currently circling, and how far out.
+   *
+   * Exposed for tests: "is the flight path a ring" can only be answered
+   * against the centre the ring is actually about, and that centre MOVES --
+   * it follows the owner. Inferring it from a position track silently fails
+   * whenever the owner walks, dies or respawns, which on a large map looks
+   * exactly like the aircraft flying in a straight line.
+   */
+  get debugOrbit(): { x: number; z: number; radius: number; angle: number } {
+    return {
+      x: this.orbitCentre.x,
+      z: this.orbitCentre.z,
+      radius: this.orbitRadius,
+      angle: this.orbitAngle,
+    };
+  }
   /** Smoothed orbit radius, pulled in when engaging. */
   private orbitRadius = HELICOPTER.PATROL_RADIUS;
   private scanTimer = 0;
@@ -70,6 +95,8 @@ export class AttackHelicopterKillstreakController extends KillstreakControllerIn
     // INTO view rather than materialising in front of them.
     this.orbitCentre.copy(context.getPlayerPosition());
     this.orbitCentre.y = HELICOPTER.ENGAGE_ALTITUDE;
+    // Seed the clamp, or the first frame reads as a jump from the origin.
+    this.previousCentre.copy(this.orbitCentre);
     this.orbitAngle = Math.random() * Math.PI * 2;
     this.orbitRadius = HELICOPTER.PATROL_RADIUS;
 
@@ -183,6 +210,28 @@ export class AttackHelicopterKillstreakController extends KillstreakControllerIn
     // follow the player's general area, not track them like a camera.
     const follow = 1 - Math.exp(-HELICOPTER.FOLLOW_RATE * dt);
     this.orbitCentre.lerp(_desired, follow);
+
+    // Never let the centre outrun the aircraft that is chasing it.
+    //
+    // The centre eases toward the owner at a RATE, so a big jump -- the owner
+    // respawning across the map -- moves it tens of metres per second, while
+    // the aircraft itself is capped at PATROL_SPEED. The centre would arrive
+    // while the gunship was still hundreds of metres behind, and because the
+    // orbit point is computed FROM the centre the aircraft spent the rest of
+    // the streak flying a straight line after a target it could never reach.
+    // Clamping the centre's own speed keeps the two together: the gunship
+    // leads it home instead of trailing it.
+    _dir.subVectors(this.orbitCentre, this.previousCentre);
+    _dir.y = 0;
+    const centreTravel = _dir.length();
+    const maxCentreTravel = HELICOPTER.PATROL_SPEED * dt;
+    if (centreTravel > maxCentreTravel) {
+      this.orbitCentre.copy(this.previousCentre)
+        .addScaledVector(_dir.divideScalar(centreTravel), maxCentreTravel);
+      this.orbitCentre.y = HELICOPTER.ENGAGE_ALTITUDE;
+    }
+
+    this.previousCentre.copy(this.orbitCentre);
 
     // 2. Tighten the orbit when engaging so the guns are in range.
     const wantRadius = this.engaging

@@ -96,6 +96,16 @@ export class SeededRandom {
   constructor(seed: number) {
     // Avoid the zero state, which would lock xorshift at zero forever.
     this.state = (seed | 0) === 0 ? 0x9e3779b9 : seed | 0;
+    // Warm up before anyone draws.
+    //
+    // xorshift32's first output is strongly correlated with its seed: for the
+    // small, similar seeds we generate (hashes of 'kit:p1', 'kit:p2', ...)
+    // the first draw clustered badly -- a four-way weapon pick came out 60%
+    // smg-or-sniper and 39% rifle-or-shotgun, so most of a Killhouse lobby
+    // spawned holding sniper rifles on a map with no sightline longer than a
+    // corridor. The second draw onward is already well distributed, so three
+    // discarded rounds is all it takes. Cheap, and it happens once per agent.
+    for (let i = 0; i < 3; i += 1) this.next();
   }
 
   /** Uniform in [0, 1). */

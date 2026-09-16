@@ -62,8 +62,6 @@ const RETAIN_SCORE = 0.4;
 /** The default loadout. Data, not code: change it without touching the brain. */
 export const DEFAULT_CAPABILITIES = [
   'Engage', 'Hunt', 'Reload', 'Retreat', 'Patrol', 'EnterVehicle',
-  // Gates itself on this bot's skill roll, so a recruit never uses it.
-  'Dropshot',
 ] as const;
 
 export class AgentController {

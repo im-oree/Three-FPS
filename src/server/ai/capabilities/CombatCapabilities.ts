@@ -80,6 +80,17 @@ export class EngageCapability implements Capability {
   begin(): Behaviour {
     let strafe = 0;
     let strafeTimer = 0;
+    // Dropshot state. This is a MODIFIER on engaging, not a rival goal:
+    // hitting the deck is something you do WHILE shooting someone, so it
+    // belongs inside the behaviour that owns the gunfight. As its own
+    // capability it competed with Engage for the slot, and because it aimed
+    // through a separate un-clamped path it both skipped the turn-rate limit
+    // and fired while still swinging -- the top tiers, which are the only
+    // ones with the tendency to use it, spent a tenth of every match
+    // spraying at nothing. Folding it in here means one aim path, one set of
+    // trigger discipline, for every shot the bot takes.
+    let dropUntil = -1;
+    let dropChecked = false;
 
     return {
       tick(ctx: AgentContext): InputIntent {
@@ -89,6 +100,17 @@ export class EngageCapability implements Capability {
 
         const target: Vec3 = [sighting.x, sighting.y + EYE_HEIGHT * 0.8, sighting.z];
         const { yaw, pitch, onTarget } = aimAt(ctx, target, sighting.distance);
+
+        // Decide ONCE per engagement whether this bot drops, and only when
+        // it is close enough for the trade to matter. Re-rolling every tick
+        // would turn the tendency into a stutter.
+        if (!dropChecked && ctx.needs.hurt() > 0.15 && sighting.distance < 20) {
+          dropChecked = true;
+          if (ctx.rng.next() < ctx.skill.dropshotTendency) {
+            dropUntil = ctx.world.time + ctx.rng.range(0.6, 1.2);
+          }
+        }
+        const dropping = ctx.world.time < dropUntil;
 
         // Strafe while shooting. A stationary shooter is both trivially easy
         // to kill and instantly readable as a bot; humans never stand still
@@ -109,6 +131,15 @@ export class EngageCapability implements Capability {
         }
         // Aim down sights at range; hip-fire up close, like a player.
         if (sighting.distance > 14) buttons |= Button.ADS;
+
+        // Going prone-ish pulls the head out of the enemy's crosshair, at the
+        // cost of mobility -- so stop strafing while down, as a player would.
+        if (dropping) {
+          return {
+            moveX: 0, moveZ: 0, yaw, pitch,
+            buttons: buttons | Button.Crouch | Button.ADS,
+          };
+        }
 
         return { moveX: strafe * 0.7, moveZ, yaw, pitch, buttons };
       },

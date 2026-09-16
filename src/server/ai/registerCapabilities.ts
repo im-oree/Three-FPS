@@ -15,7 +15,6 @@ import {
 import {
   EnterVehicleCapability, PatrolCapability, RetreatCapability,
 } from './capabilities/MovementCapabilities';
-import { DropshotCapability } from './capabilities/TechCapabilities';
 
 let registered = false;
 
@@ -30,7 +29,9 @@ export function registerBuiltinCapabilities(): void {
   CapabilityRegistry.register('Patrol', () => new PatrolCapability());
   CapabilityRegistry.register('EnterVehicle', () => new EnterVehicleCapability());
 
-  // Combat tech, gated on each bot's skill roll. Travel tech (slide, hop)
-  // is part of MoveTo, not a capability, so every mover inherits it.
-  CapabilityRegistry.register('Dropshot', () => new DropshotCapability());
+  // Combat tech is NOT registered as rival capabilities. Dropshotting lives
+  // inside Engage and travel tech (slide, hop) inside MoveTo, because both
+  // are things you do WHILE pursuing a goal rather than goals themselves.
+  // As separate capabilities they competed for the decision slot and won it
+  // from the behaviour that actually scores kills.
 }

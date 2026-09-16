@@ -50,6 +50,7 @@ import { NameAuthority, NameRandom } from './Identity';
 import { hashString, pickTier } from './ai/BotProfile';
 import { SeededRandom } from './ai/Difficulty';
 import { registerBuiltinCapabilities } from './ai/registerCapabilities';
+import { getNavGrid } from './ai/NavContext';
 import type { AgentOptions } from './ai/AgentController';
 import type { SpawnPoint } from './ServerWorld';
 import type {
@@ -68,6 +69,56 @@ import { DamageSystem } from './systems/DamageSystem';
  * arming nobody.
  */
 const BOT_PRIMARIES = ['rifle', 'smg', 'shotgun', 'sniper'] as const;
+
+/**
+ * How often each primary is issued, by how big the map is.
+ *
+ * A uniform roll put a sniper rifle in the hands of a quarter of the lobby on
+ * Killhouse -- a warehouse whose longest sightline is about twenty metres.
+ * Those bots lost every fight they took, which is not "the AI is bad", it is
+ * "nobody would ever bring that gun here". Humans pick a weapon for the map;
+ * so should a bot.
+ *
+ * Weights are relative, not percentages. Map size is measured from the nav
+ * grid, which the server already builds -- no client level data crosses the
+ * purity boundary to get here.
+ */
+const PRIMARY_WEIGHTS: Record<'close' | 'medium' | 'open', Record<string, number>> = {
+  // Corridor maps: Killhouse, Shipment. Shotguns and SMGs rule, and a sniper
+  // is a novelty pick rather than a quarter of the lobby.
+  close: { rifle: 3, smg: 4, shotgun: 2, sniper: 0.4 },
+  // Mixed maps: rifles lead, everything is viable.
+  medium: { rifle: 4, smg: 3, shotgun: 1.4, sniper: 1.6 },
+  // Open maps with real sightlines: rifles and snipers come into their own.
+  open: { rifle: 4, smg: 1.6, shotgun: 0.5, sniper: 3 },
+};
+
+/** Classify the current map by playable area, in square metres. */
+function mapProfile(): 'close' | 'medium' | 'open' {
+  const grid = getNavGrid();
+  if (!grid) return 'medium';
+  // Walkable cells, not the bounding box: a big map that is mostly wall
+  // plays small. CELL_SIZE is 2 m, so each cell is 4 m^2.
+  let walkable = 0;
+  for (const cell of grid.cells) if (cell) walkable += 1;
+  const area = walkable * 4;
+  if (area < 4000) return 'close';
+  if (area < 20000) return 'medium';
+  return 'open';
+}
+
+/** Weighted pick from the table for this map. */
+function pickPrimary(rng: SeededRandom): string {
+  const weights = PRIMARY_WEIGHTS[mapProfile()];
+  let total = 0;
+  for (const id of BOT_PRIMARIES) total += weights[id] ?? 0;
+  let roll = rng.next() * total;
+  for (const id of BOT_PRIMARIES) {
+    roll -= weights[id] ?? 0;
+    if (roll <= 0) return id;
+  }
+  return 'rifle';
+}
 const BOT_OPERATORS = [
   'ghost', 'sentry', 'nomad', 'warden', 'vandal', 'ronin',
 ] as const;
@@ -84,7 +135,7 @@ function randomLoadout(seedSource: string): LoadoutSpec {
   const rng = new SeededRandom(hashString(`kit:${seedSource}`));
   const pick = <T>(list: readonly T[]): T => list[Math.floor(rng.next() * list.length)];
   return {
-    primaryId: pick(BOT_PRIMARIES),
+    primaryId: pickPrimary(rng),
     secondaryId: 'pistol',
     tacticalId: 'flash',
     killstreakIds: ['uav', 'airstrike', 'guided_missile'],

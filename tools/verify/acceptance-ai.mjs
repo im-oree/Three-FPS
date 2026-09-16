@@ -22,7 +22,7 @@ const {
   GameServer, CollisionWorld, ServerWorld,
   AISystem, SquadBlackboard, NavGrid, findPath, CapabilityRegistry,
   registerBuiltinCapabilities, approachAngle, SeededRandom, perceive, Beliefs,
-  getDifficulty, plan,
+  getDifficulty, plan, hashString,
 } = bundle;
 
 registerBuiltinCapabilities();
@@ -702,6 +702,111 @@ console.log('\n[16] Navigation scales to the biggest map');
     overBudget <= 2,
     `${overBudget} of ${times.length} ticks over one frame`);
   server.shutdown();
+}
+
+// --- [17] Difficulty actually means something -------------------------------
+console.log('\n[17] A harder tier beats an easier one');
+{
+  /**
+   * Tiers fought head to head.
+   *
+   * A same-tier match cannot answer this: kills are zero-sum there, so the
+   * average is pinned at one-per-death no matter how good everyone is. Only
+   * putting two tiers in the same room shows which one actually wins.
+   *
+   * This caught a genuine inversion -- every tier was LOSING to the one below
+   * it, recruit beating pro 20-3 -- caused by two things that had nothing to
+   * do with the aim model: an un-clamped aim path in a rival Dropshot
+   * capability, and a biased first RNG draw that armed most of a corridor-map
+   * lobby with sniper rifles.
+   */
+  const duel = async (tierA, tierB, seconds = 90, per = 4) => {
+    const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+    server.startMatch('killhouse', 'ffa');
+    await server.whenLevelReady();
+    const side = new Map();
+    for (let i = 0; i < per; i += 1) side.set(server.addBot(undefined, { tier: tierA }), 'A');
+    for (let i = 0; i < per; i += 1) side.set(server.addBot(undefined, { tier: tierB }), 'B');
+    server.match.beginLive();
+    for (let i = 0; i < seconds * 60; i += 1) server.update(1 / 60);
+    let a = 0;
+    let b = 0;
+    for (const [id, which] of side) {
+      const sc = server.match.scoreOf(id);
+      if (!sc) continue;
+      if (which === 'A') a += sc.kills; else b += sc.kills;
+    }
+    server.shutdown();
+    return { a, b };
+  };
+
+  for (const [lo, hi] of [
+    ['recruit', 'regular'], ['regular', 'hardened'],
+    ['hardened', 'veteran'], ['veteran', 'pro'],
+  ]) {
+    const { a, b } = await duel(lo, hi);
+    check(`${hi} outscores ${lo}`, b > a, `${lo} ${a} — ${hi} ${b}`);
+  }
+
+  // The widest gap must be decisive, not marginal.
+  const { a, b } = await duel('recruit', 'pro');
+  check('pro is decisively better than recruit', b > a * 1.8,
+    `recruit ${a} — pro ${b}`);
+}
+
+// --- [18] Bots carry a weapon that suits the map ----------------------------
+console.log('\n[18] Loadouts fit the map');
+{
+  const primaries = async (levelId, n = 16) => {
+    const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+    server.startMatch(levelId, 'ffa');
+    await server.whenLevelReady();
+    const guns = [];
+    for (let i = 0; i < n; i += 1) {
+      const id = server.addBot();
+      guns.push(server.world.getPlayer(id)?.loadout?.primaryId ?? '?');
+    }
+    server.shutdown();
+    return guns;
+  };
+
+  // Killhouse's longest sightline is about twenty metres. A quarter of the
+  // lobby bringing sniper rifles there was a bug, not variety.
+  const close = await primaries('killhouse');
+  const snipersClose = close.filter((g) => g === 'sniper').length;
+  check('a corridor map issues few sniper rifles',
+    snipersClose <= close.length * 0.2,
+    `${snipersClose}/${close.length}: ${close.slice(0, 8).join(' ')}`);
+
+  // ...but the gun must still exist in the pool, on a map that suits it.
+  const open = await primaries('prototype');
+  check('an open map still issues sniper rifles',
+    open.some((g) => g === 'sniper'),
+    open.slice(0, 8).join(' '));
+
+  // Variety is the other half: a lobby of eight identical rifles reads as
+  // bots however well they shoot.
+  check('a lobby carries a mix of weapons',
+    new Set(close).size >= 3, [...new Set(close)].join(' '));
+}
+
+// --- [19] The RNG is not biased on its first draw ---------------------------
+console.log('\n[19] Seeded randomness is evenly distributed');
+{
+  // xorshift32's first output correlates with its seed. Our seeds are hashes
+  // of near-identical strings ('kit:p1', 'kit:p2', ...), so an unwarmed
+  // generator skewed every one-shot roll in the codebase -- weapons,
+  // operators, tiers. The constructor now discards three rounds.
+  const buckets = [0, 0, 0, 0];
+  const N = 400;
+  for (let i = 0; i < N; i += 1) {
+    const rng = new SeededRandom(hashString(`kit:p${i}`));
+    buckets[Math.floor(rng.next() * 4)] += 1;
+  }
+  const expected = N / 4;
+  const worst = Math.max(...buckets.map((b) => Math.abs(b - expected) / expected));
+  check('the first draw from a fresh seed is unbiased',
+    worst < 0.25, `buckets ${buckets.join('/')} (worst ${(worst * 100).toFixed(0)}% off)`);
 }
 
 console.log(`\nAI ACCEPTANCE: ${passed}/${passed + failed} checks passed`);
