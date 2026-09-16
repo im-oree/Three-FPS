@@ -39,8 +39,22 @@ export class GameStateManager {
    * The one question Engine asks before running gameplay updatables.
    * Rendering is deliberately NOT gated on this.
    */
+  /**
+   * Whether gameplay should keep ticking.
+   *
+   * PAUSED counts. The game is multiplayer even in single player: the server
+   * runs whether or not this client has a menu open, so freezing the local
+   * simulation does not pause anything -- it only makes the client disagree
+   * with the server. Pausing mid-air froze the player hanging in space while
+   * the server dropped them to the floor, and resuming snapped them down.
+   *
+   * The pause MENU is still a menu: it releases the pointer and swallows
+   * input (see InputContextStack), so the player stops acting on the world.
+   * They simply keep existing in it, which is what every multiplayer shooter
+   * does.
+   */
   isSimulationActive(): boolean {
-    return this.state === GameState.PLAYING;
+    return this.state === GameState.PLAYING || this.state === GameState.PAUSED;
   }
 
   is(state: GameStateValue): boolean {

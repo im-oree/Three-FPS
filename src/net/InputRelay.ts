@@ -53,6 +53,16 @@ export class InputRelay {
   update(dt: number): void {
     if (!this.enabled || !this.client.isConnected) return;
 
+    // The pre-match countdown freezes everyone. The SERVER already refuses
+    // this input, but the client predicts movement locally, so without this
+    // the local player walked around during "MATCH STARTING 3.. 2.. 1.." and
+    // was then snapped back by the next authoritative snapshot -- which read
+    // as the game lagging, not as a countdown.
+    if (this.client.match?.phase === 'countdown') {
+      this.accumulator = 0;
+      return;
+    }
+
     this.accumulator += dt;
     // Never send a zero-length frame; it costs bandwidth and means nothing.
     if (this.accumulator < 1 / 120) return;

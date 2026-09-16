@@ -1290,6 +1290,11 @@ const sessionReady = createLocalSession({
   onMatchEnded: (reason) => { eventBus.emit('net:matchEnded', { reason }); },
   onMatchState: (state) => {
     matchBar.render(state, session?.client.id ?? null);
+    // Hold the local player still while the round counts in. The server
+    // already refuses the input; this stops the client PREDICTING movement
+    // the server will reject, which looked like severe lag as each snapshot
+    // dragged the player back to the spawn.
+    playerController.setMovementFrozen(inputShouldBeHeld(state.phase));
     eventBus.emit('net:matchState', state);
   },
   onPlayerStates: (states) => {
@@ -1431,6 +1436,25 @@ const enterMatch = (): void => {
   });
   gameStateManager.setState(GameState.PLAYING);
 };
+
+/**
+ * Should the local player be held still?
+ *
+ * True during the pre-match countdown, and whenever a menu is open over a
+ * live match. Note this holds the PLAYER, not the simulation: gravity,
+ * collision and the server all keep running, so the client never drifts out
+ * of agreement with the server the way a hard pause did.
+ */
+const inputShouldBeHeld = (phase?: string): boolean => (
+  phase === 'countdown' || !gameStateManager.is(GameState.PLAYING)
+);
+
+/** Re-evaluate the hold whenever the UI state changes, not just on snapshots. */
+eventBus.on('game:stateChanged', () => {
+  playerController.setMovementFrozen(
+    inputShouldBeHeld(session?.client.match?.phase),
+  );
+});
 
 const mainMenu = new MainMenu((levelId, options) => {
   // The lobby's choices are recorded here and applied at join time, because

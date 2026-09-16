@@ -80,6 +80,21 @@ export class PlayerController {
   private visualSnapshotsInit = false;
   /** True while VehicleSystem owns the player (Document V). */
   private vehicleSuspended = false;
+  /**
+   * Set while the player must not act on the world, but must still exist in
+   * it: the pre-match countdown, and while a menu is open over a live match.
+   *
+   * The server refuses movement input during the countdown, but the client
+   * predicts locally, so without this the player walked several metres during
+   * "MATCH STARTING 3.. 2.. 1.." and was then yanked back by the next
+   * authoritative snapshot. That read as the game lagging, not as a freeze.
+   *
+   * The pause menu uses the same flag. The simulation keeps running (the
+   * server never pauses, so neither can we -- pausing mid-air used to leave
+   * the player hanging in space while the server dropped them to the floor),
+   * but their input stops reaching it.
+   */
+  private movementFrozen = false;
 
   /** Document 3: AnimationStateMachine reads the movement state from here. */
   get currentState(): PlayerStateValue {
@@ -303,6 +318,25 @@ export class PlayerController {
   }
 
   get isVehicleSuspended(): boolean { return this.vehicleSuspended; }
+
+  /**
+   * Freeze or release locomotion.
+   *
+   * Looking around stays live: Call of Duty lets you aim during the
+   * countdown, it just does not let you leave the spawn. Only the movement
+   * simulation is skipped, so gravity and the camera keep running.
+   */
+  setMovementFrozen(frozen: boolean): void {
+    if (this.movementFrozen === frozen) return;
+    this.movementFrozen = frozen;
+    if (frozen) {
+      // Kill residual velocity, or the player drifts for a moment after the
+      // freeze begins.
+      this.movement.state.velocity.set(0, this.movement.state.velocity.y, 0);
+    }
+  }
+
+  get isMovementFrozen(): boolean { return this.movementFrozen; }
 
   /**
    * Keep the suspended player's logical position glued to their seat.
@@ -565,6 +599,11 @@ export class PlayerController {
 
   /** Normalized local input: +y forward (W), +x right (D). Pitch ignored. */
   private moveLocal(): THREE.Vector2 {
+    // Frozen during the pre-match countdown. Reporting "no keys held" here
+    // rather than skipping the simulation keeps gravity, ground contact and
+    // the state machine running exactly as the server's own freeze does --
+    // the player is held in place, not suspended.
+    if (this.movementFrozen) return new THREE.Vector2(0, 0);
     const x = (this.input.isActionDown('moveRight') ? 1 : 0) - (this.input.isActionDown('moveLeft') ? 1 : 0);
     const y = (this.input.isActionDown('moveForward') ? 1 : 0) - (this.input.isActionDown('moveBackward') ? 1 : 0);
     const vec = new THREE.Vector2(x, y);

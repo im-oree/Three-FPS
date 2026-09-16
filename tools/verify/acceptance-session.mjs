@@ -130,7 +130,15 @@ try {
     const op = window.__OPERATOR__;
     op.gameStateManager.setState('PLAYING');
     op.gameClient.joinMatch('prototype');
-    await new Promise((r) => setTimeout(r, 600));
+    // Wait for the round to actually start. The pre-match countdown holds
+    // every player still -- the client deliberately stops sending movement
+    // input, so sampling during it measures the freeze, not the relay.
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline
+      && op.gameClient.match?.phase !== 'live') {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    await new Promise((r) => setTimeout(r, 300));
     const before = op.gameClient.acknowledgedSeq;
     await new Promise((r) => setTimeout(r, 600));
     return {
