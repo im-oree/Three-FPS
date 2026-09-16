@@ -700,6 +700,26 @@ killstreakManager.attach({
     return v;
   },
   getLevelDefinition: () => levelLoader.current,
+  // Radar reads the server's own player list. Anything else is a guess: the
+  // client's hit-test registry only holds locally-spawned props, so a UAV
+  // fed from it swept the training dummies and never showed a single real
+  // enemy.
+  getPlayers: () => {
+    const client = session?.client;
+    if (!client) return [];
+    const myId = client.id;
+    const me = client.players.find((p) => p.id === myId);
+    const myTeam = me?.team ?? 'FFA';
+    return client.players.map((p) => ({
+      id: p.id,
+      x: p.pos[0],
+      z: p.pos[2],
+      alive: p.alive,
+      isLocal: p.id === myId,
+      // In a free-for-all there are no allies, so everyone else is a contact.
+      isFriendly: myTeam !== 'FFA' && p.team === myTeam,
+    }));
+  },
 });
 // Restore the player's saved killstreak loadout. Without this the menu's
 // choice only took effect while the menu was open -- the manager fell back

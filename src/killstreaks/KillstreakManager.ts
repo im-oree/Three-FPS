@@ -25,7 +25,7 @@ import { DEFAULT_KILLSTREAK_LOADOUT, getKillstreak } from './definitions';
 import type { KillstreakDefinition } from './definitions/types';
 import type { LevelDefinition } from '../environment/LevelDefinition';
 import type {
-  KillstreakContext, KillstreakControllerInterface,
+  KillstreakContext, KillstreakControllerInterface, RadarPlayer,
 } from './KillstreakControllerInterface';
 import type { AssetLoader } from '../core/AssetLoader';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
@@ -65,6 +65,8 @@ export interface KillstreakManagerDeps {
   getCameraForward: () => THREE.Vector3;
   /** The active level — vehicle cinematics read its airspace metadata. */
   getLevelDefinition: () => LevelDefinition | null;
+  /** Every player the server reports, for radar and targeting. */
+  getPlayers: () => readonly RadarPlayer[];
 }
 
 export class KillstreakManager {
@@ -201,6 +203,7 @@ export class KillstreakManager {
       getPlayerPosition: this.deps.getPlayerPosition,
       getCameraForward: this.deps.getCameraForward,
       getLevelDefinition: this.deps.getLevelDefinition,
+      getPlayers: this.deps.getPlayers,
       reportEnded: () => this.endStreak(def.id),
     };
 

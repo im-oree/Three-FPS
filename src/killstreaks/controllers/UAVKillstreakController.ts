@@ -92,10 +92,17 @@ export class UAVKillstreakController extends KillstreakControllerInterface {
   }
 
   /**
-   * Sweep every registered hittable and push the radar-visible ones as
-   * contacts. With no AI yet, the Training Range dummies stand in — and note
-   * the LEVEL file stays completely agnostic of killstreaks: the decision to
-   * treat dummies as hostile lives here, in the UAV, not in the level.
+   * Sweep the match and push every enemy onto the radar.
+   *
+   * Players come from the SERVER's player list, which is the only
+   * authoritative account of who is in the match and where. This used to
+   * read the client's ballistics hittable registry instead -- a list of
+   * locally-spawned props -- so a UAV dutifully plotted the Training Range
+   * dummies and showed nothing whatsoever for the actual enemies. The one
+   * thing a UAV exists to do did not work.
+   *
+   * Dummies are still swept, because shooting range targets showing up on
+   * radar is correct and the Training Range depends on it.
    */
   private pingContacts(): void {
     // Deliberately NOT gated on this.model: the drone mesh loads
@@ -103,6 +110,18 @@ export class UAVKillstreakController extends KillstreakControllerInterface {
     // killstreak, not of its geometry. Gating on the mesh meant the first
     // seconds of every UAV silently produced no contacts at all.
     let pinged = 0;
+
+    for (const player of this.context?.getPlayers() ?? []) {
+      // You are not a contact on your own radar, and the dead are not either.
+      if (player.isLocal || !player.alive) continue;
+      radarContacts.addOrUpdate(
+        `player:${player.id}`, player.x, player.z,
+        player.isFriendly ? 'friendly' : 'hostile',
+        UAV_KILLSTREAK.CONTACT_TTL,
+      );
+      if (!player.isFriendly) pinged += 1;
+    }
+
     for (const entry of ballistics.hittables) {
       const meta = entry.metadata as { radarVisible?: boolean; surfaceType?: string };
       // A dummy is radar-visible either by explicit flag or by being a dummy.

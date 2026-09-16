@@ -51,8 +51,12 @@ try {
       };
     });
 
+    // Eight is the MODE's count; a map may ask for more (Killhouse runs 12,
+    // Firing Range 14) because a lobby sized for a corridor map spreads too
+    // thin on a big one. The requirement is that the lobby is full, not that
+    // it is exactly eight.
     check('the lobby fills to the mode\'s player count',
-      lobby.players === 8, `${lobby.players} players in the scoreboard`);
+      lobby.players >= 8, `${lobby.players} players in the scoreboard`);
     check('the mode and its score limit reach the client',
       lobby.mode === 'Free-For-All' && lobby.limit === 30,
       `${lobby.mode} to ${lobby.limit}`);
@@ -355,12 +359,55 @@ try {
     check('kills are being credited', board.totalKills >= 2,
       `${board.totalKills} kills across the lobby`);
     check('kills are attributed to more than just the test\'s own scripted one',
-      board.totalKills >= 2 && board.rows === 8,
+      board.totalKills >= 2 && board.rows >= 8,
       `${board.totalKills} kills over ${board.rows} players`);
     check('deaths are being recorded', board.anyDeaths === true);
     check('the scoreboard is sorted by score', board.sorted === true);
   }
 
+  // --- a UAV shows the enemies, which is the only thing it is for ----------
+  {
+    // The bug: the sweep read the CLIENT's ballistics hittable registry, a
+    // list of locally-spawned props. So a UAV plotted the Training Range
+    // dummies and showed nothing at all for the real players.
+    const radar = await page.evaluate(async () => {
+      const hook = window.__OPERATOR__;
+      hook.killstreakManager.setLoadout(['uav', 'attack_helicopter', 'guided_missile']);
+      let denial = hook.killstreakManager.activate(0);
+      // A streak still cooling down from an earlier check needs a moment.
+      for (let i = 0; i < 20 && denial; i += 1) {
+        await new Promise((r) => setTimeout(r, 500));
+        denial = hook.killstreakManager.activate(0);
+      }
+      // Sample repeatedly and keep the best sweep. Contacts carry a short
+      // TTL by design so they visibly refresh, so a single read timed
+      // between two pings legitimately sees an empty radar.
+      const me = hook.gameClient.id;
+      let contacts = [];
+      for (let i = 0; i < 24; i += 1) {
+        await new Promise((r) => setTimeout(r, 250));
+        const now = hook.radarContacts.getActiveContacts();
+        if (now.length > contacts.length) contacts = now;
+      }
+      return {
+        denial,
+        players: hook.gameClient.players.length,
+        playerContacts: contacts.filter((c) => String(c.id).startsWith('player:')).length,
+        plottedSelf: contacts.some((c) => String(c.id) === `player:${me}`),
+      };
+    });
+
+    // Not every player at once: the dead are deliberately not plotted, and
+    // in a busy lobby several are always mid-respawn. The requirement is
+    // that the radar shows the LOBBY, not the handful of local props it used
+    // to sweep instead.
+    check('a UAV plots the other players on radar',
+      radar.playerContacts >= Math.ceil((radar.players - 1) * 0.5),
+      `${radar.playerContacts} contacts for ${radar.players} players`
+      + `${radar.denial ? ` (denied: ${radar.denial})` : ''}`);
+    check('a UAV does not plot you as a contact on your own radar',
+      !radar.plottedSelf, radar.plottedSelf ? 'self was plotted' : 'self excluded');
+  }
   // --- [10] Operator selection is real ------------------------------------
   console.log('\n[10] The selected operator is the one deployed');
   {
@@ -697,6 +744,7 @@ try {
     check('a negative respawn delay is clamped to zero or more',
       limits.respawn >= 0, `${limits.respawn} s`);
   }
+
 } catch (err) {
   console.error('\nHARNESS ERROR:', err.message);
   console.error(err.stack?.split('\n').slice(0, 6).join('\n'));

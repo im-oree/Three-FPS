@@ -14,6 +14,18 @@ import type { KillstreakDefinition } from './definitions/types';
 import type { LevelDefinition } from '../environment/LevelDefinition';
 
 /** Everything a controller may need, injected rather than imported. */
+/** The minimum a controller needs to know about a player to plot them. */
+export interface RadarPlayer {
+  readonly id: string;
+  readonly x: number;
+  readonly z: number;
+  readonly alive: boolean;
+  /** True for the local player, who is drawn as self rather than a contact. */
+  readonly isLocal: boolean;
+  /** True when this player is on our side; FFA makes everyone hostile. */
+  readonly isFriendly: boolean;
+}
+
 export interface KillstreakContext {
   readonly definition: KillstreakDefinition;
   readonly scene: THREE.Scene;
@@ -24,6 +36,15 @@ export interface KillstreakContext {
   readonly getCameraForward: () => THREE.Vector3;
   /** The active level (airspace metadata for vehicle cinematics). */
   readonly getLevelDefinition: () => LevelDefinition | null;
+  /**
+   * Every player the SERVER says is in the match, and which of them is us.
+   *
+   * Radar reads this rather than the client's own hit-test registry. That
+   * registry only ever contained locally-spawned props, so a UAV swept the
+   * training dummies and showed nothing at all for the actual enemies --
+   * the one thing a UAV exists to do.
+   */
+  readonly getPlayers: () => readonly RadarPlayer[];
   /** Call when the streak finishes on its own; the manager cleans up. */
   readonly reportEnded: () => void;
 }
