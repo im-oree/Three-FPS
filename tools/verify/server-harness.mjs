@@ -48,6 +48,12 @@ export {
   NameAuthority, NameRandom, IdentityRegistry,
 } from '${src('src/server/Identity.ts')}';
 export { AgentController } from '${src('src/server/ai/AgentController.ts')}';
+export { EventLog } from '${src('src/server/EventLog.ts')}';
+export { ReplayRecorder } from '${src('src/server/ReplayRecorder.ts')}';
+export {
+  CameraDirectorRegistry, buildKillcamPlan, DEFAULT_PROFILE,
+  registerBuiltinCameraProfiles, SELF_INFLICTED_KEY,
+} from '${src('src/server/CameraDirector.ts')}';
 export { createLocalTransportPair } from '${src('src/net/LocalTransport.ts')}';
 export { GameClient } from '${src('src/net/GameClient.ts')}';
 export * as Protocol from '${src('src/net/Protocol.ts')}';

@@ -1,0 +1,402 @@
+/**
+ * acceptance-replay.mjs — the event log, the recorder and the camera director.
+ *
+ * The architecture's central claim is that a feature which has never heard of
+ * the replay system is still fully recorded and still films correctly. That
+ * claim is worth nothing unless it is tested with a capability the system has
+ * genuinely never seen, so several checks below invent one.
+ */
+import { buildServerBundle, diskLevelFetcher } from './server-harness.mjs';
+
+const {
+  GameServer, EventLog, ReplayRecorder,
+  CameraDirectorRegistry, buildKillcamPlan, DEFAULT_PROFILE,
+  registerBuiltinCameraProfiles,
+} = await buildServerBundle();
+
+let passed = 0;
+let failed = 0;
+const check = (name, ok, detail = '') => {
+  if (ok) { passed += 1; console.log(`  PASS  ${name}${detail ? ` — ${detail}` : ''}`); }
+  else { failed += 1; console.log(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`); }
+};
+
+const TICK = 1 / 60;
+
+/**
+ * A running match with real bots fighting in it.
+ *
+ * Bots are added explicitly rather than relying on `fillLobby`, which only
+ * fills once a client joins -- a headless harness has no client, so the
+ * lobby would stay empty and every behavioural check would vacuously pass.
+ */
+async function liveServer(levelId = 'killhouse', bots = 8) {
+  const server = new GameServer({ levelFetcher: diskLevelFetcher() });
+  server.startMatch(levelId, 'ffa');
+  await server.whenLevelReady();
+  for (let i = 0; i < bots; i += 1) server.addBot();
+  server.match.beginLive();
+  return server;
+}
+
+// --- [1] the log is a generic sink ------------------------------------------
+console.log('\n[1] The event log stores anything, without being taught about it');
+{
+  const log = new EventLog();
+  const seen = [];
+  const off = log.onRecord((e) => seen.push(e.type));
+
+  // A type this codebase has never heard of, with a payload shape to match.
+  log.record({
+    type: 'emp_pulse',
+    tick: 10,
+    time: 0.16,
+    actors: ['p1'],
+    payload: { radiusMeters: 12, disabledOptics: true },
+  });
+
+  check('an unknown event type is stored verbatim',
+    log.count === 1 && log.all[0].type === 'emp_pulse');
+  check('its free-form payload survives intact',
+    log.all[0].payload.radiusMeters === 12 && log.all[0].payload.disabledOptics === true,
+    JSON.stringify(log.all[0].payload));
+  check('listeners are notified synchronously', seen.length === 1 && seen[0] === 'emp_pulse');
+
+  off();
+  log.record({ type: 'emp_pulse', tick: 11, time: 0.18, payload: {} });
+  check('unsubscribing actually detaches', seen.length === 1, `${seen.length} deliveries`);
+
+  check('a tick window can be sliced', log.slice(11, 11).length === 1);
+  check('events can be found by type', log.ofType('emp_pulse').length === 2);
+
+  log.reset();
+  check('a new match starts with an empty log', log.count === 0);
+}
+
+// --- [2] the damage chokepoint records everything ---------------------------
+console.log('\n[2] Nothing that can hurt you escapes the recording');
+{
+  const server = await liveServer();
+  for (let i = 0; i < 90 * 60; i += 1) server.update(TICK);
+
+  const damage = server.events.ofType('damage');
+  const kills = server.events.ofType('kill');
+  check('bot gunfights produce damage events', damage.length > 20, `${damage.length}`);
+  check('bot gunfights produce kill events', kills.length > 0, `${kills.length}`);
+
+  const sample = kills[0];
+  check('a kill names its victim', typeof sample?.payload?.victim === 'string',
+    sample?.payload?.victim ?? '-');
+  check('a kill carries the capability that caused it',
+    typeof sample?.payload?.capabilityId === 'string',
+    sample?.payload?.capabilityId ?? 'null');
+  check('a kill carries the weapon', typeof sample?.payload?.weaponId === 'string',
+    sample?.payload?.weaponId ?? 'null');
+  check('a kill records whether it was self-inflicted',
+    typeof sample?.payload?.selfInflicted === 'boolean');
+  check('kills are positioned in the world', Array.isArray(sample?.at), JSON.stringify(sample?.at));
+
+  // Every kill must correspond to a death the match also saw. A divergence
+  // means one of the two paths is being bypassed.
+  const matchDeaths = server.match.standings().reduce((n, s) => n + s.deaths, 0);
+  check('the log agrees with the scoreboard on how many died',
+    Math.abs(kills.length - matchDeaths) <= 1,
+    `${kills.length} logged vs ${matchDeaths} on the scoreboard`);
+
+  server.shutdown();
+}
+
+// --- [3] self-inflicted deaths are decided in one place ---------------------
+console.log('\n[3] Self-inflicted deaths need no special detection');
+{
+  const server = await liveServer();
+  const world = server.world;
+  const id = server.addBot();
+  const victim = world.getPlayer(id);
+
+  // Fall damage: source is null, which is the definition of nobody's fault.
+  server.damage.apply(world, {
+    target: victim, targetKind: 'player', amount: 500,
+    type: 'fall', source: null, ignoreTeams: true, capabilityId: 'Fall',
+  });
+
+  const kill = server.events.ofType('kill').at(-1);
+  check('a fall produces a kill event', kill?.payload?.victim === id);
+  check('it is flagged self-inflicted', kill?.payload?.selfInflicted === true);
+  check('with no killer credited', kill?.payload?.killer === null);
+  server.shutdown();
+}
+
+// --- [4] the recorder keeps a bounded window --------------------------------
+console.log('\n[4] The rolling recorder is bounded and continuous');
+{
+  const flushed = [];
+  const rec = new ReplayRecorder({
+    windowSeconds: 1, tickHz: 60, onFlush: (f) => flushed.push(...f),
+  });
+  for (let t = 0; t < 300; t += 1) {
+    rec.append({ tick: t, time: t / 60, snapshot: { tick: t, time: t / 60, ackSeq: 0, entities: [] } });
+  }
+  check('the window stays bounded', rec.frameCount <= 61, `${rec.frameCount} frames held`);
+  check('nothing is silently dropped', rec.flushedCount + rec.frameCount === 300,
+    `${rec.flushedCount} flushed + ${rec.frameCount} held`);
+  check('evicted frames reach the sink in order',
+    flushed.length > 0 && flushed[0].tick === 0
+      && flushed[flushed.length - 1].tick === flushed.length - 1,
+    `${flushed.length} flushed, first ${flushed[0]?.tick}`);
+
+  const win = rec.window(280, 290);
+  check('a window can be sliced out of memory', win.length === 11, `${win.length} frames`);
+  check('a window beyond the buffer returns empty, not an error',
+    rec.window(0, 5).length === 0);
+}
+
+// --- [5] the live server records what it broadcasts -------------------------
+console.log('\n[5] The server archives the frames it sends');
+{
+  const server = await liveServer();
+  for (let i = 0; i < 120; i += 1) server.update(TICK);
+
+  check('frames accumulate as the match runs', server.replay.frameCount > 100,
+    `${server.replay.frameCount}`);
+  const latest = server.replay.window(server.replay.newestTick, server.replay.newestTick)[0];
+  check('a recorded frame carries the entity list',
+    Array.isArray(latest?.snapshot?.entities));
+  // Players are not entities on this server, so a frame that omitted them
+  // would replay an empty map -- the failure this check exists to prevent.
+  check('a recorded frame carries the players',
+    (latest?.players?.length ?? 0) === 8, `${latest?.players?.length} players`);
+  check('recorded players have a position and facing',
+    Array.isArray(latest?.players?.[0]?.pos)
+      && typeof latest?.players?.[0]?.yaw === 'number');
+  check('a recorded frame is timestamped',
+    typeof latest?.time === 'number' && latest.time > 0, `${latest?.time?.toFixed(2)}s`);
+  server.shutdown();
+}
+
+// --- [6] the director never fails on an unknown ability ---------------------
+console.log('\n[6] An ability the director has never seen still films');
+{
+  registerBuiltinCameraProfiles();
+  const unknown = CameraDirectorRegistry.resolve('ClusterGrenade_v2_NotRegistered');
+  check('an unregistered capability resolves to the default profile',
+    unknown === DEFAULT_PROFILE || unknown.style === DEFAULT_PROFILE.style,
+    unknown.style);
+
+  const plan = buildKillcamPlan({
+    tick: 600, victim: 'p2', killer: 'p1', causer: 'grenade_77',
+    capabilityId: 'ClusterGrenade_v2_NotRegistered', selfInflicted: false,
+  }, 60);
+  check('it still produces a valid plan', plan.shots.length > 0, `${plan.shots.length} shots`);
+  check('the plan names the fallback it used', plan.profileKey === 'default', plan.profileKey);
+  check('every shot has a subject and a tick range',
+    plan.shots.every((s) => s.subject && s.toTick > s.fromTick));
+  check('the window brackets the kill',
+    plan.fromTick < 600 && plan.toTick > 600, `${plan.fromTick}..${plan.toTick}`);
+}
+
+// --- [7] registering a profile upgrades the shot, retroactively -------------
+console.log('\n[7] Camera logic can be improved after the fact');
+{
+  const facts = {
+    tick: 900, victim: 'p2', killer: 'p1', causer: 'cluster_9',
+    capabilityId: 'ClusterGrenade', selfInflicted: false,
+  };
+
+  const before = buildKillcamPlan(facts, 60);
+  check('before registration it gets the generic shot',
+    before.shots[0].kind === 'pair-orbit', before.shots[0].kind);
+
+  // Exactly the two lines the spec promises are needed for a new ability.
+  CameraDirectorRegistry.register('ClusterGrenade', {
+    travelPath: 'projectile', style: 'follow-instrument', follow: 'causer',
+    leadSeconds: 3, tailSeconds: 2.5, slowMoAtImpact: 0.3,
+  });
+
+  const after = buildKillcamPlan(facts, 60);
+  check('after registration the SAME kill films differently',
+    after.shots[0].kind === 'follow' && after.shots[0].subject === 'cluster_9',
+    `${after.shots[0].kind} on ${after.shots[0].subject}`);
+  check('it now rides the causer, then holds on the impact',
+    after.shots.length === 2 && after.shots[1].kind === 'impact-hold');
+  check('and applies its own slow motion', after.slowMoAtImpact === 0.3,
+    `${after.slowMoAtImpact}`);
+  check('the lead time comes from the profile', after.fromTick === 900 - 180,
+    `${after.fromTick}`);
+}
+
+// --- [8] the standard shots are right ---------------------------------------
+console.log('\n[8] Each kind of death gets an appropriate shot');
+{
+  const shoot = buildKillcamPlan({
+    tick: 600, victim: 'p2', killer: 'p1', causer: null,
+    capabilityId: 'Shoot', selfInflicted: false,
+  }, 60);
+  check('a gunfight films over the killer', shoot.shots[0].subject === 'p1'
+    && shoot.shots[0].firstPerson === true, shoot.shots[0].kind);
+  check('then cuts to the victim', shoot.shots[1].kind === 'victim-reaction');
+
+  const fall = buildKillcamPlan({
+    tick: 600, victim: 'p2', killer: null, causer: null,
+    capabilityId: 'Fall', selfInflicted: true,
+  }, 60);
+  check('a fall films the victim', fall.shots[0].subject === 'p2',
+    fall.shots[0].kind);
+  check('with a long lead so the run-up is visible',
+    600 - fall.fromTick >= 180, `${((600 - fall.fromTick) / 60).toFixed(1)}s of lead`);
+
+  // A self-inflicted death by a WEAPON still uses the self-inflicted profile,
+  // because that decision was made at the damage chokepoint, not here.
+  const ownGrenade = buildKillcamPlan({
+    tick: 600, victim: 'p1', killer: 'p1', causer: 'nade_3',
+    capabilityId: 'Killstreak_airstrike', selfInflicted: true,
+  }, 60);
+  check('killing yourself overrides the weapon profile',
+    ownGrenade.profileKey === '__self__', ownGrenade.profileKey);
+}
+
+// --- [9] a real death produces a real, playable clip ------------------------
+console.log('\n[9] A death in a live match yields a clip from the recording');
+{
+  const server = await liveServer();
+  // Run long enough that the window has a full lead-in behind any death.
+  for (let i = 0; i < 20 * 60; i += 1) server.update(TICK);
+
+  const kill = server.events.ofType('kill').at(-1);
+  check('somebody died', Boolean(kill), kill ? `${kill.payload.victim}` : 'nobody');
+
+  const clip = kill ? server.buildKillcam(kill.payload.victim) : null;
+  check('a clip is produced for the victim', clip !== null);
+  if (clip) {
+    check('it contains real recorded frames', clip.frames.length > 30,
+      `${clip.frames.length} frames`);
+    check('the frames bracket the moment of death',
+      clip.fromTick <= kill.tick && clip.toTick >= kill.tick,
+      `${clip.fromTick}..${clip.toTick} around ${kill.tick}`);
+    check('it carries the events from that window',
+      clip.events.some((e) => e.type === 'kill'), `${clip.events.length} events`);
+    check('it carries a camera plan', clip.plan.shots.length > 0,
+      `${clip.plan.shots.length} shots via ${clip.plan.profileKey}`);
+    // A clip whose frames are all identical is a screenshot, not a replay.
+    const first = clip.frames[0];
+    const last = clip.frames[clip.frames.length - 1];
+    const moved = first.players.some((a) => {
+      const b = last.players.find((p) => p.id === a.id);
+      return b && (Math.abs(a.pos[0] - b.pos[0]) + Math.abs(a.pos[2] - b.pos[2])) > 0.5;
+    });
+    check('the clip shows a moving world, not a freeze', moved);
+    check('the victim is present in the clip',
+      first.players.some((p) => p.id === kill.payload.victim));
+  }
+  server.shutdown();
+}
+
+// --- [10] a new match does not inherit the last one's history ---------------
+console.log('\n[10] Ending a match clears the recording');
+{
+  const server = await liveServer();
+  for (let i = 0; i < 10 * 60; i += 1) server.update(TICK);
+  const hadEvents = server.events.count > 0;
+  const hadFrames = server.replay.frameCount > 0;
+
+  server.stopMatch('test');
+  check('the match had something recorded', hadEvents && hadFrames);
+  check('stopping the match clears the event log', server.events.count === 0,
+    `${server.events.count} left`);
+  check('stopping the match clears the recorder', server.replay.frameCount === 0,
+    `${server.replay.frameCount} left`);
+  server.shutdown();
+}
+
+// --- [11] every kind of death reaches the match -----------------------------
+console.log('\n[11] A death by any cause respawns and scores');
+{
+  // The bug this guards: the match learned about deaths by scanning
+  // CombatSystem's resolved-shot list, so anything that was not a bullet --
+  // an explosion, a killstreak, a future ability -- left the player dead
+  // forever with no score, no respawn and no death camera.
+  for (const [label, type, capability] of [
+    ['an explosion', 'explosive', 'Killstreak_airstrike'],
+    ['fall damage', 'fall', 'Fall'],
+    ['an ability nobody has written yet', 'plasma_lance', 'PlasmaLance_v3'],
+  ]) {
+    const server = await liveServer('killhouse', 4);
+    for (let i = 0; i < 120; i += 1) server.update(TICK);
+
+    const id = server.ai.agentIds[0];
+    const victim = server.world.getPlayer(id);
+    const deathsBefore = server.match.scoreOf(id).deaths;
+
+    server.damage.apply(server.world, {
+      target: victim, targetKind: 'player', amount: 500,
+      type, source: null, ignoreTeams: true, capabilityId: capability,
+    });
+    check(`${label} kills the player`, victim.alive === false);
+
+    // Well past the respawn delay.
+    for (let i = 0; i < 600; i += 1) server.update(TICK);
+    const after = server.world.getPlayer(id);
+    check(`${label} respawns them`, after.alive === true && after.health > 0,
+      `alive=${after.alive} hp=${after.health}`);
+    check(`${label} is counted on the scoreboard`,
+      server.match.scoreOf(id).deaths === deathsBefore + 1,
+      `${deathsBefore} -> ${server.match.scoreOf(id).deaths}`);
+    server.shutdown();
+  }
+}
+
+// --- [11b] credit survives the non-bullet path ------------------------------
+console.log('\n[11b] A non-bullet kill still credits the killer');
+{
+  // Routing deaths through the damage chokepoint once lost the killer, and
+  // the match booked every explosion kill as "fell out of the world".
+  const server = await liveServer('killhouse', 4);
+  for (let i = 0; i < 120; i += 1) server.update(TICK);
+
+  const [killerId, victimId] = server.ai.agentIds;
+  const victim = server.world.getPlayer(victimId);
+  const killsBefore = server.match.scoreOf(killerId).kills;
+
+  server.damage.apply(server.world, {
+    target: victim, targetKind: 'player', amount: 500, type: 'explosive',
+    source: killerId, ignoreTeams: true, capabilityId: 'Killstreak_airstrike',
+  });
+  server.update(TICK);
+
+  check('the killer is credited with the kill',
+    server.match.scoreOf(killerId).kills === killsBefore + 1,
+    `${killsBefore} -> ${server.match.scoreOf(killerId).kills}`);
+
+  const record = server.match.deathLog[server.match.deathLog.length - 1];
+  check('the death log names the killer, not the void',
+    record.victim === victimId && record.killer === killerId,
+    `${record.killer ?? 'nobody'} killed ${record.victim}`);
+  server.shutdown();
+}
+
+// --- [12] the log never double-counts ---------------------------------------
+console.log('\n[12] One death is one death');
+{
+  const server = await liveServer('killhouse', 8);
+  for (let i = 0; i < 60 * 60; i += 1) server.update(TICK);
+
+  const scoreboard = server.match.standings().reduce((n, s2) => n + s2.deaths, 0);
+  const logged = server.events.ofType('kill').length;
+  check('the event log matches the scoreboard exactly', scoreboard === logged,
+    `${logged} events vs ${scoreboard} deaths`);
+
+  // Both the damage chokepoint and the bullet path can reach registerDeath
+  // for the same death; it must stay idempotent per life.
+  const seen = new Set();
+  let dupes = 0;
+  for (const d of server.match.deathLog) {
+    const key = `${d.victim}@${d.at.toFixed(3)}`;
+    if (seen.has(key)) dupes += 1;
+    seen.add(key);
+  }
+  check('no death is recorded twice', dupes === 0, `${dupes} duplicates`);
+  server.shutdown();
+}
+
+console.log(`\nREPLAY / KILLCAM: ${passed}/${passed + failed} checks passed`);
+process.exit(failed === 0 ? 0 : 1);

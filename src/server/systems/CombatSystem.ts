@@ -195,6 +195,8 @@ export class CombatSystem implements ServerSystem {
         type: 'bullet',
         source: shooter.id,
         at: point,
+        weaponId: weapon.id,
+        capabilityId: 'Shoot',
       });
       world.raiseFx({ t: 'hitMarker', lethal: outcome.lethal });
       this.resolved.push({
@@ -241,6 +243,8 @@ export class CombatSystem implements ServerSystem {
       source: shooter.id,
       at: point,
       zone: best.zone,
+      weaponId: weapon.id,
+      capabilityId: 'Shoot',
     });
 
     // A blocked hit (friendly fire) still drew a tracer, but it must not

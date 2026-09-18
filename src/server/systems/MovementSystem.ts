@@ -308,6 +308,7 @@ export class MovementSystem implements ServerSystem {
       type: 'fall',
       source: null,
       ignoreTeams: true,
+      capabilityId: 'Fall',
     });
   }
 }

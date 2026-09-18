@@ -26,6 +26,7 @@
 import type { PlayerId, EntityId, Vec3 } from '../../net/Protocol';
 import type { ServerWorld, ServerPlayer } from '../ServerWorld';
 import type { ServerSystem } from '../ServerSystem';
+import type { EventLog } from '../EventLog';
 import { HEALTH } from '../../utils/Constants';
 
 /** How a hit was delivered. Used for feedback and for scoring, never for maths. */
@@ -72,6 +73,24 @@ export interface DamageRequest {
    * must land regardless of team.
    */
   readonly ignoreTeams?: boolean;
+  /**
+   * The PHYSICAL thing that did it: a grenade entity, a missile, a vehicle,
+   * a killstreak aircraft. Distinct from `source`, which is who gets the
+   * kill credit.
+   *
+   * This is what lets a killcam follow the grenade rather than the thrower,
+   * with no per-weapon camera code: the camera is handed an entity id and
+   * does not care what kind of thing it is.
+   */
+  readonly causer?: EntityId | null;
+  /**
+   * Which capability produced this damage. The key the camera director
+   * looks up to decide how to film the kill; unknown ids fall back to a
+   * generic cinematic shot rather than failing.
+   */
+  readonly capabilityId?: string;
+  /** The weapon used, when there was one, for the killfeed and death card. */
+  readonly weaponId?: string;
 }
 
 export interface DamageResult {
@@ -98,6 +117,14 @@ export class DamageSystem implements ServerSystem {
   /** Set by the match: null means free-for-all, so nobody is friendly. */
   private teamOf: TeamResolver = () => null;
   private friendlyFire = false;
+  /**
+   * Where damage and kills are published.
+   *
+   * Optional so a harness can build a DamageSystem with no log, but wired up
+   * for real by GameServer. Everything downstream -- killcam, replay,
+   * timeline markers -- reads this rather than hooking damage itself.
+   */
+  private events: EventLog | null = null;
 
   /** Subscribers notified the moment something dies. */
   private readonly deathListeners: ((death: {
@@ -120,6 +147,9 @@ export class DamageSystem implements ServerSystem {
     this.teamOf = teamOf;
     this.friendlyFire = friendlyFire;
   }
+
+  /** Publish damage and kills to the match's event log. */
+  setEventLog(log: EventLog | null): void { this.events = log; }
 
   /**
    * Apply damage. The ONLY way health goes down anywhere in the server.
@@ -159,11 +189,69 @@ export class DamageSystem implements ServerSystem {
       world.raiseFx({ t: 'damage', target: target.id, amount, at: request.at });
     }
 
+    // Publish at the chokepoint, so no feature has to remember to.
+    //
+    // Note this runs for EVERY source of damage -- bullets, explosions, fall
+    // damage, out-of-bounds -- because they all come through here. That is
+    // the entire recording guarantee: nothing that can hurt you can avoid
+    // being recorded, whatever it is and whenever it was added.
+    this.events?.record({
+      type: 'damage',
+      tick: world.tick,
+      time: world.time,
+      ...(request.at ? { at: request.at } : {}),
+      actors: [target.id, source, request.causer ?? null]
+        .filter((x): x is PlayerId | EntityId => x !== null),
+      payload: {
+        target: target.id,
+        targetKind,
+        amount,
+        type,
+        source,
+        causer: request.causer ?? null,
+        capabilityId: request.capabilityId ?? null,
+        weaponId: request.weaponId ?? null,
+        zone: request.zone ?? null,
+        headshot: request.zone === 'head',
+        remaining: target.health,
+        lethal,
+      },
+    });
+
     if (lethal) {
       const death = {
         target, targetKind, source, type, zone: request.zone ?? null,
       };
       this.deaths.push(death);
+
+      // A kill is its own event, not a flag on the damage event, because the
+      // killcam and the timeline both search for it by type.
+      //
+      // `selfInflicted` is decided HERE, once. Fall damage, your own grenade,
+      // an out-of-bounds kill and a suicide all produce the same shape, so
+      // the camera director never needs scattered "was this self-inflicted"
+      // detection of its own.
+      this.events?.record({
+        type: 'kill',
+        tick: world.tick,
+        time: world.time,
+        ...(request.at ? { at: request.at } : {}),
+        actors: [target.id, source, request.causer ?? null]
+          .filter((x): x is PlayerId | EntityId => x !== null),
+        payload: {
+          victim: target.id,
+          victimKind: targetKind,
+          killer: source,
+          causer: request.causer ?? null,
+          capabilityId: request.capabilityId ?? null,
+          weaponId: request.weaponId ?? null,
+          type,
+          zone: request.zone ?? null,
+          headshot: request.zone === 'head',
+          selfInflicted: source === null || source === target.id,
+        },
+      });
+
       for (const listener of this.deathListeners) listener(death);
     }
 

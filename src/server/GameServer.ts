@@ -39,6 +39,7 @@ import { CollisionWorld } from './CollisionWorld';
 import { LevelStore, type LevelFetcher } from './LevelStore';
 import { MovementSystem } from './systems/MovementSystem';
 import { CombatSystem } from './systems/CombatSystem';
+import type { HitZone } from './systems/CombatSystem';
 import { AISystem } from './systems/AISystem';
 import { KillstreakSystem } from './systems/KillstreakSystem';
 import { MatchSystem } from './systems/MatchSystem';
@@ -51,6 +52,12 @@ import { hashString, pickTier } from './ai/BotProfile';
 import { SeededRandom } from './ai/Difficulty';
 import { registerBuiltinCapabilities } from './ai/registerCapabilities';
 import { getNavGrid } from './ai/NavContext';
+import { EventLog } from './EventLog';
+import { ReplayRecorder } from './ReplayRecorder';
+import {
+  registerBuiltinCameraProfiles, buildKillcamPlan, type KillcamPlan,
+} from './CameraDirector';
+import type { KillcamClip } from './ReplayRecorder';
 import type { AgentOptions } from './ai/AgentController';
 import type { SpawnPoint } from './ServerWorld';
 import type {
@@ -189,6 +196,24 @@ export class GameServer {
   readonly combat: CombatSystem;
   /** The single authority on health. Every damage source routes through it. */
   readonly damage: DamageSystem;
+  /**
+   * Everything notable that happened this match, semantically.
+   *
+   * The second of the two chokepoints (the first is DamageSystem). Anything
+   * that wants to know what happened -- killcam, replay recorder, timeline
+   * markers, an anti-cheat review tool -- reads this instead of hooking the
+   * individual systems, which is what stops each new feature from needing a
+   * new observer.
+   */
+  readonly events = new EventLog();
+
+  /**
+   * The rolling recording, for killcams and replays.
+   *
+   * Server-side so every client's killcam agrees with the authoritative
+   * simulation rather than with whatever that client happened to receive.
+   */
+  readonly replay = new ReplayRecorder({ windowSeconds: 12, tickHz: TICK_HZ });
 
   /**
    * Tell every system a player's life has begun.
@@ -228,6 +253,7 @@ export class GameServer {
     // regeneration and death reporting have exactly one implementation.
     // It is constructed before every system that can hurt something.
     this.damage = new DamageSystem();
+    this.damage.setEventLog(this.events);
     this.addSystem(this.damage);
     const movement = new MovementSystem(this.collision, this.damage);
     // Falling out of the world is a death, and the match owns deaths. Wiring
@@ -254,6 +280,40 @@ export class GameServer {
       if (death.source && death.source !== death.target.id) {
         this.combat.resupplyOnKill(death.source);
       }
+
+      // EVERY player death reaches the match, whatever killed them.
+      //
+      // The match used to learn about deaths only by scanning CombatSystem's
+      // list of resolved shots, so a player killed by anything that is not a
+      // bullet -- an explosion, a killstreak, a future ability -- was left
+      // dead forever: no score, no respawn timer, no 'died' message, so no
+      // death camera either. Hooking the damage chokepoint instead means the
+      // rule is "if it died, the match hears about it", which is true for
+      // sources that do not exist yet.
+      //
+      // registerDeath is idempotent per life (it early-outs when a respawn is
+      // already pending), so the bullet path crediting the same death a
+      // moment later is harmless.
+      if (death.targetKind !== 'player') return;
+      const victim = this.world.getPlayer(death.target.id as PlayerId);
+      if (!victim) return;
+
+      // Hand over whoever the damage names as the killer. Without this the
+      // match would see a death with no shooter and book every explosion,
+      // killstreak and ability kill as "fell out of the world", stealing the
+      // credit from the player who earned it.
+      const killer = death.source && death.source !== victim.id
+        ? this.world.getPlayer(death.source)
+        : null;
+      this.match.registerDeath(this.world, victim, killer ? {
+        shooter: killer.id,
+        victim: victim.id,
+        zone: death.zone as HitZone | null,
+        damage: 0,
+        distance: Math.hypot(killer.px - victim.px, killer.py - victim.py, killer.pz - victim.pz),
+        point: [victim.px, victim.py, victim.pz] as Vec3,
+        lethal: true,
+      } : undefined);
     });
     this.addSystem(this.killstreaks);
     // AI runs last: it reads the world the other systems just produced and
@@ -293,6 +353,10 @@ export class GameServer {
     this.addSystem(this.match);
 
     registerBuiltinCapabilities();
+    // Camera profiles are DATA. Registering them here means a capability
+    // added later needs no change to the director; it simply gets the
+    // generic profile until somebody chooses to give it a better one.
+    registerBuiltinCameraProfiles();
     this.ai = new AISystem(this.collision);
     this.addSystem(this.ai);
   }
@@ -698,6 +762,52 @@ export class GameServer {
     return Math.max(mode.maxPlayers, Math.min(RULE_LIMITS.maxPlayers.max, Math.round(hint)));
   }
 
+  /**
+   * Build the killcam for a death, from what was actually recorded.
+   *
+   * Returns null when the death is too old to still be in the rolling window
+   * -- a caller must handle that rather than assume a clip always exists.
+   *
+   * The plan is computed FRESH every time, never stored. That is what lets
+   * improved camera logic apply retroactively to a replay recorded before it
+   * was written.
+   */
+  buildKillcam(victimId: PlayerId): KillcamClip & { plan: KillcamPlan } | null {
+    // The most recent kill with this victim. Searching the log rather than
+    // tracking deaths separately means anything that can kill -- including
+    // abilities added later -- is found without registering itself here.
+    const kills = this.events.ofType('kill');
+    for (let i = kills.length - 1; i >= 0; i -= 1) {
+      const event = kills[i];
+      const payload = event.payload as {
+        victim: string; killer: string | null; causer: string | null;
+        capabilityId: string | null; selfInflicted: boolean;
+      };
+      if (payload.victim !== victimId) continue;
+
+      const plan = buildKillcamPlan({
+        tick: event.tick,
+        victim: payload.victim,
+        killer: payload.killer,
+        causer: payload.causer,
+        capabilityId: payload.capabilityId,
+        selfInflicted: payload.selfInflicted,
+      }, TICK_HZ);
+
+      const frames = this.replay.window(plan.fromTick, plan.toTick);
+      if (frames.length === 0) return null;
+
+      return {
+        plan,
+        frames,
+        events: this.events.slice(plan.fromTick, plan.toTick),
+        fromTick: frames[0].tick,
+        toTick: frames[frames.length - 1].tick,
+      };
+    }
+    return null;
+  }
+
   /** The modes this server can actually run. Test/UI seam. */
   knownModeIds(): string[] {
     return GAME_MODES.map((m) => m.id);
@@ -740,6 +850,10 @@ export class GameServer {
   private resetAll(): void {
     for (const system of this.systems) system.reset?.();
     this.world.reset();
+    // A new match starts with no history. Leaving the log populated would
+    // put the previous match's kills on the new one's timeline.
+    this.events.reset();
+    this.replay.reset();
     // Geometry is match-scoped too: leaving it loaded means the next match
     // starts with the last map's walls until its own data arrives.
     this.collision.clear();
@@ -815,6 +929,27 @@ export class GameServer {
       .map((state) => ({ ...state, team: this.match.teamOf(state.id) }));
     const removed = this.world.consumeRemovedIds();
     const fx: FxEvent[] = this.world.consumeFxEvents();
+
+    // Archive the authoritative view ONCE, before the per-connection loop.
+    //
+    // This is the whole recorder: the entity list, removals and effects have
+    // already been built to send over the wire, so keeping a reference costs
+    // nothing beyond the array itself. `ackSeq` is per-connection and
+    // meaningless to a replay, so the recorded frame carries zero.
+    this.replay.append({
+      tick: this.tick,
+      time: this.elapsed,
+      // The players, who are the subject of any killcam, plus the entities.
+      players: allStates,
+      snapshot: {
+        tick: this.tick,
+        time: this.elapsed,
+        ackSeq: 0,
+        entities,
+        ...(removed.length ? { removed } : {}),
+        ...(fx.length ? { fx } : {}),
+      },
+    });
 
     for (const connection of this.connections.values()) {
       if (!connection.joined) continue;

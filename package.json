@@ -44,6 +44,7 @@
     "verify:backend": "node tools/verify/backend-smoke.mjs",
     "verify:lobby": "node tools/verify/acceptance-lobby.mjs",
     "verify:p2p": "node tools/verify/acceptance-p2p.mjs",
+    "verify:replay": "node tools/verify/acceptance-replay.mjs",
     "verify:movement": "node tools/verify/server-movement.mjs",
     "bake:collision": "node tools/bakeCollision.mjs",
     "verify:combat": "node tools/verify/server-combat.mjs",

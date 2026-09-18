@@ -304,6 +304,10 @@ export class KillstreakSystem implements ServerSystem {
         type: 'explosive',
         source: entry.owner,
         at: centre,
+        // Name the streak that did it, so a killcam can film it as the
+        // instrument of death rather than crediting the caller's rifle.
+        capabilityId: `Killstreak_${entry.streak.id}`,
+        weaponId: entry.streak.id,
       });
       if (outcome.blocked) continue;
       const lethal = outcome.lethal;
