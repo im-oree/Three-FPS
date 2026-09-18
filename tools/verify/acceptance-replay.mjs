@@ -6,13 +6,15 @@
  * claim is worth nothing unless it is tested with a capability the system has
  * genuinely never seen, so several checks below invent one.
  */
-import { buildServerBundle, diskLevelFetcher } from './server-harness.mjs';
+import { buildServerBundle, buildReplayBundle, diskLevelFetcher } from './server-harness.mjs';
 
 const {
   GameServer, EventLog, ReplayRecorder,
   CameraDirectorRegistry, buildKillcamPlan, DEFAULT_PROFILE,
   registerBuiltinCameraProfiles,
 } = await buildServerBundle();
+
+const { ClipPlayer, KillcamDirector, frameSubject, framePair } = await buildReplayBundle();
 
 let passed = 0;
 let failed = 0;
@@ -396,6 +398,194 @@ console.log('\n[12] One death is one death');
   }
   check('no death is recorded twice', dupes === 0, `${dupes} duplicates`);
   server.shutdown();
+}
+
+// --- [13] playback is decode-and-interpolate, never simulation --------------
+console.log('\n[13] Playback interpolates rather than juddering');
+{
+  const server = await liveServer('killhouse', 8);
+  for (let i = 0; i < 20 * 60; i += 1) server.update(TICK);
+  const frames = server.replay.window(server.replay.oldestTick, server.replay.newestTick);
+
+  const clip = new ClipPlayer();
+  clip.load(frames);
+  check('a clip loads its frames', clip.loaded && clip.frameCount === frames.length,
+    `${clip.frameCount} frames`);
+  check('it reports a duration', clip.duration > 5, `${clip.duration.toFixed(1)}s`);
+
+  // Sample BETWEEN two recorded ticks. If playback were nearest-frame the
+  // sample would equal one endpoint exactly; interpolation must land strictly
+  // between them.
+  const a = frames[10];
+  const b = frames[11];
+  const moving = a.players.find((p) => {
+    const later = b.players.find((q) => q.id === p.id);
+    return later && Math.abs(later.pos[0] - p.pos[0]) > 0.01;
+  });
+  if (moving) {
+    clip.seek((a.time - frames[0].time) + (b.time - a.time) * 0.5);
+    const mid = clip.sample().players.find((p) => p.id === moving.id);
+    const later = b.players.find((q) => q.id === moving.id);
+    const between = (mid.pos[0] > Math.min(moving.pos[0], later.pos[0]))
+      && (mid.pos[0] < Math.max(moving.pos[0], later.pos[0]));
+    check('a sample between two ticks is genuinely between them', between,
+      `${moving.pos[0].toFixed(3)} < ${mid.pos[0].toFixed(3)} < ${later.pos[0].toFixed(3)}`);
+  } else {
+    check('a sample between two ticks is genuinely between them', false, 'nobody moved');
+  }
+
+  // Yaw must take the short way round the wrap, or a player turning to face
+  // their killer spins almost 360 degrees on one frame.
+  const wrapped = new ClipPlayer();
+  const base = frames[0];
+  const mk = (tick, yaw) => ({
+    tick, time: tick / 60,
+    players: [{ ...base.players[0], id: 'w', pos: [0, 0, 0], yaw, pitch: 0 }],
+    snapshot: { tick, time: tick / 60, ackSeq: 0, entities: [] },
+  });
+  wrapped.load([mk(0, Math.PI - 0.05), mk(1, -Math.PI + 0.05)]);
+  wrapped.seek(0.5 / 60);
+  const midYaw = wrapped.sample().players[0].yaw;
+  check('yaw interpolation takes the short way round the wrap',
+    Math.abs(midYaw) > Math.PI - 0.06, `${midYaw.toFixed(3)} rad`);
+
+  server.shutdown();
+}
+
+// --- [14] scrub stress ------------------------------------------------------
+console.log('\n[14] Scrubbing is stable and cheap');
+{
+  const server = await liveServer('killhouse', 8);
+  for (let i = 0; i < 30 * 60; i += 1) server.update(TICK);
+  const frames = server.replay.window(server.replay.oldestTick, server.replay.newestTick);
+  const clip = new ClipPlayer();
+  clip.load(frames);
+
+  // Ten thousand random seeks. Binary search means this stays fast even when
+  // the buffer holds a whole session; a linear scan would crawl.
+  let bad = 0;
+  const started = Date.now();
+  for (let i = 0; i < 10000; i += 1) {
+    clip.seekFraction(Math.random());
+    const frame = clip.sample();
+    if (!frame || !Number.isFinite(frame.time) || !frame.players.length) bad += 1;
+  }
+  const elapsed = Date.now() - started;
+  check('10k random scrubs all sample cleanly', bad === 0, `${bad} bad samples`);
+  check('scrubbing stays fast', elapsed < 3000, `${elapsed}ms for 10k seeks`);
+
+  // Seeking outside the clip must clamp, not read off the end.
+  clip.seek(-999);
+  check('seeking before the start clamps', clip.sample() !== null && clip.position === 0);
+  clip.seek(1e9);
+  check('seeking past the end clamps', clip.sample() !== null
+    && Math.abs(clip.position - clip.duration) < 1e-6);
+
+  server.shutdown();
+}
+
+// --- [15] an actor that vanishes mid-shot -----------------------------------
+console.log('\n[15] Something despawning mid-shot does not break the camera');
+{
+  // A grenade detonates and is removed. The camera was following it. This
+  // must degrade to a sensible shot, not point at the world origin.
+  const mkFrame = (tick, withGrenade) => ({
+    tick, time: tick / 60,
+    players: [
+      { id: 'victim', name: 'V', operatorId: 'ghost', health: 100, maxHealth: 100,
+        alive: true, pos: [10, 0, 10], yaw: 0, pitch: 0, team: 'FFA' },
+      { id: 'killer', name: 'K', operatorId: 'ghost', health: 100, maxHealth: 100,
+        alive: true, pos: [20, 0, 20], yaw: 1, pitch: 0, team: 'FFA' },
+    ],
+    snapshot: {
+      tick, time: tick / 60, ackSeq: 0,
+      entities: withGrenade
+        ? [{ id: 'nade', kind: 'grenade', pos: [12, 1, 12], rot: [0, 0, 0, 1], vel: [5, 0, 5] }]
+        : [],
+    },
+  });
+
+  const frames = [];
+  for (let t = 0; t < 30; t += 1) frames.push(mkFrame(t, t < 15));
+
+  const clip = new ClipPlayer();
+  clip.load(frames);
+  const director = new KillcamDirector();
+  director.load(buildKillcamPlan({
+    tick: 20, victim: 'victim', killer: 'killer', causer: 'nade',
+    capabilityId: 'MysteryNade', selfInflicted: false,
+  }, 60));
+
+  let nulls = 0;
+  let finite = 0;
+  for (let t = 0; t < 30; t += 1) {
+    clip.seek(t / 60);
+    const shot = director.compose(clip, 1 / 60);
+    if (!shot) { nulls += 1; continue; }
+    if (Number.isFinite(shot.position.x) && Number.isFinite(shot.lookAt.x)) finite += 1;
+  }
+  check('the camera composes a shot on every frame', nulls === 0, `${nulls} null frames`);
+  check('every composed shot is a real position', finite === 30, `${finite}/30 finite`);
+
+  // After the grenade is gone the camera must be looking at someone who
+  // still exists, not at (0,0,0).
+  clip.seek(25 / 60);
+  const after = director.compose(clip, 1 / 60);
+  const distToOrigin = Math.hypot(after.lookAt.x, after.lookAt.z);
+  check('after the despawn it falls back to a real actor, not the origin',
+    distToOrigin > 5, `looking at ${after.lookAt.x.toFixed(1)}, ${after.lookAt.z.toFixed(1)}`);
+}
+
+// --- [16] framing responds to the subject, not to its type ------------------
+console.log('\n[16] Framing is driven by motion, not by what the thing is');
+{
+  const V = (x, y, z) => ({ x, y, z,
+    distanceTo(o) { return Math.hypot(this.x - o.x, this.y - o.y, this.z - o.z); } });
+
+  const still = frameSubject({
+    position: V(0, 0, 0), speed: 0, heading: null, facing: 0,
+  });
+  const fast = frameSubject({
+    position: V(0, 0, 0), speed: 40, heading: 0, facing: 0,
+  });
+  const dStill = Math.hypot(still.position.x, still.position.z);
+  const dFast = Math.hypot(fast.position.x, fast.position.z);
+  check('a fast subject is framed from further back', dFast > dStill + 3,
+    `${dStill.toFixed(1)}m still vs ${dFast.toFixed(1)}m fast`);
+  check('and through a wider lens', fast.fov > still.fov,
+    `${still.fov} -> ${fast.fov}`);
+  check('the camera is above the subject', still.position.y > 1);
+
+  // The same call frames a rocket and a person. Nothing type-specific exists.
+  const pair = framePair(V(0, 0, 0), V(30, 0, 0));
+  check('a pair shot looks at the midpoint between them',
+    Math.abs(pair.lookAt.x - 15) < 0.001, `x=${pair.lookAt.x}`);
+  check('a distant pair is framed from further back',
+    Math.hypot(pair.position.x - 15, pair.position.z) > 20);
+}
+
+// --- [17] slow motion is applied at playback, never recorded ----------------
+console.log('\n[17] Slow motion belongs to the camera, not the recording');
+{
+  const director = new KillcamDirector();
+  director.load(buildKillcamPlan({
+    tick: 600, victim: 'v', killer: 'k', causer: null,
+    capabilityId: 'Shoot', selfInflicted: false,
+  }, 60));
+
+  const atImpact = director.rateAt(600, 60);
+  const wellBefore = director.rateAt(400, 60);
+  check('playback slows at the moment of impact', atImpact < 0.9,
+    `${atImpact.toFixed(2)}x`);
+  check('and runs at normal speed before it', Math.abs(wellBefore - 1) < 0.001,
+    `${wellBefore.toFixed(2)}x`);
+
+  // Easing, not a step: a rate that jumps reads as a stutter. Sample HALFWAY
+  // into the slow-motion window -- at the very edge the eased value rounds to
+  // 1.00x and the check would pass on a step function too.
+  const half = director.rateAt(600 - 13, 60);
+  check('it eases in rather than stepping', half > atImpact + 0.05 && half < 0.995,
+    `${half.toFixed(2)}x halfway in, between ${atImpact.toFixed(2)} and 1.00`);
 }
 
 console.log(`\nREPLAY / KILLCAM: ${passed}/${passed + failed} checks passed`);

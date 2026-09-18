@@ -101,3 +101,39 @@ export function makeCheck() {
 }
 
 export const settle = (ms = 5) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Bundle the CLIENT-side replay modules.
+ *
+ * Separate from `buildServerBundle` on purpose: these import three.js and so
+ * would contaminate the server bundle that the purity check exists to keep
+ * renderer-free. Playback is a client concern; the recording it reads is not.
+ */
+let cachedReplay = null;
+export async function buildReplayBundle() {
+  if (cachedReplay) return cachedReplay;
+  const src = (p) => path.join(process.cwd(), p).replace(/\\/g, '/');
+  const entry = `
+export { ClipPlayer } from '${src('src/replay/ClipPlayer.ts')}';
+export { KillcamDirector } from '${src('src/replay/KillcamDirector.ts')}';
+export {
+  frameSubject, framePair, frameFirstPerson,
+} from '${src('src/replay/FollowCameraRig.ts')}';
+`;
+  const dir = mkdtempSync(path.join(tmpdir(), 'replaybundle-'));
+  const entryFile = path.join(dir, 'entry.ts');
+  writeFileSync(entryFile, entry);
+  const outFile = path.join(dir, 'bundle.mjs');
+  await build({
+    entryPoints: [entryFile],
+    outfile: outFile,
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: 'node18',
+    absWorkingDir: process.cwd(),
+    logLevel: 'silent',
+  });
+  cachedReplay = await import(`file://${outFile}`);
+  return cachedReplay;
+}

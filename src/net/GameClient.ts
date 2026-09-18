@@ -30,6 +30,14 @@ export interface GameClientEvents {
   /** Every player in the match, including the local one. */
   onPlayerStates?: (states: readonly PlayerPublicState[]) => void;
   onKillstreaks?: (slots: readonly KillstreakSlotState[]) => void;
+  /**
+   * A snapshot landed.
+   *
+   * Exists so the replay recorder can keep what this client was actually
+   * sent. It fires AFTER the client's own state is updated, so a handler
+   * sees the same world the renderer is about to draw.
+   */
+  onSnapshot?: (snapshot: Snapshot) => void;
   onSimulationState?: (running: boolean, reason: string) => void;
   onRejected?: (reason: string) => void;
   /** The server accepted us and assigned an identity. */
@@ -190,6 +198,7 @@ export class GameClient {
         for (const entity of msg.snapshot.entities) this.byId.set(entity.id, entity);
 
         if (msg.snapshot.fx?.length) this.events.onFx?.(msg.snapshot.fx);
+        this.events.onSnapshot?.(msg.snapshot);
         break;
       }
 

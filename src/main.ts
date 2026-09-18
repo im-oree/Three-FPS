@@ -126,6 +126,10 @@ import OperatorsMenu from './ui/menus/OperatorsMenu';
 import operatorRoster from './customization/OperatorRoster';
 import { WORLD_PASS_MASK } from './core/RenderLayers';
 import DeathCamera from './player/DeathCamera';
+import ClientRecorder from './replay/ClientRecorder';
+import ClipPlayer from './replay/ClipPlayer';
+import KillcamDirector from './replay/KillcamDirector';
+import { buildKillcamPlan } from './server/CameraDirector';
 import DeathOverlay from './ui/hud/DeathOverlay';
 import Killfeed from './ui/hud/Killfeed';
 import MatchBar from './ui/hud/MatchBar';
@@ -1230,6 +1234,22 @@ engine.registerAlwaysUpdatable(hud);
 // These exist BEFORE the session because the session's callbacks drive them.
 const deathCamera = new DeathCamera(cinematicCamera);
 const deathOverlay = new DeathOverlay();
+
+// --- killcam ---------------------------------------------------------------
+// The recorder keeps what THIS CLIENT was sent, so killcams work in a real
+// multiplayer match where the server is another machine. The director turns
+// a recorded kill into a shot list at the moment of playback, never at the
+// moment of recording, so improving the camera improves old clips too.
+const clientRecorder = new ClientRecorder({ windowSeconds: 12, tickHz: 60 });
+const clipPlayer = new ClipPlayer();
+const killcamDirector = new KillcamDirector();
+/** True while the death camera is showing a replay rather than the body. */
+let killcamRunning = false;
+/** The tick that was filmed, so the clip can be extended as frames arrive. */
+let killcamDeathTick = 0;
+let killcamPlan: ReturnType<typeof buildKillcamPlan> | null = null;
+/** Lead actually used, after trimming to fit the respawn countdown. */
+let killcamLead = 0;
 const killfeed = new Killfeed();
 const matchBar = new MatchBar();
 
@@ -1266,6 +1286,65 @@ let awaitingRespawn = false;
  */
 let deathCollapse = 0;
 
+/**
+ * Try to replace the static death shot with an actual replay.
+ *
+ * Silent no-op when there is not enough recorded history -- dying two
+ * seconds into a match must still show something, and the orbiting body shot
+ * is a perfectly good something. A killcam is an upgrade on the death
+ * screen, never a precondition for it.
+ */
+const beginKillcam = (
+  death: DeathWire, deathTick: number, selfInflicted: boolean, respawnIn: number,
+): void => {
+  const plan = buildKillcamPlan({
+    tick: deathTick,
+    victim: death.victim,
+    killer: death.killer,
+    // No entity handle for the projectile reaches the client yet, so the
+    // causer is unknown and the plan falls back to filming the killer. When
+    // killstreaks gain entity ids this starts filming the rocket instead,
+    // with no change here -- that is the point of resolving by id.
+    causer: null,
+    capabilityId: selfInflicted ? null : 'Shoot',
+    selfInflicted,
+  }, 60);
+
+  // FIT THE CLIP TO THE TIME AVAILABLE.
+  //
+  // The profile asks for what makes the best film -- 2.5 s of run-up plus
+  // 1.5 s of aftermath -- but the respawn countdown is 3 s, so the full clip
+  // would be cut off mid-shot and the player would never see the kill they
+  // died to. The run-up is what gets trimmed, because the frames around the
+  // kill are the entire point and the approach is merely context.
+  //
+  // Slow motion stretches wall-clock time, so the budget is discounted for
+  // it rather than being taken at face value.
+  const wantLead = (deathTick - plan.fromTick) / 60;
+  const wantTail = (plan.toTick - deathTick) / 60;
+  const slowMoCost = wantTail * (1 / Math.max(0.2, plan.slowMoAtImpact) - 1) * 0.5;
+  const budget = Math.max(0.5, respawnIn - 0.3 - slowMoCost);
+  const lead = Math.max(0.6, Math.min(wantLead, budget - wantTail));
+
+  // Only the LEAD-IN exists right now. The tail is the future: those frames
+  // will be recorded over the next second or so while the clip is already
+  // playing, which is exactly why the clip is refreshed each frame below
+  // rather than being snapshotted once here.
+  const clip = clientRecorder.clipAround(deathTick, lead, 0);
+  // Fewer than a handful of frames is a stutter, not a replay.
+  if (!clip || clip.frames.length < 8) return;
+
+  clipPlayer.load(clip.frames);
+  // Start at the beginning of the lead-in rather than at the kill itself.
+  clipPlayer.seek(0);
+  clipPlayer.play();
+  killcamDirector.load(plan);
+  killcamRunning = true;
+  killcamDeathTick = deathTick;
+  killcamPlan = plan;
+  killcamLead = lead;
+};
+
 const beginDeathPresentation = (death: DeathWire, respawnIn: number): void => {
   awaitingRespawn = true;
   respawnAt = performance.now() / 1000 + respawnIn;
@@ -1275,11 +1354,34 @@ const beginDeathPresentation = (death: DeathWire, respawnIn: number): void => {
   inputRelay?.setEnabled(false);
   document.exitPointerLock?.();
 
+  // Log the kill the same way the server does, so the client's timeline and
+  // the server's agree on what happened and a clip can be built from either.
+  const deathTick = session?.client.tick ?? 0;
+  const selfInflicted = !death.killer || death.killer === death.victim;
+  clientRecorder.record({
+    type: 'kill',
+    tick: deathTick,
+    time: session?.client.serverTime ?? 0,
+    at: death.victimPos,
+    actors: death.killer ? [death.killer, death.victim] : [death.victim],
+    payload: {
+      victim: death.victim, killer: death.killer,
+      capabilityId: selfInflicted ? null : 'Shoot',
+      weaponId: death.weaponId, selfInflicted,
+    },
+  });
+
+  // Start on the body. The killcam takes over below if there is enough
+  // recorded history to build one -- and if there is not (a death in the
+  // first second of a match), this IS the presentation, which is why it is
+  // started unconditionally rather than as a fallback afterwards.
   deathCamera.begin({
     subject: new THREE.Vector3(...death.victimPos),
     from: death.killerPos ? new THREE.Vector3(...death.killerPos) : null,
     victimYaw: playerController.getYaw(),
   });
+
+  beginKillcam(death, deathTick, selfInflicted, respawnIn);
 
   deathOverlay.show({
     killerName: death.killerName,
@@ -1295,6 +1397,9 @@ const beginDeathPresentation = (death: DeathWire, respawnIn: number): void => {
 
 const endDeathPresentation = (pos: Vec3, yaw: number): void => {
   awaitingRespawn = false;
+  killcamRunning = false;
+  clipPlayer.reset();
+  killcamDirector.reset();
   deathCamera.end();
   deathOverlay.hide();
   // Put the body where the server says it is. The server picked this spawn
@@ -1336,7 +1441,10 @@ const sessionEvents: GameClientEvents = {
   onPlayerStates: (states) => {
     remotePlayers.setLocalId(session?.client.id ?? '');
     remotePlayers.sync(states);
+    // Hand the recorder the states; the next snapshot pins them to a tick.
+    clientRecorder.notePlayers(states);
   },
+  onSnapshot: (snapshot) => clientRecorder.noteSnapshot(snapshot),
   onDied: (death, respawnIn) => beginDeathPresentation(death, respawnIn),
   onRespawned: (pos, yaw) => endDeathPresentation(pos, yaw),
   onKillfeed: (entry) => {
@@ -1404,7 +1512,82 @@ engine.registerAlwaysUpdatable({
       ? Math.min(1, deathCollapse + dt / 0.45)
       : 0;
 
-    deathCamera.update(dt);
+    // The killcam drives the camera and the bodies from the RECORDING; the
+    // live world keeps running underneath, untouched. Playback does no
+    // physics and no AI -- it decodes and interpolates, which is strictly
+    // less work than being alive.
+    if (killcamRunning) {
+      // Extend the clip with frames recorded SINCE the death. The tail of a
+      // killcam is the future at the moment the kill happens -- the reaction
+      // shot is of a body that had not finished falling yet -- so the clip
+      // grows under the playhead as those frames arrive. Cheap: it re-slices
+      // the existing ring buffer and allocates no new frames.
+      if (killcamPlan && clientRecorder.newestTick < killcamPlan.toTick) {
+        const grown = clientRecorder.clipAround(
+          killcamDeathTick,
+          killcamLead,
+          (killcamPlan.toTick - killcamDeathTick) / 60,
+        );
+        if (grown && grown.frames.length > clipPlayer.frameCount) {
+          // Preserve the playhead: reloading resets it to zero, which would
+          // restart the killcam from the beginning on every new frame.
+          const at = clipPlayer.position;
+          clipPlayer.load(grown.frames);
+          clipPlayer.seek(at);
+          clipPlayer.play();
+        }
+      }
+
+      const rate = killcamDirector.rateAt(clipPlayer.sample()?.tick ?? 0, 60);
+      clipPlayer.speed = rate;
+      clipPlayer.advance(dt);
+
+      const frame = clipPlayer.sample();
+      if (frame) {
+        // Pose every body from the recording, including the local player's,
+        // by handing the recorded states to the SAME renderer that draws
+        // live players. A killcam that needed its own character code would
+        // drift from the live look the first time either changed.
+        remotePlayers.setLocalId('');
+        remotePlayers.sync(frame.players);
+      }
+
+      const shot = killcamDirector.compose(clipPlayer, dt);
+      if (shot) {
+        cinematicCamera.setDesiredTransform(shot.position, shot.lookAt, {
+          fov: shot.fov,
+          // Cut hard on a shot change, glide within a shot: smoothing across
+          // a deliberate cut drags the camera through the level between two
+          // unrelated viewpoints.
+          followSmoothing: killcamDirector.justCut ? 1 : 0.22,
+        });
+      }
+
+      if (clipPlayer.finished) {
+        // Out of recording but still waiting to respawn: hand back to the
+        // body shot rather than freezing on the last frame.
+        killcamRunning = false;
+        remotePlayers.setLocalId(session?.client.id ?? '');
+        // Re-aim the body shot at where the victim ACTUALLY is now. Without
+        // this the death cam resumes from the pose it held when the killcam
+        // started and jumps, which reads as a glitch rather than a cut.
+        const me = session?.client.players.find((p) => p.id === session?.client.id);
+        if (me) {
+          deathCamera.retarget({
+            subject: new THREE.Vector3(...me.pos),
+            from: null,
+            victimYaw: me.yaw,
+          });
+        }
+      }
+    }
+
+    // Only ONE of the two may drive the camera. The death cam runs the body
+    // shot when no killcam is playing; while a killcam is up it must stay
+    // quiet, because whichever calls setDesiredTransform last would win and
+    // the result would be a camera snapping between two compositions every
+    // frame.
+    if (!killcamRunning) deathCamera.update(dt);
     killfeed.update(dt);
     // Always updated, never gated on PLAYING: the death camera orbits a body
     // while other players keep moving, and frozen bodies during the respawn
@@ -1852,6 +2035,15 @@ animationStateMachine.registerTarget(mockAnimationTarget);
 
 interface OperatorTestHook {
   THREE: typeof THREE;
+  clientRecorder: typeof clientRecorder;
+  clipPlayer: typeof clipPlayer;
+  killcamDirector: typeof killcamDirector;
+  /** Everything a test needs to prove a killcam ran, in one object. */
+  killcamState: () => {
+    running: boolean; recordedFrames: number; clipFrames: number;
+    position: number; duration: number; speed: number; playing: boolean;
+    shot: ReturnType<KillcamDirector['shotAt']>;
+  };
   loadoutManager: typeof loadoutManager;
   operatorRoster: typeof operatorRoster;
   operatorShowcase: OperatorShowcase;
@@ -1969,6 +2161,23 @@ interface OperatorTestHook {
   drawCalls: () => ({ ...drawCalls }),
   descriptorLog: () => descriptorLog,
   mockAnimationTarget,
+  // Replay internals, so a test can prove a killcam actually played rather
+  // than inferring it from a screenshot.
+  clientRecorder,
+  clipPlayer,
+  killcamDirector,
+  killcamState: () => ({
+    running: killcamRunning,
+    recordedFrames: clientRecorder.frameCount,
+    clipFrames: clipPlayer.frameCount,
+    position: clipPlayer.position,
+    duration: clipPlayer.duration,
+    speed: clipPlayer.speed,
+    playing: clipPlayer.isPlaying,
+    shot: clipPlayer.loaded
+      ? killcamDirector.shotAt(clipPlayer.sample()?.tick ?? 0)
+      : null,
+  }),
 };
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.orientationGizmos = orientationGizmos;
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.droppedMags = droppedMags;
