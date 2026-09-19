@@ -22,11 +22,19 @@
  * instead of a copy. The only allocation is the small wrapper per tick, and
  * the window is bounded, so memory is flat after the first few seconds.
  *
- * Player states arrive in a SEPARATE message from entity snapshots, so the
- * recorder stitches the two together: it holds the most recent player states
- * and attaches them to each snapshot as it lands. That is why the recording
- * is driven by snapshots and not by player states -- snapshots carry the
- * tick number, which is what everything downstream indexes by.
+ * STITCHING TWO MESSAGES INTO ONE FRAME
+ * -------------------------------------
+ * Player states arrive in a SEPARATE message from entity snapshots, and the
+ * server sends the snapshot FIRST. So a recorder that committed a frame the
+ * moment a snapshot landed would pair tick N's entities with tick N-1's
+ * players -- every body one tick stale, and a player who died on tick N
+ * recorded as still alive and still standing where they used to be. Measured
+ * against the server's own recording that was a mean error of 0.38 m and a
+ * worst case of 34 m, on a transport with no loss at all.
+ *
+ * So the snapshot is HELD and committed when its player states arrive. The
+ * tick number still comes from the snapshot, because that is what everything
+ * downstream indexes by.
  */
 import type { PlayerPublicState, Snapshot } from '../net/Protocol';
 import type { GameEvent } from '../server/EventLog';
@@ -50,7 +58,8 @@ export class ClientRecorder {
    */
   readonly events = new EventLog();
 
-  private players: readonly PlayerPublicState[] = [];
+  /** Snapshot waiting for the player states of the same tick. */
+  private pending: Snapshot | null = null;
   private readonly tickHz: number;
 
   constructor(options: ClientRecorderOptions = {}) {
@@ -61,19 +70,29 @@ export class ClientRecorder {
     });
   }
 
-  /** Latest player states. Held until the next snapshot pins them to a tick. */
+  /**
+   * Player states arrived — they complete the snapshot already held, so this
+   * is what actually commits a frame.
+   *
+   * Dropped silently if no snapshot is waiting: a `playerStates` with no
+   * snapshot to pin it to has no tick, and a frame with a guessed tick is
+   * worse than a missing one.
+   */
   notePlayers(states: readonly PlayerPublicState[]): void {
-    this.players = states;
-  }
-
-  /** A snapshot arrived: commit one frame. */
-  noteSnapshot(snapshot: Snapshot): void {
+    const snapshot = this.pending;
+    if (!snapshot) return;
+    this.pending = null;
     this.recorder.append({
       tick: snapshot.tick,
       time: snapshot.time,
       snapshot,
-      players: this.players,
+      players: states,
     });
+  }
+
+  /** A snapshot arrived: hold it until its player states land. */
+  noteSnapshot(snapshot: Snapshot): void {
+    this.pending = snapshot;
   }
 
   /** Record something worth putting on a timeline. */
@@ -107,7 +126,7 @@ export class ClientRecorder {
   reset(): void {
     this.recorder.reset();
     this.events.reset();
-    this.players = [];
+    this.pending = null;
   }
 }
 

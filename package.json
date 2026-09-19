@@ -46,6 +46,7 @@
     "verify:p2p": "node tools/verify/acceptance-p2p.mjs",
     "verify:replay": "node tools/verify/acceptance-replay.mjs",
     "verify:killcam": "node tools/verify/acceptance-killcam.mjs",
+    "verify:chokepoint": "node tools/verify/chokepoint-lint.mjs",
     "verify:movement": "node tools/verify/server-movement.mjs",
     "bake:collision": "node tools/bakeCollision.mjs",
     "verify:combat": "node tools/verify/server-combat.mjs",

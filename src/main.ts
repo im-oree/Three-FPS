@@ -1441,7 +1441,8 @@ const sessionEvents: GameClientEvents = {
   onPlayerStates: (states) => {
     remotePlayers.setLocalId(session?.client.id ?? '');
     remotePlayers.sync(states);
-    // Hand the recorder the states; the next snapshot pins them to a tick.
+    // Completes the snapshot the recorder is holding. The server sends the
+    // snapshot first and the states second, so THIS is what commits a frame.
     clientRecorder.notePlayers(states);
   },
   onSnapshot: (snapshot) => clientRecorder.noteSnapshot(snapshot),
