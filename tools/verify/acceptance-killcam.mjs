@@ -254,7 +254,64 @@ try {
       `worst ${diff.worst.toFixed(4)}m, mean ${diff.mean.toFixed(4)}m`);
   }
 
-  console.log('\n[7] No errors along the way');
+  console.log('\n[7] Saving a clip happens off the main thread');
+  {
+    const result = await page.evaluate(async () => {
+      const hook = window.__OPERATOR__;
+      const frames = hook.clientRecorder.recorder.window(
+        hook.clientRecorder.recorder.oldestTick,
+        hook.clientRecorder.recorder.newestTick,
+      );
+
+      // Watch for a main-thread stall WHILE the encode runs. rAF deltas are
+      // the honest measure: if the codec were running inline, the gap between
+      // frames would balloon for as long as the encode took.
+      const gaps = [];
+      let previous = performance.now();
+      let watching = true;
+      const watch = () => {
+        const now = performance.now();
+        gaps.push(now - previous);
+        previous = now;
+        if (watching) requestAnimationFrame(watch);
+      };
+      requestAnimationFrame(watch);
+
+      const started = performance.now();
+      const encoded = await hook.replayCodec.encode(frames, true);
+      const elapsed = performance.now() - started;
+      watching = false;
+
+      // Round-trip it to prove the bytes are real, not merely produced.
+      const back = await hook.replayCodec.decode(encoded.bytes, encoded.compressed);
+
+      return {
+        frames: frames.length,
+        bytes: encoded.bytes.byteLength,
+        rawBytes: encoded.rawBytes,
+        compressed: encoded.compressed,
+        inline: encoded.inline,
+        elapsed,
+        worstGap: gaps.length ? Math.max(...gaps) : 0,
+        decodedFrames: back.length,
+        firstMatches: back.length > 0 && frames.length > 0
+          && back[0].players.length === frames[0].players.length,
+      };
+    });
+
+    check('the clip encoded', result.bytes > 0,
+      `${result.frames} frames -> ${(result.bytes / 1024).toFixed(1)} KB`);
+    check('it ran in a worker, not inline', result.inline === false);
+    check('it was compressed', result.compressed === true,
+      `${(result.rawBytes / 1024).toFixed(1)} KB -> ${(result.bytes / 1024).toFixed(1)} KB`);
+    check('the main thread kept rendering throughout', result.worstGap < 150,
+      `worst frame gap ${result.worstGap.toFixed(0)}ms during a ${result.elapsed.toFixed(0)}ms encode`);
+    check('it decodes back to the same frames',
+      result.decodedFrames === result.frames && result.firstMatches,
+      `${result.decodedFrames} frames back`);
+  }
+
+  console.log('\n[8] No errors along the way');
   check('the page raised no errors', pageErrors.length === 0,
     pageErrors[0] ?? 'clean');
 } finally {

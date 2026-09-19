@@ -64,7 +64,29 @@ const lerpVec3 = (a: Vec3, b: Vec3, t: number): Vec3 => [
  * until the later frame is actually reached: a player must not flicker to
  * "dead" halfway through the tick they were shot on.
  */
+/**
+ * Distance, squared, beyond which two positions cannot be the same motion.
+ *
+ * A respawn moves a player across the map between one recorded frame and the
+ * next. Interpolating that produces a body gliding hundreds of metres
+ * through walls -- which measured as a 248 m error against the live match
+ * and would read as the single most obviously broken thing in a replay.
+ *
+ * 8 m in one archived frame is far beyond a sprint (13 cm at 60 Hz, 80 cm
+ * even at a coarse 10 Hz archive rate) and far below a respawn, so anything
+ * above it is a teleport and must CUT rather than glide.
+ */
+const TELEPORT_SQ = 8 * 8;
+
 function blendPlayer(a: PlayerPublicState, b: PlayerPublicState, t: number): PlayerPublicState {
+  const dx = b.pos[0] - a.pos[0];
+  const dy = b.pos[1] - a.pos[1];
+  const dz = b.pos[2] - a.pos[2];
+  if (dx * dx + dy * dy + dz * dz > TELEPORT_SQ) {
+    // Hold the old position until the new one is actually reached, so the
+    // body vanishes and reappears rather than flying.
+    return t < 1 ? a : b;
+  }
   return {
     ...a,
     pos: lerpVec3(a.pos, b.pos, t),

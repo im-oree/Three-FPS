@@ -137,3 +137,21 @@ export {
   cachedReplay = await import(`file://${outFile}`);
   return cachedReplay;
 }
+
+/** Bundle the binary replay format on its own (no three.js needed). */
+let cachedFormat = null;
+export async function buildFormatBundle() {
+  if (cachedFormat) return cachedFormat;
+  const src = (p) => path.join(process.cwd(), p).replace(/\\/g, '/');
+  const entry = `export * from '${src('src/replay/BinaryFormat.ts')}';\n`;
+  const dir = mkdtempSync(path.join(tmpdir(), 'formatbundle-'));
+  const entryFile = path.join(dir, 'entry.ts');
+  writeFileSync(entryFile, entry);
+  const outFile = path.join(dir, 'bundle.mjs');
+  await build({
+    entryPoints: [entryFile], outfile: outFile, bundle: true, format: 'esm',
+    platform: 'node', target: 'node18', absWorkingDir: process.cwd(), logLevel: 'silent',
+  });
+  cachedFormat = await import(`file://${outFile}`);
+  return cachedFormat;
+}

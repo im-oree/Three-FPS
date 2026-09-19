@@ -6,7 +6,10 @@
  * claim is worth nothing unless it is tested with a capability the system has
  * genuinely never seen, so several checks below invent one.
  */
-import { buildServerBundle, buildReplayBundle, diskLevelFetcher } from './server-harness.mjs';
+import { deflateSync, inflateSync } from 'node:zlib';
+import {
+  buildServerBundle, buildReplayBundle, buildFormatBundle, diskLevelFetcher,
+} from './server-harness.mjs';
 
 const {
   GameServer, EventLog, ReplayRecorder,
@@ -15,6 +18,9 @@ const {
 } = await buildServerBundle();
 
 const { ClipPlayer, KillcamDirector, frameSubject, framePair } = await buildReplayBundle();
+const {
+  encodeClip, decodeClip, packQuaternion, unpackQuaternion, FORMAT_VERSION,
+} = await buildFormatBundle();
 
 let passed = 0;
 let failed = 0;
@@ -586,6 +592,171 @@ console.log('\n[17] Slow motion belongs to the camera, not the recording');
   const half = director.rateAt(600 - 13, 60);
   check('it eases in rather than stepping', half > atImpact + 0.05 && half < 0.995,
     `${half.toFixed(2)}x halfway in, between ${atImpact.toFixed(2)} and 1.00`);
+}
+
+// --- [18] the binary format -------------------------------------------------
+console.log('\n[18] Recordings pack down to something worth keeping');
+{
+  const server = await liveServer('prototype', 20);
+  const captured = [];
+  server.replay.append = (frame) => { captured.push(frame); };
+  for (let i = 0; i < 60 * 60; i += 1) server.update(TICK);
+
+  const json = Buffer.byteLength(JSON.stringify(captured));
+  const binary = encodeClip(captured);
+  check('the binary form is far smaller than JSON',
+    binary.byteLength * 10 < json,
+    `${(json / 1048576).toFixed(1)} MB -> ${(binary.byteLength / 1024).toFixed(0)} KB`);
+
+  // Archive at 20 Hz: playback interpolates, so storing every tick is paying
+  // for frames no one can distinguish.
+  const archive = captured.filter((_, i) => i % 3 === 0);
+  const packed = deflateSync(Buffer.from(encodeClip(archive)), { level: 9 });
+  const tenMinuteKB = packed.byteLength * 10 / 1024;
+  check('a 10-minute 20-player match fits in about a megabyte',
+    tenMinuteKB < 1200, `${tenMinuteKB.toFixed(0)} KB`);
+
+  // Deflate must be doing real work, or the format is wasting entropy.
+  check('deflate roughly halves it',
+    packed.byteLength < encodeClip(archive).byteLength * 0.75,
+    `${(encodeClip(archive).byteLength / 1024).toFixed(0)} KB -> ${(packed.byteLength / 1024).toFixed(0)} KB`);
+
+  server.shutdown();
+}
+
+console.log('\n[19] Nothing you can see is lost in the packing');
+{
+  const server = await liveServer('killhouse', 12);
+  const captured = [];
+  server.replay.append = (frame) => { captured.push(frame); };
+  for (let i = 0; i < 20 * 60; i += 1) server.update(TICK);
+
+  const round = decodeClip(encodeClip(captured));
+  check('every frame survives the round trip',
+    round.frames.length === captured.length,
+    `${captured.length} -> ${round.frames.length}`);
+  check('the header reports the format version',
+    round.header.version === FORMAT_VERSION, `v${round.header.version}`);
+
+  let worst = 0;
+  let worstYaw = 0;
+  let compared = 0;
+  for (let i = 0; i < captured.length; i += 1) {
+    for (const truth of captured[i].players) {
+      const got = round.frames[i].players.find((p) => p.id === truth.id);
+      if (!got) continue;
+      compared += 1;
+      worst = Math.max(worst, Math.hypot(
+        truth.pos[0] - got.pos[0], truth.pos[1] - got.pos[1], truth.pos[2] - got.pos[2],
+      ));
+      let dy = Math.abs(truth.yaw - got.yaw) % (Math.PI * 2);
+      if (dy > Math.PI) dy = Math.PI * 2 - dy;
+      worstYaw = Math.max(worstYaw, dy);
+    }
+  }
+  check('positions come back within a centimetre', worst < 0.02,
+    `worst ${(worst * 100).toFixed(2)} cm over ${compared} player-frames`);
+  check('facing comes back within a tenth of a degree',
+    worstYaw < 0.002, `worst ${(worstYaw * 180 / Math.PI).toFixed(4)} deg`);
+
+  // Identity is dictionary-encoded; a name that came back wrong would put
+  // the wrong player on the killfeed of a replay.
+  const first = captured[0].players[0];
+  const decodedFirst = round.frames[0].players.find((p) => p.id === first.id);
+  check('names and operators survive',
+    decodedFirst?.name === first.name && decodedFirst?.operatorId === first.operatorId,
+    `${decodedFirst?.name}`);
+  check('liveness survives',
+    round.frames.every((f, i) => f.players.every((p) => {
+      const truth = captured[i].players.find((q) => q.id === p.id);
+      return !truth || truth.alive === p.alive;
+    })), 'alive flags match');
+
+  server.shutdown();
+}
+
+console.log('\n[20] Quaternions pack to a quarter of the size');
+{
+  // Smallest-three: store three components in 10 bits each plus 2 bits
+  // naming the one that was dropped.
+  let worst = 0;
+  for (let i = 0; i < 2000; i += 1) {
+    const q = [Math.random() * 2 - 1, Math.random() * 2 - 1,
+      Math.random() * 2 - 1, Math.random() * 2 - 1];
+    const len = Math.hypot(...q);
+    const unit = q.map((v) => v / len);
+    const back = unpackQuaternion(packQuaternion(unit));
+    // q and -q are the same rotation, so compare the closer of the two.
+    const straight = Math.hypot(...unit.map((v, j) => v - back[j]));
+    const flipped = Math.hypot(...unit.map((v, j) => v + back[j]));
+    worst = Math.max(worst, Math.min(straight, flipped));
+  }
+  check('rotations round-trip accurately', worst < 0.005,
+    `worst component error ${worst.toFixed(5)}`);
+  check('a packed quaternion is 32 bits',
+    packQuaternion([0, 0, 0, 1]) <= 0xffffffff);
+}
+
+console.log('\n[21] A corrupt or future recording is refused, not misread');
+{
+  const server = await liveServer('shipment', 6);
+  const captured = [];
+  server.replay.append = (frame) => { captured.push(frame); };
+  for (let i = 0; i < 120; i += 1) server.update(TICK);
+  const good = encodeClip(captured);
+
+  const notAReplay = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+  let rejected = false;
+  try { decodeClip(notAReplay); } catch { rejected = true; }
+  check('random bytes are rejected', rejected);
+
+  // A recording from a future build must fail loudly rather than decode to
+  // nonsense -- silent misreading is how a replay viewer shows a match that
+  // never happened.
+  const future = good.slice();
+  future[4] = FORMAT_VERSION + 1;
+  let versionRejected = false;
+  let message = '';
+  try { decodeClip(future); } catch (error) { versionRejected = true; message = String(error.message); }
+  check('a newer format version is refused', versionRejected);
+  check('and says so usefully', message.includes(String(FORMAT_VERSION + 1)), message);
+
+  // Deflate round trip, since that is how it will be stored.
+  const restored = decodeClip(new Uint8Array(inflateSync(Buffer.from(deflateSync(Buffer.from(good))))));
+  check('it survives compression and decompression',
+    restored.frames.length === captured.length);
+
+  server.shutdown();
+}
+
+console.log('\n[22] A teleport is cut, not flown');
+{
+  // A respawn moves a player across the map in one frame. Interpolating that
+  // glides a body hundreds of metres through walls -- measured at 248 m
+  // against a live match before this was fixed.
+  const mk = (tick, x) => ({
+    tick, time: tick / 60,
+    players: [{
+      id: 'v', name: 'V', operatorId: 'ghost', health: 100, maxHealth: 100,
+      alive: true, pos: [x, 0, 0], yaw: 0, pitch: 0, team: 'FFA',
+    }],
+    snapshot: { tick, time: tick / 60, ackSeq: 0, entities: [] },
+  });
+
+  const player = new ClipPlayer();
+  player.load([mk(0, 0), mk(1, 250)]);
+  player.seek(0.5 / 60);
+  const mid = player.sample().players[0].pos[0];
+  check('a respawn jump does not interpolate', mid === 0 || mid === 250,
+    `x=${mid}`);
+
+  // Ordinary movement must still interpolate, or everything judders.
+  const walker = new ClipPlayer();
+  walker.load([mk(0, 0), mk(1, 0.2)]);
+  walker.seek(0.5 / 60);
+  const walked = walker.sample().players[0].pos[0];
+  check('but a normal stride still does', walked > 0 && walked < 0.2,
+    `x=${walked.toFixed(3)}`);
 }
 
 console.log(`\nREPLAY / KILLCAM: ${passed}/${passed + failed} checks passed`);

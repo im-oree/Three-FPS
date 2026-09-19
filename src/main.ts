@@ -127,6 +127,7 @@ import operatorRoster from './customization/OperatorRoster';
 import { WORLD_PASS_MASK } from './core/RenderLayers';
 import DeathCamera from './player/DeathCamera';
 import ClientRecorder from './replay/ClientRecorder';
+import ReplayCodec from './replay/ReplayCodec';
 import ClipPlayer from './replay/ClipPlayer';
 import KillcamDirector from './replay/KillcamDirector';
 import { buildKillcamPlan } from './server/CameraDirector';
@@ -1241,6 +1242,8 @@ const deathOverlay = new DeathOverlay();
 // a recorded kill into a shot list at the moment of playback, never at the
 // moment of recording, so improving the camera improves old clips too.
 const clientRecorder = new ClientRecorder({ windowSeconds: 12, tickHz: 60 });
+// Encoding and deflate run in a worker: saving a clip must never drop a frame.
+const replayCodec = new ReplayCodec();
 const clipPlayer = new ClipPlayer();
 const killcamDirector = new KillcamDirector();
 /** True while the death camera is showing a replay rather than the body. */
@@ -2039,6 +2042,7 @@ interface OperatorTestHook {
   clientRecorder: typeof clientRecorder;
   clipPlayer: typeof clipPlayer;
   killcamDirector: typeof killcamDirector;
+  replayCodec: typeof replayCodec;
   /** Everything a test needs to prove a killcam ran, in one object. */
   killcamState: () => {
     running: boolean; recordedFrames: number; clipFrames: number;
@@ -2167,6 +2171,7 @@ interface OperatorTestHook {
   clientRecorder,
   clipPlayer,
   killcamDirector,
+  replayCodec,
   killcamState: () => ({
     running: killcamRunning,
     recordedFrames: clientRecorder.frameCount,
