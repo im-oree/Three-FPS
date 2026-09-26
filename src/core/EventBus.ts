@@ -13,6 +13,9 @@
  *   'player:landed'               -> { impactVelocity: number }          (Doc 2)
  *   'player:staminaChanged'       -> number (normalized 0..1)            (Doc 2)
  *   'player:footstep'             -> { surfaceType: string }             (Doc 2)
+ *   'settings:changed'            -> { key: string, value: unknown }
+ *   'quality:tierChanged'         -> { tier: QualityTierName }
+ *   'quality:resolutionChanged'   -> { scale: number, reason: string }
  * Future documents add their own names here as they introduce them.
  */
 

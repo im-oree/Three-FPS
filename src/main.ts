@@ -17,6 +17,7 @@ import bindShakeTriggers from './camera/ShakeTriggers';
 import explosionEffect, { EXPLOSION_PRESETS } from './vfx/ExplosionEffect';
 import vehicleShowcase from './vfx/VehicleShowcase';
 import killstreakManager from './killstreaks/KillstreakManager';
+import { DEFAULT_KILLSTREAK_LOADOUT } from './killstreaks/definitions';
 import UAVKillstreakController from './killstreaks/controllers/UAVKillstreakController';
 import AirstrikeKillstreakController from './killstreaks/controllers/AirstrikeKillstreakController';
 import AttackHelicopterKillstreakController from './killstreaks/controllers/AttackHelicopterKillstreakController';
@@ -45,6 +46,12 @@ import scopeSystem from './weapons/ScopeSystem';
 import scopeOverlay from './ui/ScopeOverlay';
 import explosionDamage from './weapons/ExplosionDamageResolver';
 import { TraversalPrompt } from './ui/TraversalPrompt';
+// --- Document V: vehicles ---------------------------------------------------
+import { VehicleSystem } from './vehicles/VehicleSystem';
+import { VehicleHUD } from './ui/VehicleHUD';
+import { VehiclePrompt } from './ui/VehiclePrompt';
+import { TeleportPadSystem } from './world/TeleportPadSystem';
+import PROTOTYPE_TELEPORTS from './world/PrototypeTeleports';
 import LevelLoader from './environment/LevelLoader';
 import AudioManager from './audio/AudioManager';
 import bindGameAudio from './audio/GameAudioBindings';
@@ -90,6 +97,8 @@ import MuzzleFlashEffect from './weapons/MuzzleFlashEffect';
 import ImpactEffect from './weapons/ImpactEffect';
 import TracerEffect from './weapons/TracerEffect';
 import ballistics from './weapons/BallisticsSystem';
+import RAPIER from '@dimforge/rapier3d-compat';
+import calloutZoneRegistry from './world/CalloutZoneRegistry';
 import { PhysicsWorld } from './physics/PhysicsWorld';
 import { ColliderFactory } from './physics/ColliderFactory';
 import PlayerCharacterController from './physics/PlayerCharacterController';
@@ -98,9 +107,42 @@ import AnimationStateMachine from './animation/AnimationStateMachine';
 import AnimationBlender from './animation/AnimationBlender';
 import AnimationLayerCompositor from './animation/AnimationLayerCompositor';
 import ThirdPersonBody from './character/ThirdPersonBody';
+import RemotePlayers from './character/RemotePlayers';
 import PerspectiveController from './player/PerspectiveController';
 import PerspectiveSync from './animation/PerspectiveSync';
 import type { ResolvedAnimationDescriptor, AnimationTarget } from './animation/AnimationBlender';
+import { createLocalSession, type GameSession } from './net/GameSession';
+import {
+  createHostedSession, joinHostedSession, type HostedGameSession,
+} from './net/HostedSession';
+import { resolveLobbyUrl, resolveLobbyHttpBase } from './net/lobbyUrl';
+import type { GameListing } from './net/LobbyProtocol';
+import type { GameClientEvents } from './net/GameClient';
+import { InputRelay } from './net/InputRelay';
+import { httpLevelFetcher } from './server/LevelStore';
+import loadProgress, { DEPLOY_STAGES } from './core/LoadProgress';
+import { OperatorShowcase } from './ui/showcase/OperatorShowcase';
+import OperatorsMenu from './ui/menus/OperatorsMenu';
+import operatorRoster from './customization/OperatorRoster';
+import { WORLD_PASS_MASK } from './core/RenderLayers';
+import DeathCamera from './player/DeathCamera';
+import ClientRecorder from './replay/ClientRecorder';
+import ReplayCodec from './replay/ReplayCodec';
+import FreeCameraRig from './replay/FreeCameraRig';
+import TheatreScreen from './ui/menus/TheatreScreen';
+import { solveCameraPosition, rayProbeFrom } from './replay/AntiClipSolver';
+import { frameSubject } from './replay/FollowCameraRig';
+import ClipPlayer from './replay/ClipPlayer';
+import KillcamDirector from './replay/KillcamDirector';
+import { buildKillcamPlan } from './server/CameraDirector';
+import DeathOverlay from './ui/hud/DeathOverlay';
+import Killfeed from './ui/hud/Killfeed';
+import MatchBar from './ui/hud/MatchBar';
+import { WEAPON_LABELS } from './ui/menus/LoadoutMenu';
+import type { DeathWire, MatchRulesWire, Vec3 } from './net/Protocol';
+// Mode metadata is shared DATA, not server behaviour: the client reads it to
+// label the loading screen. Same direction as the menu already reads it.
+import { getGameMode } from './server/GameModes';
 
 const canvas = document.getElementById('game-canvas') as HTMLCanvasElement | null;
 if (!canvas) throw new Error('[main] #game-canvas element missing from index.html');
@@ -122,6 +164,7 @@ const levelLoader = new LevelLoader(colliderFactory, {
   assetLoader: engine.assetLoader,
   renderer: engine.renderer.getRenderer(),
   culling: engine.sceneManager.culling,
+  quality: engine.quality,
 });
 const arena = levelLoader; // legacy alias: same `.scene`/`.update(dt)` surface
 engine.sceneManager.setScene(levelLoader.scene);
@@ -160,6 +203,10 @@ const playerController = new PlayerController(
 );
 engine.registerUpdatable(playerController);
 engine.registerUpdatable({ update: (dt: number) => physics.update(dt) });
+// The sun's shadow box follows the player (ShadowDirector): sharper shadows
+// from a small fraction of the casters. Registered here rather than inside
+// the Engine, which must never import gameplay systems.
+engine.setFocusProvider(() => playerController.getPosition());
 
 // --- Document 2.5 viewmodel stack (§10 required files) ------------------------
 const sway = new WeaponSway();
@@ -220,6 +267,70 @@ const killPlaneGuard = {
 };
 engine.registerUpdatable(killPlaneGuard);
 
+// --- Document V: vehicle system + teleport pads -----------------------------
+// VehicleSystem is the single owner of character<->vehicle: entering,
+// exiting, seat occupancy and camera placement. It sits above the per-domain
+// handling models (land/air/sea) and below nothing — gameplay talks to it,
+// never to a Vehicle directly.
+const vehicleHUD = new VehicleHUD();
+const vehiclePrompt = new VehiclePrompt();
+const vehicleSystem = new VehicleSystem({
+  scene: levelLoader.scene,
+  camera: engine.sceneManager.getCamera(),
+  input: engine.inputManager,
+  physics,
+  assetLoader: engine.assetLoader,
+  player: playerController,
+  hud: vehicleHUD,
+  prompt: vehiclePrompt,
+});
+engine.registerUpdatable(vehicleSystem);
+
+const teleportPads = new TeleportPadSystem(
+  levelLoader.scene, playerController, engine.inputManager,
+);
+engine.registerUpdatable({
+  update: (dt: number): void => {
+    // Pads are disabled while driving: the confirm key is the same one that
+    // gets you out of a vehicle, and a car parked on a pad would otherwise
+    // pop the chooser every frame.
+    if (!vehicleSystem.isRiding) teleportPads.update(dt);
+  },
+});
+
+/**
+ * Populate the prototype map once it finishes loading.
+ *
+ * Bound to the level-loaded event rather than called once at boot, because
+ * the pads live in the shell .glb and the vehicles must be re-spawned every
+ * time the level is (re)loaded.
+ */
+async function populatePrototype(levelId: string): Promise<void> {
+  if (levelId !== 'prototype') return;
+  const bound = teleportPads.bindFromScene(levelLoader.scene, PROTOTYPE_TELEPORTS);
+  console.info(`[prototype] bound ${bound} teleport pads`);
+
+  // Two Humvees at the hub, one of each variant, angled so the player can
+  // see both from spawn.
+  await vehicleSystem.spawn('military_car', new THREE.Vector3(-9, 0.6, 14), 0.25);
+  await vehicleSystem.spawn('military_car_gunner', new THREE.Vector3(9, 0.6, 14), -0.25);
+  // One on the driving course, so teleporting there has something to drive.
+  await vehicleSystem.spawn('military_car', new THREE.Vector3(70, 0.6, 70), Math.PI / 2);
+
+  // Helicopters on the pads. The HELIPADS teleport drops the player at
+  // (-46, -24) facing +X, so the nearest pad at (-62, -24) is dead ahead.
+  // Nose them -Z (north, down the open apron) so a first take-off is not
+  // immediately into the hangars.
+  await vehicleSystem.spawn('utility_helicopter', new THREE.Vector3(-62, 0.1, -24), 0);
+  await vehicleSystem.spawn('utility_helicopter', new THREE.Vector3(-95, 0.1, -40), 0.4);
+}
+
+eventBus.on('level:loaded', (payload: unknown) => {
+  const id = (payload as { levelId?: string } | undefined)?.levelId
+    ?? levelLoader.current?.id;
+  if (id) void populatePrototype(id);
+});
+
 void handsRig.load().then(() => {
   viewmodel.setArmRig(handsRig); // may re-run the equip attach (race guard)
   handsRig.attach(viewmodel);
@@ -235,6 +346,10 @@ void handsRig.load().then(() => {
 // the perspectives structurally incapable of desyncing.
 // ---------------------------------------------------------------------------
 const thirdPersonBody = new ThirdPersonBody(engine.assetLoader);
+// Everyone who is not you. Until this existed the client drew a single
+// character and the lobby was invisible.
+const remotePlayers = new RemotePlayers(engine.assetLoader);
+remotePlayers.attach(arena.scene);
 const perspective = new PerspectiveController(
   engine.sceneManager.getCamera(),
   engine.inputManager,
@@ -304,7 +419,29 @@ perspective.setBoomProbe((origin, direction, maxDistance) => {
 });
 
 // The world pass now shows/hides the body purely by layer mask (§1).
-engine.setWorldPassMaskProvider(() => perspective.worldPassMask);
+/**
+ * Which layers the world pass draws.
+ *
+ * Normally the perspective controller decides — first person hides the head
+ * (you cannot see inside your own skull) and the body's arms (the viewmodel
+ * supplies those).
+ *
+ * But those exclusions are only correct for a camera INSIDE the player's
+ * head. The moment the camera is somewhere else — the death cam orbiting the
+ * body, a killstreak cinematic, a future killcam — they become a bug: the
+ * character renders as a headless, armless torso. That was exactly the
+ * reported symptom, "other cameras must see the full body, not just the
+ * torso".
+ *
+ * So an external camera forces the third-person mask. One rule, applied
+ * wherever the camera actually is, rather than every external-camera feature
+ * having to remember to fix the layers itself.
+ */
+engine.setWorldPassMaskProvider(() => (
+  cinematicCamera.isActive || cinematicCamera.isDetached
+    ? WORLD_PASS_MASK.THIRD
+    : perspective.worldPassMask
+));
 
 // §4 cross-perspective desync prevention: gameplay's HARD logical durations
 // are registered once per weapon; both perspectives' clips are time-scaled to
@@ -494,6 +631,9 @@ throwableEffects.start();
 void smokeVolume.load(engine.assetLoader, levelLoader.scene);
 
 const equipmentHUD = new EquipmentHUD(equipmentManager);
+/** Tracks the last applied weapon-HUD visibility so it is only written on
+ *  change, not every frame. */
+let weaponHudHidden = false;
 const disorientOverlays = new DisorientOverlays();
 const minimap = new Minimap(radarContacts, {
   getPlayerX: () => playerController.getPosition().x,
@@ -575,7 +715,33 @@ killstreakManager.attach({
     return v;
   },
   getLevelDefinition: () => levelLoader.current,
+  // Radar reads the server's own player list. Anything else is a guess: the
+  // client's hit-test registry only holds locally-spawned props, so a UAV
+  // fed from it swept the training dummies and never showed a single real
+  // enemy.
+  getPlayers: () => {
+    const client = session?.client;
+    if (!client) return [];
+    const myId = client.id;
+    const me = client.players.find((p) => p.id === myId);
+    const myTeam = me?.team ?? 'FFA';
+    return client.players.map((p) => ({
+      id: p.id,
+      x: p.pos[0],
+      z: p.pos[2],
+      alive: p.alive,
+      isLocal: p.id === myId,
+      // In a free-for-all there are no allies, so everyone else is a contact.
+      isFriendly: myTeam !== 'FFA' && p.team === myTeam,
+    }));
+  },
 });
+// Restore the player's saved killstreak loadout. Without this the menu's
+// choice only took effect while the menu was open -- the manager fell back
+// to DEFAULT_KILLSTREAK_LOADOUT on every boot.
+killstreakManager.setLoadout(settingsStore.get<string[]>(
+  'loadout.killstreaks', [...DEFAULT_KILLSTREAK_LOADOUT],
+));
 killstreakManager.start();
 groundTargeting.attach(levelLoader.scene, physics);
 
@@ -755,7 +921,12 @@ engine.setPostRenderHook((renderer) => {
   // skipped entirely — cheaper than hiding the meshes, and it also drops the
   // masked 3PS head meshes (which live on the viewmodel layer in 1PS) from
   // ever being drawn.
-  if (perspective.viewmodelVisible) {
+  // Document V: riding a vehicle is a forced third-person exterior view, so
+  // the first-person arms/weapon pass is skipped for the same reason as 3PS.
+  // Without this the rifle floats in front of the chase camera.
+  // ...and the theatre is an exterior camera by definition: the local
+  // player's arms belong to a body the director may not even be looking at.
+  if (perspective.viewmodelVisible && !vehicleSystem.isRiding && !theatreOpen) {
     viewmodel.renderPass(renderer, engine.sceneManager.getScene());
   }
   drawCalls.viewmodel = renderer.info.render.calls;
@@ -849,6 +1020,7 @@ engine.registerUpdatable({
       traversalKind: playerController.isVaulting()
         ? (characterState.traversal === 'MANTLE' ? 'mantle' : 'vault')
         : null,
+      deathBlend: deathCollapse,
     });
 
     animationEngine.update(dt);
@@ -952,9 +1124,14 @@ engine.registerUpdatable({
     } else {
       missileHUD.setVisible(false);
       levelLoader.setFogSuppressed(false);
+      // The combat HUD belongs to a LIVING player: a crosshair over your own
+      // corpse and a killstreak tray you cannot press both read as bugs. The
+      // match bar and killfeed are deliberately NOT in this list -- the match
+      // is still running without you, and showing that is the point of the
+      // death cam.
       for (const el of [hud.element, killstreakHUD.element,
         minimap.element, equipmentHUD.element]) {
-        el.classList.remove('hud--suppressed');
+        el.classList.toggle('hud--suppressed', awaitingRespawn);
       }
     }
     statusEffects.update(dt);
@@ -963,6 +1140,15 @@ engine.registerUpdatable({
     smokeVolume.update(dt);
     audioManager.update(dt);
     equipmentHUD.update();
+    // Weapon-only HUD follows the ride state. The ammo counter and crosshair
+    // describe a gun the driver is not holding, and the ammo block sits
+    // exactly where the vehicle HUD draws speed and gear.
+    const ridingNow = vehicleSystem.isRiding;
+    if (ridingNow !== weaponHudHidden) {
+      weaponHudHidden = ridingNow;
+      hud.setWeaponHudVisible(!ridingNow);
+      equipmentHUD.element.style.display = ridingNow ? 'none' : '';
+    }
     disorientOverlays.setSmokeAmount(smokeVolume.occlusionAt(eyeOf()));
     disorientOverlays.update();
     minimap.update(dt);
@@ -980,6 +1166,9 @@ engine.registerUpdatable({
     impactEffect.update(dt);
     tracerEffect.update(dt);
     arena.update(dt);
+    // Batched-cell LOD selection, driven ONCE from the player's camera (see
+    // LevelLoader.updateLODs for why THREE.LOD.autoUpdate is off).
+    levelLoader.updateLODs(engine.sceneManager.getCamera());
   },
 });
 
@@ -1048,18 +1237,581 @@ const hud = new HUDManager({
 // The HUD ticks even while paused so a hit marker cannot freeze mid-flash.
 engine.registerAlwaysUpdatable(hud);
 
+// --- match presentation ----------------------------------------------------
+// These exist BEFORE the session because the session's callbacks drive them.
+const deathCamera = new DeathCamera(cinematicCamera);
+const deathOverlay = new DeathOverlay();
+
+// --- killcam ---------------------------------------------------------------
+// The recorder keeps what THIS CLIENT was sent, so killcams work in a real
+// multiplayer match where the server is another machine. The director turns
+// a recorded kill into a shot list at the moment of playback, never at the
+// moment of recording, so improving the camera improves old clips too.
+const clientRecorder = new ClientRecorder({ windowSeconds: 12, tickHz: 60 });
+// Encoding and deflate run in a worker: saving a clip must never drop a frame.
+const replayCodec = new ReplayCodec();
+
+// --- theatre ---------------------------------------------------------------
+// The replay viewer. It is an OVERLAY rather than a game state: the match
+// underneath keeps running (the server does not stop for one spectator), and
+// closing the theatre puts the player straight back where they were.
+const theatrePlayer = new ClipPlayer();
+const freeCamera = new FreeCameraRig();
+let theatreOpen = false;
+/** Last anti-clip result, so a test can prove the solver actually ran. */
+let theatreSolve: { method: string; deviation: number } | null = null;
+let theatreFollowId: string | null = null;
+let theatreRecorder: MediaRecorder | null = null;
+const theatreChunks: Blob[] = [];
+
+/** Download bytes as a file. The only way out of the tab, so it lives once. */
+const downloadBlob = (blob: Blob, filename: string): void => {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  // Revoking immediately can cancel the download in some browsers; a frame
+  // of delay is enough for the click to have been consumed.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+const clipPlayer = new ClipPlayer();
+const killcamDirector = new KillcamDirector();
+/** True while the death camera is showing a replay rather than the body. */
+let killcamRunning = false;
+/** The tick that was filmed, so the clip can be extended as frames arrive. */
+let killcamDeathTick = 0;
+let killcamPlan: ReturnType<typeof buildKillcamPlan> | null = null;
+/** Lead actually used, after trimming to fit the respawn countdown. */
+let killcamLead = 0;
+const killfeed = new Killfeed();
+const matchBar = new MatchBar();
+
+// --- authoritative session -------------------------------------------------
+// The server is driven from the ALWAYS-updatables list, never the gated one.
+// Engine's gated list only ticks in PLAYING, which would make pausing stop
+// the simulation -- correct for a solo game, wrong for a multiplayer one, and
+// the requirement is that the game behaves as multiplayer even when one
+// player is in it. The server decides whether a pause request is honoured
+// (solo: yes; with others present: no) and reports back; the client renders
+// that answer instead of assuming it.
+let session: GameSession | null = null;
+/** Set while this tab is HOSTING, so the lobby listing can be kept current. */
+let hostedSession: HostedGameSession | null = null;
+let simulationRunning = true;
+
+let inputRelay: InputRelay | null = null;
+
+/**
+ * The death presentation, driven entirely by the server.
+ *
+ * `respawnAt` is a client-local deadline derived from the server's
+ * `respawnIn`: the countdown has to tick every frame, and asking the server
+ * for the remaining time sixty times a second would be absurd. The SERVER
+ * still decides when you actually respawn — this is only the display, and if
+ * the two ever disagree the server's `respawned` message wins, because that
+ * is what moves the player.
+ */
+let respawnAt = 0;
+let awaitingRespawn = false;
+/**
+ * 0 = standing, 1 = collapsed. Eased every frame rather than set outright so
+ * the body falls over instead of snapping flat the instant health hits zero.
+ */
+let deathCollapse = 0;
+
+/**
+ * Try to replace the static death shot with an actual replay.
+ *
+ * Silent no-op when there is not enough recorded history -- dying two
+ * seconds into a match must still show something, and the orbiting body shot
+ * is a perfectly good something. A killcam is an upgrade on the death
+ * screen, never a precondition for it.
+ */
+const beginKillcam = (
+  death: DeathWire, deathTick: number, selfInflicted: boolean, respawnIn: number,
+): void => {
+  const plan = buildKillcamPlan({
+    tick: deathTick,
+    victim: death.victim,
+    killer: death.killer,
+    // No entity handle for the projectile reaches the client yet, so the
+    // causer is unknown and the plan falls back to filming the killer. When
+    // killstreaks gain entity ids this starts filming the rocket instead,
+    // with no change here -- that is the point of resolving by id.
+    causer: null,
+    capabilityId: selfInflicted ? null : 'Shoot',
+    selfInflicted,
+  }, 60);
+
+  // FIT THE CLIP TO THE TIME AVAILABLE.
+  //
+  // The profile asks for what makes the best film -- 2.5 s of run-up plus
+  // 1.5 s of aftermath -- but the respawn countdown is 3 s, so the full clip
+  // would be cut off mid-shot and the player would never see the kill they
+  // died to. The run-up is what gets trimmed, because the frames around the
+  // kill are the entire point and the approach is merely context.
+  //
+  // Slow motion stretches wall-clock time, so the budget is discounted for
+  // it rather than being taken at face value.
+  const wantLead = (deathTick - plan.fromTick) / 60;
+  const wantTail = (plan.toTick - deathTick) / 60;
+  const slowMoCost = wantTail * (1 / Math.max(0.2, plan.slowMoAtImpact) - 1) * 0.5;
+  const budget = Math.max(0.5, respawnIn - 0.3 - slowMoCost);
+  const lead = Math.max(0.6, Math.min(wantLead, budget - wantTail));
+
+  // Only the LEAD-IN exists right now. The tail is the future: those frames
+  // will be recorded over the next second or so while the clip is already
+  // playing, which is exactly why the clip is refreshed each frame below
+  // rather than being snapshotted once here.
+  const clip = clientRecorder.clipAround(deathTick, lead, 0);
+  // Fewer than a handful of frames is a stutter, not a replay.
+  if (!clip || clip.frames.length < 8) return;
+
+  clipPlayer.load(clip.frames);
+  // Start at the beginning of the lead-in rather than at the kill itself.
+  clipPlayer.seek(0);
+  clipPlayer.play();
+  killcamDirector.load(plan);
+  killcamRunning = true;
+  killcamDeathTick = deathTick;
+  killcamPlan = plan;
+  killcamLead = lead;
+};
+
+const beginDeathPresentation = (death: DeathWire, respawnIn: number): void => {
+  awaitingRespawn = true;
+  respawnAt = performance.now() / 1000 + respawnIn;
+
+  // Stop driving a body that is no longer alive: without this the corpse
+  // keeps walking because the input relay never stopped sending intent.
+  inputRelay?.setEnabled(false);
+  document.exitPointerLock?.();
+
+  // Log the kill the same way the server does, so the client's timeline and
+  // the server's agree on what happened and a clip can be built from either.
+  const deathTick = session?.client.tick ?? 0;
+  const selfInflicted = !death.killer || death.killer === death.victim;
+  clientRecorder.record({
+    type: 'kill',
+    tick: deathTick,
+    time: session?.client.serverTime ?? 0,
+    at: death.victimPos,
+    actors: death.killer ? [death.killer, death.victim] : [death.victim],
+    payload: {
+      victim: death.victim, killer: death.killer,
+      capabilityId: selfInflicted ? null : 'Shoot',
+      weaponId: death.weaponId, selfInflicted,
+    },
+  });
+
+  // The theatre owns the camera while it is open. Dying behind it must not
+  // yank the view back to the body: the director is reviewing an earlier
+  // moment and the match is simply continuing without them. The death
+  // OVERLAY and the respawn countdown below still run, because those are
+  // suppressed as part of the match HUD rather than fought over here.
+  if (theatreOpen) return;
+
+  // Start on the body. The killcam takes over below if there is enough
+  // recorded history to build one -- and if there is not (a death in the
+  // first second of a match), this IS the presentation, which is why it is
+  // started unconditionally rather than as a fallback afterwards.
+  deathCamera.begin({
+    subject: new THREE.Vector3(...death.victimPos),
+    from: death.killerPos ? new THREE.Vector3(...death.killerPos) : null,
+    victimYaw: playerController.getYaw(),
+  });
+
+  beginKillcam(death, deathTick, selfInflicted, respawnIn);
+
+  deathOverlay.show({
+    killerName: death.killerName,
+    weaponLabel: death.weaponId ? (WEAPON_LABELS[death.weaponId] ?? null) : null,
+    headshot: death.headshot,
+    distance: death.distance,
+    // The killer's health is not in the wire payload yet; a killcam will
+    // carry it. Null hides the bar rather than showing a wrong one.
+    killerHealth: null,
+  });
+  deathOverlay.setRespawnIn(respawnIn);
+};
+
+const endDeathPresentation = (pos: Vec3, yaw: number): void => {
+  awaitingRespawn = false;
+  killcamRunning = false;
+  clipPlayer.reset();
+  killcamDirector.reset();
+  // Same ownership rule as the death side: end() cancels the cinematic
+  // camera, which would re-parent the view onto the respawned body and drop
+  // the director back into first person mid-review.
+  if (!theatreOpen) deathCamera.end();
+  deathOverlay.hide();
+  // Put the body where the server says it is. The server picked this spawn
+  // with the full spawn-selection model (enemy sightlines, recent deaths,
+  // teammate positions); the client's job is to agree with it.
+  playerController.debugTeleport(pos[0], pos[1], pos[2]);
+  playerController.debugSetOrientation(yaw, 0);
+  playerHealth.reset();
+  weaponManager.refillAllAmmo();
+  inputRelay?.setEnabled(true);
+  if (gameStateManager.is(GameState.PLAYING)) {
+    engine.inputManager.requestPointerLock(canvas);
+  }
+};
+
+/**
+ * Everything the client does in response to the server.
+ *
+ * Extracted so a hosted or joined session gets EXACTLY the same handlers as
+ * single-player. A guest's killfeed, death cam and scoreboard are driven by
+ * the host's server through this same bundle, which is what makes the two
+ * arrangements behave identically rather than merely similarly.
+ */
+const sessionEvents: GameClientEvents = {
+  onSimulationState: (running, reason) => {
+    simulationRunning = running;
+    eventBus.emit('net:simulationState', { running, reason });
+  },
+  onMatchEnded: (reason) => { eventBus.emit('net:matchEnded', { reason }); },
+  onMatchState: (state) => {
+    matchBar.render(state, session?.client.id ?? null);
+    // Hold the local player still while the round counts in. The server
+    // already refuses the input; this stops the client PREDICTING movement
+    // the server will reject, which looked like severe lag as each snapshot
+    // dragged the player back to the spawn.
+    playerController.setMovementFrozen(inputShouldBeHeld(state.phase));
+    eventBus.emit('net:matchState', state);
+  },
+  onPlayerStates: (states) => {
+    remotePlayers.setLocalId(session?.client.id ?? '');
+    remotePlayers.sync(states);
+    // Completes the snapshot the recorder is holding. The server sends the
+    // snapshot first and the states second, so THIS is what commits a frame.
+    clientRecorder.notePlayers(states);
+  },
+  onSnapshot: (snapshot) => clientRecorder.noteSnapshot(snapshot),
+  onDied: (death, respawnIn) => beginDeathPresentation(death, respawnIn),
+  onRespawned: (pos, yaw) => endDeathPresentation(pos, yaw),
+  onKillfeed: (entry) => {
+    // Compare IDS, not display names. Names are unique by policy, not by
+    // construction, and a duplicate would highlight the wrong row.
+    const myId = session?.client.id ?? null;
+    const myTeam = entry.killerId === myId ? entry.killerTeam
+      : entry.victimId === myId ? entry.victimTeam
+        : (session?.client.players.find((p) => p.id === myId)?.team ?? 'FFA');
+    // In FFA nobody is an ally, so "friendly" means "is me".
+    const friendly = (team: 'A' | 'B' | 'FFA' | null, id: string | null): boolean => {
+      if (id === myId) return true;
+      if (!team || team === 'FFA' || myTeam === 'FFA') return false;
+      return team === myTeam;
+    };
+    killfeed.push({
+      killerName: entry.killerName,
+      victimName: entry.victimName,
+      weaponId: entry.weaponId,
+      headshot: entry.headshot,
+      killerIsLocal: entry.killerId === myId,
+      victimIsLocal: entry.victimId === myId,
+      killerIsFriendly: friendly(entry.killerTeam, entry.killerId),
+      victimIsFriendly: friendly(entry.victimTeam, entry.victimId),
+    });
+  },
+};
+
+/** Point the game at a session: it owns the input relay and the client. */
+const adoptSession = (s: GameSession): GameSession => {
+  session = s;
+  // The relay reports INTENT every frame; the server decides the outcome.
+  inputRelay = new InputRelay(s.client, engine.inputManager, playerController);
+  // Keep the test hook pointed at the LIVE session. Without this, swapping to
+  // a hosted session would leave tests inspecting the disposed one -- which
+  // reads as "the server stopped responding" rather than "wrong object".
+  const hook = (window as unknown as { __OPERATOR__?: Record<string, unknown> }).__OPERATOR__;
+  if (hook) {
+    hook.session = s;
+    hook.gameClient = s.client;
+    hook.gameServer = s.server;
+  }
+  return s;
+};
+
+const sessionReady = createLocalSession(
+  sessionEvents, { levelFetcher: httpLevelFetcher() },
+).then(adoptSession);
+void sessionReady;
+
+engine.registerAlwaysUpdatable({
+  update: (dt: number) => {
+    // Input only flows while actually playing -- a player in a menu is not
+    // steering. The SERVER still ticks regardless, which is the whole point.
+    if (gameStateManager.getState() === GameState.PLAYING) inputRelay?.update(dt);
+    session?.update(dt);
+
+    // The death camera is on the ALWAYS list for the same reason the server
+    // is: it must keep moving while the player has no control. A death cam
+    // that freezes because input stopped is just a screenshot.
+    // Collapse over ~0.45 s on death, and pop straight back up on respawn:
+    // a body that eases UP out of the ground looks like it is being winched.
+    const collapseTarget = awaitingRespawn ? 1 : 0;
+    deathCollapse = collapseTarget > deathCollapse
+      ? Math.min(1, deathCollapse + dt / 0.45)
+      : 0;
+
+    // The killcam drives the camera and the bodies from the RECORDING; the
+    // live world keeps running underneath, untouched. Playback does no
+    // physics and no AI -- it decodes and interpolates, which is strictly
+    // less work than being alive.
+    if (killcamRunning) {
+      // Extend the clip with frames recorded SINCE the death. The tail of a
+      // killcam is the future at the moment the kill happens -- the reaction
+      // shot is of a body that had not finished falling yet -- so the clip
+      // grows under the playhead as those frames arrive. Cheap: it re-slices
+      // the existing ring buffer and allocates no new frames.
+      if (killcamPlan && clientRecorder.newestTick < killcamPlan.toTick) {
+        const grown = clientRecorder.clipAround(
+          killcamDeathTick,
+          killcamLead,
+          (killcamPlan.toTick - killcamDeathTick) / 60,
+        );
+        if (grown && grown.frames.length > clipPlayer.frameCount) {
+          // Preserve the playhead: reloading resets it to zero, which would
+          // restart the killcam from the beginning on every new frame.
+          const at = clipPlayer.position;
+          clipPlayer.load(grown.frames);
+          clipPlayer.seek(at);
+          clipPlayer.play();
+        }
+      }
+
+      const rate = killcamDirector.rateAt(clipPlayer.sample()?.tick ?? 0, 60);
+      clipPlayer.speed = rate;
+      clipPlayer.advance(dt);
+
+      const frame = clipPlayer.sample();
+      if (frame) {
+        // Pose every body from the recording, including the local player's,
+        // by handing the recorded states to the SAME renderer that draws
+        // live players. A killcam that needed its own character code would
+        // drift from the live look the first time either changed.
+        remotePlayers.setLocalId('');
+        remotePlayers.sync(frame.players);
+      }
+
+      const shot = killcamDirector.compose(clipPlayer, dt);
+      if (shot) {
+        cinematicCamera.setDesiredTransform(shot.position, shot.lookAt, {
+          fov: shot.fov,
+          // Cut hard on a shot change, glide within a shot: smoothing across
+          // a deliberate cut drags the camera through the level between two
+          // unrelated viewpoints.
+          followSmoothing: killcamDirector.justCut ? 1 : 0.22,
+        });
+      }
+
+      if (clipPlayer.finished) {
+        // Out of recording but still waiting to respawn: hand back to the
+        // body shot rather than freezing on the last frame.
+        killcamRunning = false;
+        remotePlayers.setLocalId(session?.client.id ?? '');
+        // Re-aim the body shot at where the victim ACTUALLY is now. Without
+        // this the death cam resumes from the pose it held when the killcam
+        // started and jumps, which reads as a glitch rather than a cut.
+        const me = session?.client.players.find((p) => p.id === session?.client.id);
+        if (me) {
+          deathCamera.retarget({
+            subject: new THREE.Vector3(...me.pos),
+            from: null,
+            victimYaw: me.yaw,
+          });
+        }
+      }
+    }
+
+    // The theatre owns the camera and the bodies whenever it is open. It is
+    // checked FIRST and returns early from the death-cam branch below,
+    // because two things writing setDesiredTransform in one frame is the
+    // camera bug that cost an afternoon last time.
+    if (theatreOpen) {
+      theatrePlayer.advance(dt);
+      const frame = theatrePlayer.sample();
+      if (frame) {
+        // Drive the SAME renderer the live game uses, so the replay looks
+        // exactly like play rather than like a separate viewer.
+        remotePlayers.setLocalId('');
+        remotePlayers.sync(frame.players, { snap: true, dt });
+        // The local player has TWO bodies while the theatre is up: the live
+        // one the match is still simulating, and the recorded one drawn from
+        // the clip. Hide the live one or they stand inside each other.
+        // Re-applied per frame because the model may still be loading at open.
+        const liveBody = thirdPersonBody.object;
+        if (liveBody) liveBody.visible = false;
+        // Poses the limbs and the walk cycle. The theatre branch returns
+        // before the live update() call below, so without this every body
+        // would stand frozen in an A-pose.
+        remotePlayers.update(dt);
+
+        // Free camera unless a subject is selected.
+        freeCamera.update(dt);
+        let shot = freeCamera.isEnabled ? freeCamera.composition() : null;
+
+        if (!shot && theatreFollowId) {
+          const subject = frame.players.find((p) => p.id === theatreFollowId);
+          if (subject) {
+            // Derive the subject's motion from the recording itself: the
+            // framing solver pulls back and raises for a sprinter, and with a
+            // hardcoded speed of zero it could never do either.
+            const velocity = theatrePlayer.velocityOf(subject.id) ?? [0, 0, 0];
+            const planar = Math.hypot(velocity[0], velocity[2]);
+            const framed = frameSubject({
+              position: new THREE.Vector3(...subject.pos),
+              speed: planar,
+              // Below a walking shuffle the travel direction is just noise,
+              // and letting it pick the camera side would spin the shot while
+              // the subject stands still.
+              heading: planar > 0.6 ? Math.atan2(-velocity[0], velocity[2]) : null,
+              facing: subject.yaw,
+            });
+            // Only the follow camera is anti-clipped: the free camera is
+            // meant to go through walls, and "correcting" a director who
+            // deliberately flew inside one would be maddening.
+            const solved = solveCameraPosition(rayProbeFrom(physics), {
+              desired: framed.position,
+              target: framed.lookAt,
+            });
+            theatreSolve = { method: solved.method, deviation: solved.deviation };
+            shot = { position: solved.position, lookAt: framed.lookAt };
+          }
+        }
+
+        if (shot) {
+          cinematicCamera.setDesiredTransform(shot.position, shot.lookAt, {
+            fov: 62,
+            // The free camera must feel direct, so no smoothing; a follow
+            // shot glides.
+            followSmoothing: freeCamera.isEnabled ? 1 : 0.2,
+          });
+        }
+
+        theatreScreen.update({
+          playing: theatrePlayer.isPlaying,
+          speed: theatrePlayer.speed,
+          position: theatrePlayer.position,
+          duration: theatrePlayer.duration,
+          progress: theatrePlayer.progress,
+          players: frame.players.map((p) => ({ id: p.id, name: p.name, alive: p.alive })),
+          followId: freeCamera.isEnabled ? null : theatreFollowId,
+          recording: theatreRecorder?.state === 'recording',
+        });
+      }
+      killfeed.update(dt);
+      return;
+    }
+
+    // Only ONE of the two may drive the camera. The death cam runs the body
+    // shot when no killcam is playing; while a killcam is up it must stay
+    // quiet, because whichever calls setDesiredTransform last would win and
+    // the result would be a camera snapping between two compositions every
+    // frame.
+    if (!killcamRunning) deathCamera.update(dt);
+    killfeed.update(dt);
+    // Always updated, never gated on PLAYING: the death camera orbits a body
+    // while other players keep moving, and frozen bodies during the respawn
+    // countdown would look like the game had hung.
+    remotePlayers.update(dt);
+    if (awaitingRespawn) {
+      deathOverlay.setRespawnIn(respawnAt - performance.now() / 1000);
+    }
+  },
+});
+
+/**
+ * Replace the live session, disposing whatever was there.
+ *
+ * Every arrangement (single-player, hosting, joining) produces a GameSession,
+ * so swapping is the only thing that differs between them. Disposing first is
+ * what makes "end the match and start another" actually end the old server
+ * rather than leaving it ticking in the background.
+ */
+const swapSession = async (next: Promise<GameSession>): Promise<GameSession> => {
+  const previous = session;
+  session = null;
+  inputRelay = null;
+  previous?.dispose();
+  return adoptSession(await next);
+};
+
+/** Back to a private, in-tab match. */
+const swapToLocalSession = (): Promise<GameSession> => {
+  if (session && session.server && !hostedSession) return Promise.resolve(session);
+  hostedSession = null;
+  return swapSession(createLocalSession(
+    sessionEvents, { levelFetcher: httpLevelFetcher() },
+  ));
+};
+
+/** Host a game other players can find in the server browser. */
+const startHosting = async (
+  levelId: string,
+  options: { modeId?: string; overrides?: MatchRulesWire; lobbyName?: string; bots?: boolean },
+): Promise<GameSession> => {
+  const mode = getGameMode(options.modeId ?? 'ffa');
+  const created = await swapSession(createHostedSession({
+    lobbyUrl: resolveLobbyUrl(),
+    name: options.lobbyName
+      ?? `${operatorRoster.selected.name.toUpperCase()}'S GAME`,
+    levelId,
+    modeId: options.modeId ?? 'ffa',
+    maxPlayers: options.overrides?.maxPlayers ?? mode.maxPlayers,
+    ...(options.bots ? { bots: true } : {}),
+    levelFetcher: httpLevelFetcher(),
+  }, sessionEvents));
+  hostedSession = created as HostedGameSession;
+  return created;
+};
+
+/** Join a game somebody else is hosting. */
+const joinGame = async (game: GameListing, password?: string): Promise<void> => {
+  activeModeId = game.modeId;
+  activeRules = null;
+  hostedSession = null;
+  await swapSession(joinHostedSession({
+    lobbyUrl: resolveLobbyUrl(),
+    gameId: game.id,
+    ...(password ? { password } : {}),
+  }, sessionEvents));
+  await beginLoad(game.levelId);
+};
+
 // --- screens ---------------------------------------------------------------
 const ui = new UIManager();
 let activeLevelId = LEVELS[0].id;
+/** Which game mode the next match runs. FFA is the default, as in COD. */
+let activeModeId = 'ffa';
+/** Custom-match rule patch for the next join, or null for the mode defaults. */
+let activeRules: MatchRulesWire | null = null;
 
 /** Start (or restart) a match on a level: load it, then show the click gate. */
 const beginLoad = async (levelId: string): Promise<void> => {
   activeLevelId = levelId;
-  loadingScreen.setLevelName(getLevel(levelId).displayName);
+  const level = getLevel(levelId);
+  loadingScreen.setLevel(level.displayName, level.description, levelId);
+  loadingScreen.setMode(getGameMode(activeModeId).displayName);
   gameStateManager.setState(GameState.LOADING);
+
+  // Declare the whole run up front so the bar is weighted by real work
+  // rather than by which phase happens to report.
+  loadProgress.begin(DEPLOY_STAGES);
+
   // Audio first so nothing pops in on the first shot (§7.2/§9.2).
+  loadProgress.enter('audio');
   await audioManager.preload(allAudioPaths());
+  loadProgress.complete('audio');
+
+  loadProgress.enter('skins');
   await skinManager.preload();
+  loadProgress.complete('skins');
+
+  // LevelLoader reports its own four stages from inside.
   await levelLoader.load(levelId);
 };
 
@@ -1082,10 +1834,63 @@ const enterMatch = (): void => {
   inputContexts.reset();
   void audioManager.resume();
   engine.inputManager.requestPointerLock(canvas);
+  // The server owns match state; the client asks to join and resets its own
+  // presentation. Every authoritative reset (entities, pools, effect queues)
+  // happens server-side in response to this.
+  // Join with the operator and weapons the player actually chose. This is
+  // what makes the operator selection REAL rather than a menu that changes a
+  // picture: the server stores it, puts it in the public player state, and
+  // every other client renders you as that operator.
+  const chosen = loadoutManager.getCurrentLoadout();
+  session?.client.joinMatch(activeLevelId, {
+    primaryId: chosen.primaryId,
+    secondaryId: chosen.secondaryId,
+    tacticalId: 'flash',
+    killstreakIds: killstreakManager.slots.map((s) => s.id),
+    operatorId: operatorRoster.selectedId_,
+  }, {
+    modeId: activeModeId,
+    ...(activeRules ? { rules: activeRules } : {}),
+  });
   gameStateManager.setState(GameState.PLAYING);
 };
 
-const mainMenu = new MainMenu((levelId) => { void beginLoad(levelId); });
+/**
+ * Should the local player be held still?
+ *
+ * True during the pre-match countdown, and whenever a menu is open over a
+ * live match. Note this holds the PLAYER, not the simulation: gravity,
+ * collision and the server all keep running, so the client never drifts out
+ * of agreement with the server the way a hard pause did.
+ */
+const inputShouldBeHeld = (phase?: string): boolean => (
+  phase === 'countdown' || !gameStateManager.is(GameState.PLAYING)
+);
+
+/** Re-evaluate the hold whenever the UI state changes, not just on snapshots. */
+eventBus.on('game:stateChanged', () => {
+  playerController.setMovementFrozen(
+    inputShouldBeHeld(session?.client.match?.phase),
+  );
+});
+
+const mainMenu = new MainMenu((levelId, options) => {
+  // The lobby's choices are recorded here and applied at join time, because
+  // the SERVER owns the mode -- the client is only reporting what the host
+  // asked for.
+  activeModeId = options?.modeId ?? 'ffa';
+  activeRules = options?.overrides ?? null;
+  levelLoader.setWeather(options?.weather ?? null);
+
+  // Hosting swaps the in-tab single-player server for one that also admits
+  // remote peers. Everything downstream -- loading, the click gate, the HUD
+  // -- is unchanged, because a hosted session is the same GameSession shape.
+  if (options?.host) {
+    void startHosting(levelId, options).then(() => beginLoad(levelId));
+    return;
+  }
+  void swapToLocalSession().then(() => beginLoad(levelId));
+}, joinGame);
 const loadingScreen = new LoadingScreen(enterMatch);
 const settingsMenu = new SettingsMenu(
   engine.inputManager,
@@ -1102,17 +1907,68 @@ const quitToMenu = (): void => {
   killstreakTablet.forceLower();
   if (cinematicCamera.isActive || cinematicCamera.isDetached) cinematicCamera.cancel();
   inputContexts.reset();
+  // Clear the death presentation, or a player who quits while dead returns
+  // to a menu with a death overlay and an orbiting camera still on top.
+  awaitingRespawn = false;
+  deathCamera.end();
+  deathOverlay.hide();
+  killfeed.clear();
+  // Bodies belong to the match that made them.
+  remotePlayers.clear();
+  inputRelay?.setEnabled(true);
+  // Leaving the match ends it server-side too, which runs the authoritative
+  // cleanup (entities pooled, players dropped, effect queues drained, bot
+  // roster discarded, scoreboard wiped). Quit used to unwind only the
+  // client's half, so server-owned state would have ridden back into the
+  // next session -- which is precisely how "starting a new game reopens the
+  // previous one" happened.
+  session?.client.leaveMatch();
   levelLoader.unloadCurrentLevel();
   audioManager.stopAll();
   document.exitPointerLock?.();
   gameStateManager.setState(GameState.MAIN_MENU);
 };
 
+/**
+ * Show the debrief.
+ *
+ * Called ONLY when the match is genuinely over — the score limit, the clock,
+ * or the player ending it. Death does not come here any more; it runs the
+ * death camera and a respawn countdown instead.
+ */
 const endMatch = (reason: string): void => {
+  // Whatever the death cam was doing, it is not doing it any more.
+  awaitingRespawn = false;
+  deathCamera.end();
+  deathOverlay.hide();
+  inputRelay?.setEnabled(true);
   gameOverScreen.setReason(reason);
+  // The final standings are the server's, not ours.
+  gameOverScreen.setFinalState(
+    session?.client.match ?? null, session?.client.id ?? null,
+  );
   document.exitPointerLock?.();
   gameStateManager.setState(GameState.GAME_OVER);
 };
+
+// The SERVER decides a match is over (score limit, clock). Before this the
+// event was emitted and nothing listened, so a match could reach its limit
+// server-side and the player would simply keep playing.
+eventBus.on('net:matchEnded', (payload) => {
+  const reason = (payload as { reason?: string })?.reason ?? 'Match Over';
+  // 'match empty' is our own leaveMatch echoing back while we are already on
+  // our way to the menu; showing a debrief for it would fight the transition.
+  if (reason === 'match empty' || reason === 'server shutdown') return;
+  if (gameStateManager.is(GameState.MAIN_MENU)) return;
+  endMatch(prettyEndReason(reason));
+});
+
+/** Server reasons are terse and lower-case; the debrief is not. */
+function prettyEndReason(reason: string): string {
+  if (reason.includes('score limit')) return 'Score Limit Reached';
+  if (reason.includes('time')) return 'Time Expired';
+  return reason.replace(/^./, (c) => c.toUpperCase());
+}
 
 const pauseMenu = new PauseMenu({
   onResume: () => {
@@ -1132,19 +1988,200 @@ const gameOverScreen = new GameOverScreen({
   onMainMenu: quitToMenu,
 });
 
+// --- the live operator standing in the menus -------------------------------
+// One showcase instance shared by the main menu and operator select: two live
+// WebGL contexts rendering the same soldier would double the cost for nothing.
+const operatorShowcase = new OperatorShowcase(engine.assetLoader);
+const operatorsMenu = new OperatorsMenu();
+mainMenu.attachShowcase(operatorShowcase);
+operatorsMenu.attachShowcase(operatorShowcase);
+
+// Driven from the ALWAYS-updatables list so it animates in the menu, where
+// the gameplay simulation is deliberately not running.
+engine.registerAlwaysUpdatable({
+  update: (dt: number) => {
+    const state = gameStateManager.getState();
+    if (state === GameState.MAIN_MENU || state === GameState.OPERATORS) {
+      operatorShowcase.update(dt);
+    }
+    // The deploy screen's background drift must keep moving while the main
+    // thread is busy building the level -- that is the whole point of it.
+    if (state === GameState.LOADING) loadingScreen.update(dt);
+  },
+});
+window.addEventListener('resize', () => operatorShowcase.resize());
+
+ui.register('operators', operatorsMenu, GameState.OPERATORS);
 ui.register('mainMenu', mainMenu, GameState.MAIN_MENU);
 ui.register('loadout', loadoutMenu, GameState.LOADOUT);
 ui.register('settings', settingsMenu, GameState.SETTINGS);
 ui.register('loading', loadingScreen, GameState.LOADING);
 ui.register('pause', pauseMenu, GameState.PAUSED);
 ui.register('gameOver', gameOverScreen, GameState.GAME_OVER);
-ui.registerPersistent(hud.element);
-ui.registerPersistent(killstreakHUD.element);
-ui.registerPersistent(equipmentHUD.element);
-ui.registerPersistent(minimap.element);
-ui.registerPersistent(disorientOverlays.element);
-ui.registerPersistent(missileHUD.element);
-ui.registerPersistent(missileHUD.barsElement);
+ui.registerMatchHud(hud.element);
+ui.registerMatchHud(killstreakHUD.element);
+ui.registerMatchHud(equipmentHUD.element);
+ui.registerMatchHud(minimap.element);
+ui.registerMatchHud(disorientOverlays.element);
+ui.registerMatchHud(missileHUD.element);
+ui.registerMatchHud(missileHUD.barsElement);
+ui.registerMatchHud(matchBar.element);
+ui.registerMatchHud(matchBar.countdownElement);
+ui.registerMatchHud(killfeed.element);
+// The death overlay is PERSISTENT, not a routed screen: the death camera is
+// still rendering the world behind it, and a routed screen would hide the
+// canvas. That distinction is the whole reason death is no longer a screen.
+ui.registerMatchHud(deathOverlay.element);
+
+// --- theatre wiring --------------------------------------------------------
+const theatreScreen = new TheatreScreen({
+  onClose: () => closeTheatre(),
+  onTogglePlay: () => {
+    if (theatrePlayer.isPlaying) theatrePlayer.pause(); else theatrePlayer.play();
+  },
+  onSeekFraction: (fraction) => {
+    theatrePlayer.seekFraction(fraction);
+    // Scrubbing implies looking, not waiting: a scrub that leaves playback
+    // running fights the user's cursor.
+    theatrePlayer.pause();
+  },
+  onSetSpeed: (speed) => { theatrePlayer.speed = speed; },
+  onFollow: (id) => {
+    theatreFollowId = id;
+    freeCamera.setEnabled(id === null);
+  },
+  onSaveClip: () => { void saveTheatreClip(); },
+  onToggleRecord: () => { void toggleTheatreRecording(); },
+});
+ui.registerPersistent(theatreScreen.element);
+
+/**
+ * Open the viewer on everything the client currently has recorded.
+ *
+ * The match keeps running underneath -- the server does not stop for one
+ * spectator, which is the same rule that governs pausing.
+ */
+const openTheatre = (): void => {
+  const recorder = clientRecorder.recorder;
+  const frames = recorder.window(recorder.oldestTick, recorder.newestTick);
+  if (frames.length < 2) return;
+
+  theatrePlayer.load(frames);
+  theatrePlayer.play();
+  theatreOpen = true;
+  theatreFollowId = null;
+  freeCamera.attach(canvas);
+  freeCamera.setEnabled(true);
+  freeCamera.onCycleTarget = () => {
+    const present = theatrePlayer.sample()?.players ?? [];
+    if (!present.length) return;
+    const index = present.findIndex((p) => p.id === theatreFollowId);
+    const next = present[(index + 1) % present.length];
+    theatreFollowId = next.id;
+    freeCamera.setEnabled(false);
+  };
+
+  // Drop the free camera above the action so the first frame is not the
+  // inside of a wall.
+  const first = theatrePlayer.sample();
+  const focus = first?.players[0];
+  if (focus) {
+    const at = new THREE.Vector3(...focus.pos);
+    freeCamera.placeAt(at.clone().add(new THREE.Vector3(0, 9, 12)), at);
+    freeCamera.markHome();
+  }
+
+  theatreScreen.setEvents(
+    clientRecorder.events.slice(recorder.oldestTick, recorder.newestTick),
+    frames[0].tick,
+    frames[frames.length - 1].tick,
+  );
+  theatreScreen.onShow();
+  cinematicCamera.beginManual();
+  // Document I §6.5 seam: without this PlayerCamera keeps writing the living
+  // player's eye pose onto the same THREE camera every frame and the theatre
+  // shot never survives to the render -- the exact failure the missile cam
+  // hit. Taking the context is also what stops WASD walking the live body
+  // around while the director flies.
+  inputContexts.push('cinematic');
+  inputRelay?.setEnabled(false);
+  // The live HUD reports the PRESENT; the theatre shows the past. Leaving the
+  // killfeed, respawn timer and ammo counter up would caption a replay with
+  // numbers from a different moment.
+  ui.setMatchHudSuppressed(true);
+  document.exitPointerLock?.();
+};
+
+const closeTheatre = (): void => {
+  if (!theatreOpen) return;
+  theatreOpen = false;
+  if (theatreRecorder?.state === 'recording') theatreRecorder.stop();
+  theatrePlayer.reset();
+  freeCamera.setEnabled(false);
+  freeCamera.detach();
+  theatreScreen.onHide();
+  cinematicCamera.cancel();
+  inputContexts.pop('cinematic');
+  ui.setMatchHudSuppressed(false);
+  const liveBody = thirdPersonBody.object;
+  if (liveBody) liveBody.visible = true;
+  remotePlayers.setLocalId(session?.client.id ?? '');
+  if (!awaitingRespawn) inputRelay?.setEnabled(true);
+  if (gameStateManager.is(GameState.PLAYING)) {
+    engine.inputManager.requestPointerLock(canvas);
+  }
+};
+
+/** Encode the loaded clip and hand it to the browser as a file. */
+const saveTheatreClip = async (): Promise<void> => {
+  const recorder = clientRecorder.recorder;
+  const frames = recorder.window(recorder.oldestTick, recorder.newestTick);
+  if (!frames.length) return;
+  const encoded = await replayCodec.encode(frames, true);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  downloadBlob(
+    new Blob([encoded.bytes as BlobPart], { type: 'application/octet-stream' }),
+    `operator-${stamp}.opre${encoded.compressed ? '.z' : ''}`,
+  );
+};
+
+/**
+ * Record the viewport to a webm.
+ *
+ * Optional by design: MediaRecorder and canvas.captureStream are not
+ * everywhere, and a missing video export must not take the rest of the
+ * theatre down with it.
+ */
+const toggleTheatreRecording = async (): Promise<void> => {
+  if (theatreRecorder?.state === 'recording') {
+    theatreRecorder.stop();
+    return;
+  }
+  const capturable = canvas as HTMLCanvasElement & {
+    captureStream?: (fps?: number) => MediaStream;
+  };
+  if (typeof capturable.captureStream !== 'function'
+    || typeof MediaRecorder === 'undefined') return;
+
+  try {
+    const stream = capturable.captureStream(60);
+    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+    theatreChunks.length = 0;
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) theatreChunks.push(event.data);
+    };
+    recorder.onstop = () => {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      downloadBlob(new Blob(theatreChunks, { type: 'video/webm' }), `operator-${stamp}.webm`);
+      theatreRecorder = null;
+    };
+    recorder.start();
+    theatreRecorder = recorder;
+  } catch {
+    theatreRecorder = null;
+  }
+};
+
 equipmentHUD.setKeyLabel(
   prettyKey(engine.inputManager.getBindings().throwTactical),
 );
@@ -1158,22 +2195,71 @@ eventBus.on('game:stateChanged', (p) => {
 });
 
 // --- pause / resume --------------------------------------------------------
+// F2 opens the theatre. Deliberately NOT a rebindable game action: the free
+// camera owns raw keys while it is up, and a binding reachable during play
+// would let a player fly out of their own body mid-match.
 window.addEventListener('keydown', (e) => {
+  if (e.code !== 'F2') return;
+  e.preventDefault();
+  if (theatreOpen) closeTheatre(); else openTheatre();
+});
+
+window.addEventListener('keydown', (e) => {
+  // Escape closes the theatre before it reaches the pause menu, so one press
+  // does one thing.
+  if (e.code === engine.inputManager.getBindings().pause && theatreOpen) {
+    closeTheatre();
+    e.stopImmediatePropagation();
+    return;
+  }
   if (e.code !== engine.inputManager.getBindings().pause) return;
   const state = gameStateManager.getState();
   if (state === GameState.PLAYING) {
     document.exitPointerLock?.();
+    // Ask -- do not assume. The menu still opens either way (a player can
+    // always reach settings and quit), but whether the WORLD stops is the
+    // server's call. In a populated match it keeps running behind the menu.
+    session?.client.requestPause(true);
     gameStateManager.setState(GameState.PAUSED);
   } else if (state === GameState.PAUSED && ui.openOverlays.length === 0) {
     engine.inputManager.requestPointerLock(canvas);
+    session?.client.requestPause(false);
     gameStateManager.setState(GameState.PLAYING);
   }
 });
 
 // Losing pointer lock unexpectedly (alt-tab, browser Escape) must pause, or
 // the player keeps taking damage behind a window they cannot see.
+/**
+ * Whether the pointer lock this PLAYING session was ever actually granted.
+ *
+ * Losing a lock you never held is not the player alt-tabbing, and must not
+ * pause the match. Without this the following race pauses a brand-new match
+ * the instant it starts: quitToMenu() calls exitPointerLock(), the browser
+ * delivers that `pointerlockchange` asynchronously, and if the player has
+ * already picked a new map the event arrives when the state is once again
+ * PLAYING -- so the new match pauses because the OLD one released the mouse.
+ */
+let pointerLockHeld = false;
+eventBus.on('input:pointerlock:acquired', () => { pointerLockHeld = true; });
+
 eventBus.on('input:pointerlock:lost', () => {
+  const wasHeld = pointerLockHeld;
+  pointerLockHeld = false;
+  // A release we never owned: a stale event from a previous match, or a
+  // request the browser refused. Not a reason to pause.
+  if (!wasHeld) return;
+  // Dying releases pointer lock on purpose -- the death camera is running and
+  // the player has no body to steer. Pausing here would drop the menu over
+  // the death cam and, worse, read as the match being interrupted by the
+  // player rather than by the bullet.
+  if (awaitingRespawn) return;
+  // The theatre releases the mouse deliberately so the director can click the
+  // timeline and drag to look. That is a takeover, not the player walking
+  // away from the keyboard.
+  if (theatreOpen) return;
   if (gameStateManager.getState() === GameState.PLAYING) {
+    session?.client.requestPause(true);
     gameStateManager.setState(GameState.PAUSED);
   }
 });
@@ -1190,7 +2276,14 @@ explosionDamage.setPlayerTarget(
   (amount) => playerHealth.takeDamage(amount, undefined),
 );
 
-eventBus.on('player:died', () => endMatch('You Died'));
+// Dying is NOT the end of the match. This used to be
+// `endMatch('You Died')`, which tore down the whole session — the single
+// worst bug in the client, and the reason a new game could open on top of
+// the previous one. The server now owns death entirely and tells us about
+// it; all the client does is present it.
+//
+// The local health system still emits `player:died` for its own HUD
+// purposes, but it no longer decides anything.
 
 // Debug damage bind (F6): a guaranteed trigger path for the HUD's health,
 // vignette and damage-direction widgets, per §8.1's requirement that at least
@@ -1236,6 +2329,29 @@ const mockAnimationTarget: AnimationTarget = {
 animationStateMachine.registerTarget(mockAnimationTarget);
 
 interface OperatorTestHook {
+  THREE: typeof THREE;
+  clientRecorder: typeof clientRecorder;
+  clipPlayer: typeof clipPlayer;
+  killcamDirector: typeof killcamDirector;
+  replayCodec: typeof replayCodec;
+  theatre: {
+    open: () => void;
+    close: () => void;
+    saveClip: () => Promise<void>;
+    player: typeof theatrePlayer;
+    freeCamera: typeof freeCamera;
+    screen: typeof theatreScreen;
+    state: () => Record<string, unknown>;
+  };
+  /** Everything a test needs to prove a killcam ran, in one object. */
+  killcamState: () => {
+    running: boolean; recordedFrames: number; clipFrames: number;
+    position: number; duration: number; speed: number; playing: boolean;
+    shot: ReturnType<KillcamDirector['shotAt']>;
+  };
+  loadoutManager: typeof loadoutManager;
+  operatorRoster: typeof operatorRoster;
+  operatorShowcase: OperatorShowcase;
   engine: Engine;
   /** THE state authority — inspect current channels, log and rejections. */
   characterState: typeof characterState;
@@ -1294,6 +2410,10 @@ interface OperatorTestHook {
   mockAnimationTarget: AnimationTarget;
 }
 (window as unknown as { __OPERATOR__: OperatorTestHook }).__OPERATOR__ = {
+  THREE,
+  loadoutManager,
+  operatorRoster,
+  operatorShowcase,
   engine,
   characterState,
   projectileSystem,
@@ -1346,9 +2466,68 @@ interface OperatorTestHook {
   drawCalls: () => ({ ...drawCalls }),
   descriptorLog: () => descriptorLog,
   mockAnimationTarget,
+  // Replay internals, so a test can prove a killcam actually played rather
+  // than inferring it from a screenshot.
+  clientRecorder,
+  clipPlayer,
+  killcamDirector,
+  replayCodec,
+  theatre: {
+    open: () => openTheatre(),
+    close: () => closeTheatre(),
+    saveClip: () => saveTheatreClip(),
+    player: theatrePlayer,
+    freeCamera,
+    screen: theatreScreen,
+    state: () => ({
+      open: theatreOpen,
+      playing: theatrePlayer.isPlaying,
+      speed: theatrePlayer.speed,
+      position: theatrePlayer.position,
+      duration: theatrePlayer.duration,
+      frames: theatrePlayer.frameCount,
+      followId: freeCamera.isEnabled ? null : theatreFollowId,
+      freeCamera: freeCamera.isEnabled,
+      solve: theatreSolve,
+      markers: theatreScreen.element.querySelectorAll('.theatre__marker').length,
+      rosterRows: theatreScreen.element.querySelectorAll('.theatre__roster-row').length,
+    }),
+  },
+  killcamState: () => ({
+    running: killcamRunning,
+    recordedFrames: clientRecorder.frameCount,
+    clipFrames: clipPlayer.frameCount,
+    position: clipPlayer.position,
+    duration: clipPlayer.duration,
+    speed: clipPlayer.speed,
+    playing: clipPlayer.isPlaying,
+    shot: clipPlayer.loaded
+      ? killcamDirector.shotAt(clipPlayer.sample()?.tick ?? 0)
+      : null,
+  }),
 };
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.orientationGizmos = orientationGizmos;
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.droppedMags = droppedMags;
+// Expose the session once it resolves, so tests can inspect the authoritative
+// side directly rather than inferring it from what the client happens to render.
+void sessionReady.then((s) => {
+  const hook = (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__;
+  hook.session = s;
+  hook.gameClient = s.client;
+  hook.gameServer = s.server;
+  hook.isSimulationRunning = () => simulationRunning;
+});
+// P2P entry points, so the two-browser acceptance suite drives the same code
+// paths the menu buttons do rather than a test-only shortcut.
+(window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.hostGame = (
+  levelId: string,
+  options: { modeId?: string; overrides?: MatchRulesWire; lobbyName?: string; bots?: boolean },
+) => startHosting(levelId, options).then(() => beginLoad(levelId));
+(window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.joinGame = joinGame;
+(window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.listGames = async () => {
+  const res = await fetch(`${resolveLobbyHttpBase()}/games`);
+  return (await res.json() as { games: GameListing[] }).games;
+};
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.animationEngine = animationEngine;
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.cheatsStore = cheatsStore;
 (window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__.playerHealth = playerHealth;
@@ -1358,7 +2537,29 @@ interface OperatorTestHook {
 // Document 5 surfaces, for the acceptance harness.
 Object.assign((window as unknown as { __OPERATOR__: Record<string, unknown> }).__OPERATOR__, {
   audioManager, hud, ui, matchStats, playerHealth, loadoutManager, skinManager,
+  remotePlayers,
   settingsStore, levelLoader, mainMenu, loadingScreen, settingsMenu, loadoutMenu,
+  // Document N: the acceptance harness ray-casts the live world to verify
+  // terrain relief, door openings and perimeter containment — assertions a
+  // screenshot cannot make. RAPIER rides along because constructing a Ray
+  // needs the same module instance the world was built with.
+  physics, RAPIER, playerCollider, calloutZones: calloutZoneRegistry,
+  // Document V: the harness drives the vehicle system headlessly to prove
+  // entering, driving and exiting actually work.
+  vehicleSystem, teleportPads,
+  // Killstreak behaviour harness: reads the shared hittable registry to prove
+  // the gunship is destructible by the same path as everything else.
+  ballistics,
+  // Match/death/respawn harness: the death presentation and the killfeed are
+  // pure UI, so the only way to prove they ran is to read them.
+  deathCamera, deathOverlay, killfeed, matchBar, gameOverScreen,
+  operatorRoster,
+  isAwaitingRespawn: () => awaitingRespawn,
+  getWorldPassMask: () => (
+    cinematicCamera.isActive || cinematicCamera.isDetached
+      ? WORLD_PASS_MASK.THIRD
+      : perspective.worldPassMask
+  ),
 });
 // ---------------------------------------------------------------------------
 // End TEMPORARY block.

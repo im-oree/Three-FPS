@@ -16,16 +16,23 @@
  */
 import * as THREE from 'three';
 import eventBus from '../core/EventBus';
+import loadProgress from '../core/LoadProgress';
+import assetParserPool from '../core/AssetParserPool';
 import ballistics from '../weapons/BallisticsSystem';
 import { TrainingDummy } from './TrainingDummy';
 import { getLevel, LEVELS, type LevelDefinition } from './LevelDefinition';
 import MapBuilder from './MapBuilder';
 import HDRISkyManager from './HDRISkyManager';
+import { getWeather, tintColour } from './Weather';
+import calloutZoneRegistry from '../world/CalloutZoneRegistry';
+import RAPIER from '@dimforge/rapier3d-compat';
 import { LAYER, setLayerRecursive } from '../core/RenderLayers';
 import type ColliderFactory from '../physics/ColliderFactory';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
 import type { AssetLoader } from '../core/AssetLoader';
 import type { CullingHandle, FrustumCullingManager } from '../core/FrustumCullingManager';
+import StaticBatcher from '../core/quality/StaticBatcher';
+import type RenderQualityManager from '../core/quality/RenderQualityManager';
 
 /** Optional dependencies required only by Document K/L prop-built levels. */
 export interface LevelBuilderDeps {
@@ -35,10 +42,27 @@ export interface LevelBuilderDeps {
   /** Global union culling (SceneManager-owned). Optional so exact-array
    *  levels and old call sites stay source-compatible. */
   culling?: FrustumCullingManager;
+  /** Render-cost owner: supplies the shadow box, occluders and the active
+   *  quality preset (batch cell size, LOD distances, cull scaling). */
+  quality?: RenderQualityManager;
 }
 
 /** Collision nodes inside a shell .glb carry this prefix (Document L §2). */
 const COLLECTION_PREFIX = /^COL_/;
+
+/**
+ * Yield long enough for the browser to actually paint.
+ *
+ * setTimeout(0) queues a macrotask but does NOT guarantee a paint; a double
+ * rAF does, because the second callback can only run after the first frame
+ * has been composited. This is the difference between a bar that animates
+ * and a bar that teleports from 0 to 100.
+ */
+function yieldToPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+}
 
 export class LevelLoader {
   readonly scene = new THREE.Scene();
@@ -48,8 +72,13 @@ export class LevelLoader {
   readonly staticMeshes: THREE.Mesh[] = [];
 
   private definition: LevelDefinition | null = null;
+
+  /** The level currently loaded, or null. Read by tools and the menu. */
+  get currentDefinition(): LevelDefinition | null { return this.definition; }
   /** Stashed while an aerial view suppresses fog (Document I §6). */
   private suppressedFog: THREE.Scene["fog"] = null;
+  /** Active weather preset id, or null for the level's own look. */
+  private weatherId: string | null = null;
   private readonly dummies: TrainingDummy[] = [];
   private readonly disposables: Array<THREE.BufferGeometry | THREE.Material> = [];
   private readonly colliderHandles: number[] = [];
@@ -58,6 +87,12 @@ export class LevelLoader {
   private readonly cullingHandles: CullingHandle[] = [];
   private mapBuilder: MapBuilder | null = null;
   private hdriSky: HDRISkyManager | null = null;
+  /** Document N: heightfield terrain body, removed wholesale on unload. */
+  private terrainBody: RAPIER.RigidBody | null = null;
+  /** Static-geometry merges for this level; disposed on unload. */
+  private batcher: StaticBatcher | null = null;
+  /** LOD nodes produced by the batcher — need an explicit per-frame update. */
+  private readonly lodNodes: THREE.LOD[] = [];
 
   constructor(
     private readonly colliderFactory: ColliderFactory,
@@ -107,24 +142,78 @@ export class LevelLoader {
     this.mapBuilder?.update(dt);
   }
 
+  /**
+   * Pick the LOD level for every batched cell. THREE.LOD.autoUpdate would do
+   * this inside the render call, once PER CAMERA — which means the top-down
+   * minimap capture (an 80 m-high camera) would drag every batch to its
+   * lowest detail and leave it there for the player's own render pass in the
+   * same frame. Driving it once, explicitly, from the player's camera is both
+   * cheaper and correct.
+   */
+  updateLODs(camera: THREE.Camera): void {
+    for (const lod of this.lodNodes) lod.update(camera);
+  }
+
+  /**
+   * Which weather preset the next load uses.
+   *
+   * Set before `load()`. Deliberately not applied to an already-loaded level:
+   * changing the weather mid-match would mean rebuilding lights and fog while
+   * players are shooting, and no mode needs that.
+   */
+  setWeather(id: string | null): void {
+    this.weatherId = id;
+  }
+
   async load(levelId: string): Promise<LevelDefinition> {
     this.unloadCurrentLevel();
     const def = getLevel(levelId);
     this.definition = def;
 
-    this.scene.background = new THREE.Color(def.skyColor);
-    this.scene.fog = new THREE.FogExp2(def.skyColor, def.fogDensity);
+    // Weather is a presentation layer OVER the level's own palette, applied
+    // as tints and multipliers rather than absolute values, so a preset works
+    // on every map instead of flattening each level's look into one.
+    const weather = getWeather(this.weatherId);
+    const sky = tintColour(def.skyColor, weather.skyTint);
+    this.scene.background = new THREE.Color(sky);
+    this.scene.fog = new THREE.FogExp2(sky, def.fogDensity * weather.fogScale);
 
     this.buildLights(def);
+    // Each phase reports honestly as it completes. Yielding between phases
+    // is what lets the bar actually paint: without it the browser runs the
+    // whole build in one frame and the player sees 0% then 100%.
+    loadProgress.enter('shell');
     if (def.shellFile) {
       await this.buildShell(def);
     } else {
       this.buildGround(def);
       for (const box of def.boxes) this.buildBox(box);
     }
+    loadProgress.complete('shell');
+    await yieldToPaint();
+
+    // Document N §2.4: terrain collision BEFORE props, so anything that
+    // queries ground height during placement sees the real surface.
+    loadProgress.enter('collision');
+    if (def.terrainCollision) await this.buildTerrainCollision(def);
+    if (def.calloutZonesFile) await this.loadCalloutZones(def);
+    loadProgress.complete('collision');
+    await yieldToPaint();
+
+    loadProgress.enter('props');
     if (def.propManifest) await this.buildProps(def);
+    loadProgress.complete('props');
+    await yieldToPaint();
+
+    loadProgress.enter('lighting');
     if (def.hdri) await this.applyHDRI(def);
     this.buildDummies(def);
+    // Occluders come from the placed buildings, so this must follow props.
+    this.registerOccluders();
+    // Batching runs LAST: every static mesh this level will ever have must
+    // already exist, because merging bakes world transforms into vertices.
+    this.batchStaticGeometry();
+    loadProgress.complete('lighting');
 
     // Yield one frame so a caller awaiting this sees the progress bar paint.
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -145,6 +234,19 @@ export class LevelLoader {
     this.mapBuilder?.dispose();
     this.mapBuilder = null;
     this.hdriSky?.clear();
+    calloutZoneRegistry.clear();
+    if (this.terrainBody) {
+      for (let i = 0; i < this.terrainBody.numColliders(); i += 1) {
+        this.colliderFactory.byHandle.delete(this.terrainBody.collider(i).handle);
+      }
+      this.builderDeps?.physics.world.removeRigidBody(this.terrainBody);
+      this.terrainBody = null;
+    }
+
+    this.builderDeps?.quality?.onLevelUnloaded();
+    this.batcher?.dispose();
+    this.batcher = null;
+    this.lodNodes.length = 0;
 
     for (const handle of this.cullingHandles) handle.release();
     this.cullingHandles.length = 0;
@@ -173,23 +275,199 @@ export class LevelLoader {
   }
 
   private buildLights(def: LevelDefinition): void {
+    const weather = getWeather(this.weatherId);
     // Ambient fill as well as the hemisphere: pure hemi + sun leaves every
     // surface facing away from the sun almost black, which made the first
     // playable build unreadable.
-    this.levelRoot.add(new THREE.AmbientLight(0x8e97a8, 0.55));
-    const hemi = new THREE.HemisphereLight(0xaab4c4, 0x4a4740, def.hemiIntensity);
-    const sun = new THREE.DirectionalLight(0xfff2e0, def.sunIntensity);
+    this.levelRoot.add(new THREE.AmbientLight(0x8e97a8, 0.55 * weather.ambientScale));
+    const hemi = new THREE.HemisphereLight(
+      0xaab4c4, 0x4a4740, def.hemiIntensity * weather.ambientScale,
+    );
+    const sun = new THREE.DirectionalLight(
+      0xfff2e0, def.sunIntensity * weather.sunScale,
+    );
     sun.position.set(18, 34, 12);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    const r = def.groundHalfSize;
-    sun.shadow.camera.left = -r;
-    sun.shadow.camera.right = r;
-    sun.shadow.camera.top = r;
-    sun.shadow.camera.bottom = -r;
-    sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 100;
     this.levelRoot.add(hemi, sun);
+    this.levelRoot.add(sun.target);
+
+    // The shadow camera used to be sized to `groundHalfSize` — 75 m on
+    // Firing Range, so a 150x150 m box. That is ~13 texels per metre on a
+    // 2048 map (a blurry smear) AND it forced every shadow caster in the
+    // whole level through the depth pass every frame. ShadowDirector instead
+    // keeps a much smaller, texel-snapped box centred on the player: sharper
+    // shadows from fewer casters. Size and resolution come from the active
+    // quality preset.
+    const quality = this.builderDeps?.quality;
+    if (quality) {
+      quality.shadows.setSun(sun);
+    } else {
+      // No quality manager (bare/exact-array call sites): keep the old
+      // whole-map behaviour so those levels are unaffected.
+      sun.shadow.mapSize.set(2048, 2048);
+      const r = def.groundHalfSize;
+      sun.shadow.camera.left = -r;
+      sun.shadow.camera.right = r;
+      sun.shadow.camera.top = r;
+      sun.shadow.camera.bottom = -r;
+      sun.shadow.camera.near = 1;
+      sun.shadow.camera.far = 100;
+    }
+  }
+
+  /**
+   * Merge this level's static scenery into a few large meshes.
+   *
+   * Runs after every other build step because merging bakes world transforms
+   * into vertex data: anything that still needs its own transform, or that
+   * another system toggles/animates individually, must be excluded rather
+   * than merged and then discovered to be immovable.
+   */
+  private batchStaticGeometry(): void {
+    const quality = this.builderDeps?.quality;
+    if (!quality) return;
+    const preset = quality.current;
+
+    const batcher = new StaticBatcher({
+      cellSize: preset.batchCellSize,
+      lodDistance: preset.lodDistance,
+      lodStrength: preset.lodStrength,
+    });
+
+    // Everything the batcher must NOT take.
+    const propPool = this.mapBuilder?.propPool;
+    const protectedRoots = new Set<THREE.Object3D>();
+    if (propPool) {
+      // Wind-swaying trees and dynamic (pooled, physics-driven) props keep
+      // their own nodes: batching would freeze them in place forever.
+      for (const obj of propPool.getBatchExclusions()) protectedRoots.add(obj);
+    }
+    for (const dummy of this.dummies) protectedRoots.add(dummy);
+
+    const skip = (o: THREE.Object3D): boolean => {
+      if (protectedRoots.has(o)) return true;
+      // Collision-only nodes are invisible and must stay individually
+      // addressable; lights, cameras and helpers are not geometry.
+      if (COLLECTION_PREFIX.test(o.name)) return true;
+      // GROUND-SCALE MESHES ARE NEVER BATCHED.
+      //
+      // The batcher buckets by spatial cell, so a 520 m terrain gets chopped
+      // into many small cells; the original mesh is then hidden as
+      // "consumed". Each cell is frustum-culled by its own bounding sphere,
+      // and the cells under and behind the camera fail that test, so large
+      // parts of the ground disappear as you drive — the prototype map
+      // rendered as a vehicle floating in empty sky.
+      //
+      // A single ground mesh is already one draw call, which is exactly what
+      // batching is trying to achieve, so there is nothing to win here and an
+      // entire world to lose.
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh && mesh.geometry) {
+        if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+        const bb = mesh.geometry.boundingBox;
+        if (bb) {
+          const spanX = (bb.max.x - bb.min.x) * o.scale.x;
+          const spanZ = (bb.max.z - bb.min.z) * o.scale.z;
+          if (Math.max(spanX, spanZ) > 200) {
+            o.frustumCulled = false;
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    // Two roots to sweep: the level shell (terrain, perimeter, skyline) lives
+    // under levelRoot, but the ~1700 meshes that actually dominate the draw
+    // call count are the placed props — buildings assembled from dozens of
+    // kit panels each — and those hang off PropPool's own group.
+    let taken = batcher.collect(this.levelRoot, skip);
+    if (propPool) taken += batcher.collect(propPool.rootGroup, skip);
+    if (taken === 0) { batcher.dispose(); return; }
+
+    const result = batcher.build();
+    if (result.stats.batches === 0) { batcher.dispose(); return; }
+
+    // Swap the originals out for the merges. The consumed meshes are only
+    // removed if they actually ended up inside a batch (build() drops
+    // single-mesh buckets), so `consumed` is filtered against what survived.
+    const batchRoot = new THREE.Group();
+    batchRoot.name = 'StaticBatches';
+    batchRoot.matrixAutoUpdate = false;
+    for (const obj of result.objects) {
+      batchRoot.add(obj);
+      if ((obj as THREE.LOD).isLOD) this.lodNodes.push(obj as THREE.LOD);
+    }
+    this.levelRoot.add(batchRoot);
+
+    // Hide (don't destroy) the source meshes: their geometry may be shared
+    // with prop sources still in the asset cache, and ballistics/collision
+    // hold references to some of them. Hiding removes the draw call, which
+    // is the entire point, without breaking any of those relationships.
+    let removed = 0;
+    for (const src of result.consumed) {
+      if (!src.parent) continue;
+      if (src.visible) { src.visible = false; removed += 1; }
+    }
+
+    // The merged batches take over culling duty from the meshes they
+    // replaced. They are frustum-only (no distance band: a batch spans a
+    // whole cell) and NOT occludable (a batch's sphere is usually larger
+    // than the occluders themselves, so the proof would never hold anyway).
+    if (this.builderDeps?.culling) {
+      for (const obj of result.objects) {
+        const box = new THREE.Box3().setFromObject(obj);
+        const sphere = box.getBoundingSphere(new THREE.Sphere());
+        // A batch that spans the whole map (the merged terrain cell) has the
+        // same sphere-vs-frustum failure as the source terrain mesh: the
+        // camera ends up inside a ~370 m sphere whose centre is behind the
+        // near plane, intersectsSphere says no, and the ground vanishes.
+        // Ground-scale batches stay resident — one draw call is cheap, an
+        // invisible world is not.
+        const spanXZ = Math.max(box.max.x - box.min.x, box.max.z - box.min.z);
+        if (spanXZ > 200) {
+          obj.frustumCulled = false;
+          obj.visible = true;
+          continue;
+        }
+        this.cullingHandles.push(this.builderDeps.culling.registerSphere(obj, sphere, {
+          id: `batch:${obj.name}`,
+          margin: 1.5,
+          // Batch cells are deliberately kept near occluder scale (see
+          // batchCellSize), so a cell CAN be provably hidden behind a wall —
+          // and hiding one removes a whole merged draw call, which is the
+          // best return the occlusion test can get.
+          occludable: true,
+        }));
+      }
+    }
+
+    this.batcher = batcher;
+    console.log(
+      `[LevelLoader] static batching: ${result.stats.sourceMeshes} meshes -> `
+      + `${result.stats.batches} batches (${removed} draw calls removed, `
+      + `${result.stats.triangles} tris, LOD ${result.stats.lodTriangles} tris).`,
+    );
+  }
+
+  /**
+   * Register the level's big solid buildings as occluders.
+   *
+   * Only large closed volumes qualify: the whole value of the occlusion stage
+   * is that a warehouse hides everything behind it, and a fence or a palm
+   * tree hides nothing reliably while still costing a test every frame.
+   */
+  private registerOccluders(): void {
+    const quality = this.builderDeps?.quality;
+    if (!quality) return;
+    const propPool = this.mapBuilder?.propPool;
+    if (!propPool) return;
+    let count = 0;
+    for (const box of propPool.getOccluderBoxes()) {
+      quality.occlusion.addOccluder(box);
+      count += 1;
+    }
+    if (count) console.log(`[LevelLoader] ${count} occluders registered.`);
   }
 
   private buildGround(def: LevelDefinition): void {
@@ -307,6 +585,33 @@ export class LevelLoader {
         const targets = (node as THREE.Mesh).isMesh ? [node] : node.children;
         for (const child of targets) {
           if (COLLECTION_PREFIX.test(child.name)) continue;
+          // GROUND-SCALE MESHES ARE NEVER FRUSTUM-CULLED.
+          //
+          // The culler tests a bounding SPHERE against the frustum. For a
+          // 520 x 520 m terrain that sphere has a ~368 m radius centred on
+          // the map, and once the camera is inside it near the surface the
+          // sphere can fail intersectsSphere even though the mesh fills the
+          // screen — the sphere's centre is behind the near plane and its
+          // extent is mostly below the ground. Result: the entire terrain
+          // blinks out and the player appears to be flying over an empty
+          // void. That is exactly what the first prototype driving
+          // screenshot showed.
+          //
+          // Anything this large is cheap to keep resident (one draw call)
+          // and catastrophic to cull wrongly, so it opts out.
+          const geo = (child as THREE.Mesh).geometry;
+          let spanXZ = 0;
+          if (geo?.boundingBox || geo?.computeBoundingBox) {
+            if (!geo.boundingBox) geo.computeBoundingBox();
+            const bb = geo.boundingBox;
+            if (bb) {
+              spanXZ = Math.max(bb.max.x - bb.min.x, bb.max.z - bb.min.z);
+            }
+          }
+          if (spanXZ > 200) {
+            child.frustumCulled = false;
+            continue;
+          }
           this.cullingHandles.push(
             this.builderDeps.culling.register(child, {
               id: `shell:${child.name}`,
@@ -329,11 +634,78 @@ export class LevelLoader {
       this.colliderFactory,
       this.builderDeps.assetLoader,
       this.builderDeps.culling ?? null,
+      this.builderDeps.quality ?? null,
     );
-    await this.mapBuilder.build(def.propManifest, def.propPoolSizes ?? {});
+    await this.mapBuilder.build(
+      def.propManifest, def.propPoolSizes ?? {}, def.windSwayPropTypes ?? [],
+    );
   }
 
   /** Document K §5: HDRI background + IBL for prop-built levels. */
+  /**
+   * Document N §2.4: terrain collision from a baked heightfield.
+   *
+   * The sample grid was produced by the SAME height function that generated
+   * the visual terrain mesh (tools/lib/TerrainHeightfieldBuilder.js), so the
+   * collider cannot drift from what the player sees — the usual failure of
+   * hand-tuned terrain collision.
+   *
+   * Rapier's heightfield stores heights COLUMN-MAJOR as
+   * index = col * (nrows + 1) + row, with `row` running along +Z and `col`
+   * along +X, and centres the field on its rigid body. Transposing those is
+   * the classic bug here: the terrain mirrors across the diagonal and only
+   * looks wrong where the map is asymmetric.
+   */
+  private async buildTerrainCollision(def: LevelDefinition): Promise<void> {
+    if (!def.terrainCollision || !this.builderDeps) return;
+    // Fetched, parsed and validated in a worker: this file is up to ~120 KB
+    // of JSON (~16k floats) and a synchronous parse here freezes the loading
+    // screen exactly when it is trying to animate. The worker hands back a
+    // transferred Float32Array, so the main thread never walks the array.
+    let data: Awaited<ReturnType<typeof assetParserPool.loadTerrain>>;
+    try {
+      data = await assetParserPool.loadTerrain(def.terrainCollision);
+    } catch (error) {
+      console.error(`LevelLoader: terrain collision SKIPPED — ${String(error)}`);
+      return;
+    }
+
+    const world = this.builderDeps.physics.world;
+    const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, 0, 0));
+    const collider = world.createCollider(
+      RAPIER.ColliderDesc.heightfield(
+        data.nrows, data.ncols, data.heights,
+        new THREE.Vector3(data.scale.x, data.scale.y, data.scale.z),
+      ),
+      body,
+    );
+    this.colliderFactory.byHandle.set(collider.handle, {
+      topY: 0,                       // terrain has no single top; unused for ground
+      surfaceType: def.groundSurface,
+    });
+    this.terrainBody = body;
+    console.log(
+      `[LevelLoader] terrain heightfield ${data.nrows}x${data.ncols} `
+      + `over ${data.width}x${data.depth} m (surface '${def.groundSurface}').`,
+    );
+  }
+
+  /** Document N §7: load named callout polygons into the shared registry. */
+  private async loadCalloutZones(def: LevelDefinition): Promise<void> {
+    if (!def.calloutZonesFile) return;
+    try {
+      // Parsed off-thread; the pool throws on a bad status or bad JSON.
+      const zones = await assetParserPool.loadJson<
+        { name: string; polygon: [number, number][] }[]
+      >(def.calloutZonesFile);
+      calloutZoneRegistry.loadZones(zones);
+      console.log(`[LevelLoader] ${calloutZoneRegistry.count} callout zones registered.`);
+    } catch (err) {
+      // Callouts are HUD garnish: a failure must not block the match.
+      console.error('LevelLoader: callout zones failed to load —', err);
+    }
+  }
+
   private async applyHDRI(def: LevelDefinition): Promise<void> {
     if (!this.builderDeps || !def.hdri) return;
     this.hdriSky = new HDRISkyManager(this.builderDeps.renderer, this.scene);

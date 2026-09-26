@@ -30,6 +30,21 @@ export class HDRISkyManager {
       return;
     }
     const hdr = await new RGBELoader().loadAsync(hdriPath);
+    // THE SKYBOX FIX. RGBELoader returns a DataTexture with the DEFAULT
+    // mapping (THREE.UVMapping). Assigning a UVMapping texture to
+    // scene.background makes three render it as a SCREEN-SPACE QUAD
+    // (WebGLBackground's `planeMesh`, a PlaneGeometry(2,2) with depthTest
+    // off) — the equirect image is simply stretched across the viewport and
+    // never reprojected, so the horizon line sits at a fixed screen position
+    // and "follows" wherever the player looks. That was the reported bug, and
+    // it affected EVERY map because every level HDRI came through this path.
+    //
+    // Tagging it EquirectangularReflectionMapping instead routes it through
+    // WebGLCubeMaps, which bakes the equirect into a WebGLCubeRenderTarget
+    // once (cached by texture, so this is a one-off load-time cost) and draws
+    // it with the backgroundCube shader — a real, view-projected sky dome
+    // that stays put in world space when the camera turns.
+    hdr.mapping = THREE.EquirectangularReflectionMapping;
     const env = this.pmrem.fromEquirectangular(hdr).texture;
     this.clearSceneBindings();
     this.envMap?.dispose();

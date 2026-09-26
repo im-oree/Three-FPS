@@ -31,6 +31,9 @@ import StaminaSystem from './StaminaSystem';
 import VaultSystem, { type VaultProbes } from './VaultSystem';
 import eventBus from '../core/EventBus';
 
+/** Scratch for debugTeleport's ground probe (test seam, never hot). */
+const TELEPORT_SCRATCH = new THREE.Vector3();
+
 export class PlayerController {
   readonly movement: PlayerMovement;
   readonly camera: PlayerCamera;
@@ -75,6 +78,23 @@ export class PlayerController {
   private readonly renderPos = new THREE.Vector3();
   private readonly renderBob = { x: 0, y: 0, z: 0 };
   private visualSnapshotsInit = false;
+  /** True while VehicleSystem owns the player (Document V). */
+  private vehicleSuspended = false;
+  /**
+   * Set while the player must not act on the world, but must still exist in
+   * it: the pre-match countdown, and while a menu is open over a live match.
+   *
+   * The server refuses movement input during the countdown, but the client
+   * predicts locally, so without this the player walked several metres during
+   * "MATCH STARTING 3.. 2.. 1.." and was then yanked back by the next
+   * authoritative snapshot. That read as the game lagging, not as a freeze.
+   *
+   * The pause menu uses the same flag. The simulation keeps running (the
+   * server never pauses, so neither can we -- pausing mid-air used to leave
+   * the player hanging in space while the server dropped them to the floor),
+   * but their input stops reaching it.
+   */
+  private movementFrozen = false;
 
   /** Document 3: AnimationStateMachine reads the movement state from here. */
   get currentState(): PlayerStateValue {
@@ -228,10 +248,34 @@ export class PlayerController {
    * and zero its velocity. Not used by any gameplay path.
    */
   debugTeleport(x: number, y: number, z: number): void {
-    this.movement.state.position.set(x, y, z);
+    // Snap DOWN onto whatever floor is under the requested spot.
+    //
+    // Callers pass a nominal standing height (0.2, 1.7, ...) but the real
+    // floor varies per map — terrain, building pads, container roofs. Landing
+    // 1.5 m above it means the capsule is airborne, and a screenshot taken
+    // during that fall shows the camera sinking through the ground: an
+    // alarming "the map has no floor" artefact that is purely the harness.
+    // Probing here makes the seam mean "stand here", which is what every
+    // caller actually wants.
+    const probeFrom = TELEPORT_SCRATCH.set(x, y + PLAYER.MAX_STEP_HEIGHT + 2, z);
+    const ground = this.collider.raycastDown(probeFrom, 200);
+    const floorY = ground ? probeFrom.y - ground.distance : y;
+    // Never teleport INTO the floor, and never silently fall a long way.
+    const finalY = Math.abs(floorY - y) < 60 ? floorY : y;
+    this.movement.state.position.set(x, finalY, z);
     this.movement.state.velocity.set(0, 0, 0);
-    this.prevVisualPos.set(x, y, z);
-    this.currVisualPos.set(x, y, z);
+    this.prevVisualPos.set(x, finalY, z);
+    this.currVisualPos.set(x, finalY, z);
+  }
+
+  /**
+   * TEST-ONLY seam: aim the camera. Poking THREE camera.rotation directly does
+   * not work — PlayerCamera rewrites the camera transform from simulation
+   * state every frame, so the poke is gone before the next paint.
+   */
+  debugLook(yaw: number, pitch: number): void {
+    this.movement.state.yaw = yaw;
+    this.movement.state.pitch = pitch;
   }
 
   /** TEST-ONLY seam: set stamina directly for deterministic acceptance runs. */
@@ -249,7 +293,72 @@ export class PlayerController {
     this.movement.state.pitch = pitch;
   }
 
+  /**
+   * Suspend the on-foot character while the player rides a vehicle
+   * (Document V). VehicleSystem owns the transition.
+   *
+   * Suspending rather than destroying: the player keeps their weapons,
+   * health, stamina and animation state, so getting out restores the
+   * character exactly as it was. Rebuilding the controller on exit would
+   * mean serialising every one of those, and any field added later would
+   * silently fail to survive a car ride.
+   *
+   * While suspended, fixedStep() is skipped entirely: no movement
+   * integration, no collision resolution, no head bob, and no input is
+   * consumed — which is what stops WASD both steering the car and walking
+   * the character around inside it.
+   */
+  setVehicleSuspended(suspended: boolean): void {
+    if (this.vehicleSuspended === suspended) return;
+    this.vehicleSuspended = suspended;
+    if (suspended) {
+      // Zero the velocity so the character does not resume a fall on exit.
+      this.movement.state.velocity.set(0, 0, 0);
+    }
+  }
+
+  get isVehicleSuspended(): boolean { return this.vehicleSuspended; }
+
+  /**
+   * Freeze or release locomotion.
+   *
+   * Looking around stays live: Call of Duty lets you aim during the
+   * countdown, it just does not let you leave the spawn. Only the movement
+   * simulation is skipped, so gravity and the camera keep running.
+   */
+  setMovementFrozen(frozen: boolean): void {
+    if (this.movementFrozen === frozen) return;
+    this.movementFrozen = frozen;
+    if (frozen) {
+      // Kill residual velocity, or the player drifts for a moment after the
+      // freeze begins.
+      this.movement.state.velocity.set(0, this.movement.state.velocity.y, 0);
+    }
+  }
+
+  get isMovementFrozen(): boolean { return this.movementFrozen; }
+
+  /**
+   * Keep the suspended player's logical position glued to their seat.
+   *
+   * Audio listener placement, spatial queries and anything else that asks
+   * "where is the player" must follow the vehicle, not the patch of ground
+   * where they got in.
+   */
+  setVehicleAnchor(position: THREE.Vector3): void {
+    if (!this.vehicleSuspended) return;
+    this.movement.state.position.copy(position);
+    this.prevVisualPos.copy(position);
+    this.currVisualPos.copy(position);
+    this.renderPos.copy(position);
+  }
+
   update(dt: number): void {
+    // Riding a vehicle: VehicleSystem owns the camera and the player's
+    // position. Returning before stepFixed keeps the character controller
+    // completely inert rather than half-driving it from stale input.
+    if (this.vehicleSuspended) return;
+
     this.clock.stepFixed(CLOCK.FIXED_DT, (fixedDt) => {
       this.prevVisualPos.copy(this.currVisualPos);
       this.prevVisualBob.x = this.currVisualBob.x;
@@ -490,6 +599,11 @@ export class PlayerController {
 
   /** Normalized local input: +y forward (W), +x right (D). Pitch ignored. */
   private moveLocal(): THREE.Vector2 {
+    // Frozen during the pre-match countdown. Reporting "no keys held" here
+    // rather than skipping the simulation keeps gravity, ground contact and
+    // the state machine running exactly as the server's own freeze does --
+    // the player is held in place, not suspended.
+    if (this.movementFrozen) return new THREE.Vector2(0, 0);
     const x = (this.input.isActionDown('moveRight') ? 1 : 0) - (this.input.isActionDown('moveLeft') ? 1 : 0);
     const y = (this.input.isActionDown('moveForward') ? 1 : 0) - (this.input.isActionDown('moveBackward') ? 1 : 0);
     const vec = new THREE.Vector2(x, y);

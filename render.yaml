@@ -1,0 +1,25 @@
+# Render blueprint for the OPERATOR multiplayer backend.
+#
+# The backend serves game traffic over WebSocket and nothing else -- the web
+# client is a static build (`npm run build` -> dist/) and can be hosted
+# anywhere. They are deployed separately on purpose: the client is a CDN
+# artifact, the backend is a stateful process, and coupling their lifecycles
+# would mean a UI tweak restarts live matches.
+#
+#   Deploy:  connect this repo on Render; the blueprint is picked up.
+#   Client:  set VITE_SERVER_URL to wss://<this-service>.onrender.com
+services:
+  - type: web
+    name: operator-fps-backend
+    runtime: node
+    plan: free
+    # Only the server half is needed; the client build is not.
+    buildCommand: npm ci --omit=optional
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Render injects PORT; the server reads it and falls back to 8080.
+      - key: NODE_ENV
+        value: production

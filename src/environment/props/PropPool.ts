@@ -25,10 +25,11 @@ import type ColliderFactory from '../../physics/ColliderFactory';
 import {
   resolvePropDefinition, type PropDefinition,
 } from './PropCatalog';
-import { buildColliderDescs, colliderTopY } from './ColliderShapeBuilder';
+import { buildColliderDescs, colliderTopY, applyLocalPlacement } from './ColliderShapeBuilder';
 import MaterialVariantLibrary from './MaterialVariantLibrary';
 import CraneSwayAnimator from './CraneSwayAnimator';
 import type { CullingHandle, FrustumCullingManager } from '../../core/FrustumCullingManager';
+import type RenderQualityManager from '../../core/quality/RenderQualityManager';
 
 interface InstancedGroup {
   mesh: THREE.InstancedMesh;
@@ -67,8 +68,15 @@ export class PropPool {
   private readonly placedLights: THREE.PointLight[] = [];
   private readonly swayAnimators: CraneSwayAnimator[] = [];
   private readonly placedBodies: RAPIER.RigidBody[] = [];
+  /** Cloned-static instances by prop type — the handle post-placement systems
+   *  (Document N's wind sway) need to reach individual models. Instanced and
+   *  dynamic props are deliberately absent: they have no per-instance nodes. */
+  private readonly placedModels = new Map<string, THREE.Object3D[]>();
   /** Culling registrations, released on disposeAll (level unload). */
   private readonly cullingHandles: CullingHandle[] = [];
+  /** Placed models the StaticBatcher must leave alone because something
+   *  animates or individually toggles them (see getBatchExclusions). */
+  private readonly batchExcluded = new Set<THREE.Object3D>();
   /** Per instanced group: world positions accumulate as instances are
    *  placed; finalizeCulling() derives one union sphere per group (the
    *  InstancedMesh's own geometry bounds know nothing about instances). */
@@ -89,6 +97,7 @@ export class PropPool {
     private readonly colliderFactory: ColliderFactory,
     private readonly assetLoader: AssetLoader,
     private readonly culling: FrustumCullingManager | null = null,
+    private readonly quality: RenderQualityManager | null = null,
   ) {
     this.root.name = 'PropPool';
     scene.add(this.root);
@@ -158,9 +167,8 @@ export class PropPool {
           .setLinearDamping(2.2)
           .setAngularDamping(3.5),
       );
-      const colliders = buildColliderDescs(def.collider).map(({ desc, offset }) => {
-        const d = desc
-          .setTranslation(offset.x, offset.y, offset.z)
+      const colliders = buildColliderDescs(def.collider).map((item) => {
+        const d = applyLocalPlacement(item)
           .setRestitution(def.restitution ?? 0.2)
           .setFriction(def.friction ?? 0.7);
         if (def.mass) d.setMass(def.mass);
@@ -184,6 +192,101 @@ export class PropPool {
   // -------------------------------------------------------------------------
   // Placement
   // -------------------------------------------------------------------------
+
+  /** The group every placed prop lives under (batching entry point). */
+  get rootGroup(): THREE.Object3D { return this.root; }
+
+  /** Cloned-static models of one prop type (empty for instanced/dynamic). */
+  getPlacedModels(propTypeId: string): readonly THREE.Object3D[] {
+    return this.placedModels.get(propTypeId) ?? [];
+  }
+
+  /**
+   * Mark every placed model of a prop type as un-batchable. MapBuilder calls
+   * this for the level's wind-sway types, whose crowns are rotated per-frame
+   * and so must keep their own transforms.
+   */
+  excludeTypeFromBatching(propTypeId: string): void {
+    for (const model of this.placedModels.get(propTypeId) ?? []) {
+      this.batchExcluded.add(model);
+    }
+  }
+
+  /**
+   * Objects the StaticBatcher must NOT merge.
+   *
+   * Merging bakes an object's world transform into vertex data, so anything
+   * that still needs to move — or to be shown/hidden on its own — has to be
+   * excluded. That is: every dynamic (physics-pooled) prop, every prop with
+   * an animator attached, and the instanced groups (already one draw call
+   * each; merging them would multiply their geometry by the instance count).
+   */
+  getBatchExclusions(): THREE.Object3D[] {
+    const out: THREE.Object3D[] = [];
+    for (const group of this.instancedGroups.values()) out.push(group.mesh);
+    for (const pool of this.dynamicPools.values()) {
+      for (const slot of pool.slots) out.push(slot.mesh);
+    }
+    for (const obj of this.batchExcluded) out.push(obj);
+    return out;
+  }
+
+  /**
+   * World-space boxes of props solid enough to occlude.
+   *
+   * Derived from the COLLIDER, not the render mesh: a collider box is a solid
+   * volume by definition, whereas a visual bounding box includes roof
+   * overhangs, ladders and awnings you can see straight past. An occluder
+   * that claims space the building does not fill makes objects vanish beside
+   * a wall, which is the one failure of this technique players notice.
+   *
+   * Every sufficiently large panel is registered individually rather than
+   * picking one box per building. A kit building's biggest single box is its
+   * ROOF (11 m x 7 m x 0.1 m) — nearly useless for occlusion and, by volume,
+   * the one a "largest box" rule would pick. Its WALLS are what actually
+   * block sightlines, and each of them is separately, genuinely solid.
+   */
+  getOccluderBoxes(): THREE.Box3[] {
+    const boxes: THREE.Box3[] = [];
+    const local: Array<{ hx: number; hy: number; hz: number; c: THREE.Vector3 }> = [];
+    for (const [propTypeId, models] of this.placedModels) {
+      const def = resolvePropDefinition(propTypeId);
+      if (def.foliage) continue;
+      local.length = 0;
+      collectSolidBoxes(def.collider, local);
+      if (local.length === 0) continue;
+
+      for (const model of models) {
+        model.updateWorldMatrix(true, false);
+        const yaw = model.rotation.y;
+        // Occluders are axis-aligned, but buildings are placed at arbitrary
+        // yaw. The largest axis-aligned box that provably fits inside a
+        // rotated one has half-extents scaled by 1/(|cos|+|sin|) — exact,
+        // and conservative for every angle (it degrades to the inscribed
+        // square at 45 degrees rather than ever overstating the volume).
+        const shrink = 1 / (Math.abs(Math.cos(yaw)) + Math.abs(Math.sin(yaw)));
+        for (const b of local) {
+          // Big enough to hide a standing player, in the two axes that count.
+          const horizontal = Math.max(b.hx, b.hz) * 2;
+          const minorHoriz = Math.min(b.hx, b.hz) * 2;
+          if (horizontal < 2.2 || b.hy * 2 < 1.7) continue;
+          const centre = b.c.clone().applyMatrix4(model.matrixWorld);
+          // A thin wall stays thin: shrinking its minor axis by the rotation
+          // factor would collapse it, so only the MAJOR axis is inset for
+          // yaw, and the minor axis keeps a fixed safety margin.
+          const insetMajor = 0.9 * shrink;
+          const hx = (b.hx >= b.hz ? b.hx * insetMajor : b.hx * 0.85);
+          const hz = (b.hz > b.hx ? b.hz * insetMajor : b.hz * 0.85);
+          if (minorHoriz < 0.06) continue; // degenerate
+          boxes.push(new THREE.Box3(
+            new THREE.Vector3(centre.x - hx, centre.y - b.hy * 0.95, centre.z - hz),
+            new THREE.Vector3(centre.x + hx, centre.y + b.hy * 0.95, centre.z + hz),
+          ));
+        }
+      }
+    }
+    return boxes;
+  }
 
   placeInstance(
     propTypeId: string,
@@ -227,21 +330,27 @@ export class PropPool {
     this.pendingInstancedBounds.get(propTypeId)?.positions.push(position.clone());
 
     // Real collision per instance — one FIXED body with the catalog shape.
-    const body = this.physics.world.createRigidBody(
-      RAPIER.RigidBodyDesc.fixed()
-        .setTranslation(position.x, position.y, position.z)
-        .setRotation({ x: _quat.x, y: _quat.y, z: _quat.z, w: _quat.w }),
-    );
-    for (const { desc, offset } of buildColliderDescs(def.collider, scale)) {
-      const collider = this.physics.world.createCollider(
-        desc.setTranslation(offset.x, offset.y, offset.z), body,
+    // Zero-shape entries (walk-through foliage) get NO body at all: creating
+    // an empty rigid body per grass tuft is hundreds of pointless broadphase
+    // entries on a map that ships 380 of them.
+    const built = buildColliderDescs(def.collider, scale);
+    if (built.length) {
+      const body = this.physics.world.createRigidBody(
+        RAPIER.RigidBodyDesc.fixed()
+          .setTranslation(position.x, position.y, position.z)
+          .setRotation({ x: _quat.x, y: _quat.y, z: _quat.z, w: _quat.w }),
       );
-      this.colliderFactory.byHandle.set(collider.handle, {
-        topY: position.y + colliderTopY(def.collider, scale),
-        surfaceType: def.surfaceTag,
-      });
+      for (const item of built) {
+        const collider = this.physics.world.createCollider(
+          applyLocalPlacement(item), body,
+        );
+        this.colliderFactory.byHandle.set(collider.handle, {
+          topY: position.y + colliderTopY(def.collider, scale),
+          surfaceType: def.surfaceTag,
+        });
+      }
+      this.placedBodies.push(body);
     }
-    this.placedBodies.push(body);
     return group.mesh;
   }
 
@@ -260,22 +369,29 @@ export class PropPool {
     mesh.receiveShadow = def.receiveShadow;
     mesh.name = `Prop_${propTypeId}`;
     this.root.add(mesh);
+    const siblings = this.placedModels.get(propTypeId);
+    if (siblings) siblings.push(mesh);
+    else this.placedModels.set(propTypeId, [mesh]);
 
-    const body = this.physics.world.createRigidBody(
-      RAPIER.RigidBodyDesc.fixed()
-        .setTranslation(position.x, position.y, position.z)
-        .setRotation({ x: _quat.setFromEuler(_euler.set(rot[0], rot[1], rot[2])).x, y: _quat.y, z: _quat.z, w: _quat.w }),
-    );
-    for (const { desc, offset } of buildColliderDescs(def.collider, scale)) {
-      const d = desc.setTranslation(offset.x, offset.y, offset.z);
-      d.setFriction(0.7).setRestitution(0.1);
-      const collider = this.physics.world.createCollider(d, body);
-      this.colliderFactory.byHandle.set(collider.handle, {
-        topY: position.y + colliderTopY(def.collider, scale),
-        surfaceType: def.surfaceTag,
-      });
+    // Zero-shape colliders (walk-through foliage) get no body at all.
+    const built = buildColliderDescs(def.collider, scale);
+    if (built.length) {
+      const body = this.physics.world.createRigidBody(
+        RAPIER.RigidBodyDesc.fixed()
+          .setTranslation(position.x, position.y, position.z)
+          .setRotation({ x: _quat.setFromEuler(_euler.set(rot[0], rot[1], rot[2])).x, y: _quat.y, z: _quat.z, w: _quat.w }),
+      );
+      for (const item of built) {
+        const d = applyLocalPlacement(item);
+        d.setFriction(0.7).setRestitution(0.1);
+        const collider = this.physics.world.createCollider(d, body);
+        this.colliderFactory.byHandle.set(collider.handle, {
+          topY: position.y + colliderTopY(def.collider, scale),
+          surfaceType: def.surfaceTag,
+        });
+      }
+      this.placedBodies.push(body);
     }
-    this.placedBodies.push(body);
 
     if (def.emissiveLight) {
       const lampHead = findByName(mesh, 'LampHead') ?? mesh;
@@ -289,11 +405,17 @@ export class PropPool {
     }
     if (def.animated === 'sway') {
       this.swayAnimators.push(new CraneSwayAnimator(mesh));
+      this.batchExcluded.add(mesh);
     }
+    // Distance-based shadow-caster culling: a prop 80 m away contributes a
+    // shadow nobody can resolve, but still costs a full depth-pass draw.
+    if (def.castShadow) this.quality?.shadows.registerCaster(mesh);
     if (this.culling) {
       const handle = this.culling.register(mesh, {
         id: `prop:${propTypeId}`,
-        maxDistance: def.cullDistance,
+        // Cull distances are authored for the High tier; weaker presets pull
+        // dressing in closer rather than each entry hardcoding five numbers.
+        maxDistance: this.quality?.cullDistance(def.cullDistance) ?? def.cullDistance,
       });
       this.cullingHandles.push(handle);
       if (def.animated === 'sway') {
@@ -447,7 +569,12 @@ export class PropPool {
       const sphere = box.getBoundingSphere(new THREE.Sphere());
       this.cullingHandles.push(this.culling.registerSphere(pending.mesh, sphere, {
         id: `prop:${propTypeId}`,
-        maxDistance: pending.def.cullDistance,
+        maxDistance: this.quality?.cullDistance(pending.def.cullDistance)
+          ?? pending.def.cullDistance,
+        // An instanced group's sphere spans every instance of that type
+        // across the map, so it is far too big for the occlusion proof to
+        // ever succeed — skip the test rather than pay for it.
+        occludable: false,
       }));
     }
     this.pendingInstancedBounds.clear();
@@ -484,6 +611,7 @@ export class PropPool {
       this.physics.world.removeRigidBody(body);
     }
     this.placedBodies.length = 0;
+    this.placedModels.clear();
     for (const pool of this.dynamicPools.values()) {
       for (const slot of pool.slots) ballistics.unregisterHittable(slot.mesh);
     }
@@ -491,6 +619,7 @@ export class PropPool {
     for (const handle of this.cullingHandles) handle.release();
     this.cullingHandles.length = 0;
     this.animatorCulling.clear();
+    this.batchExcluded.clear();
     this.pendingInstancedBounds.clear();
     this.instancedGroups.clear();
     this.sources.clear();
@@ -563,6 +692,25 @@ function mergeForInstancing(source: THREE.Object3D): {
     geometry: otherMerged as THREE.BufferGeometry,
     paintGeometry: false, otherGeometry: true, otherMaterial,
   };
+}
+
+/**
+ * Flatten a collider definition into its solid cuboid leaves, in the prop's
+ * local frame. Cylinders are skipped: a round trunk or drum is a poor
+ * occluder and the conservative box inside one is barely worth testing.
+ */
+function collectSolidBoxes(
+  shape: PropDefinition['collider'],
+  out: Array<{ hx: number; hy: number; hz: number; c: THREE.Vector3 }>,
+): void {
+  if (shape.type === 'cuboid') {
+    const h = shape.halfExtents;
+    const o = shape.offset ?? [0, 0, 0];
+    out.push({ hx: h[0], hy: h[1], hz: h[2], c: new THREE.Vector3(o[0], o[1], o[2]) });
+    return;
+  }
+  if (shape.type !== 'compound') return;
+  for (const sub of shape.shapes) collectSolidBoxes(sub, out);
 }
 
 function findByName(root: THREE.Object3D, name: string): THREE.Object3D | null {

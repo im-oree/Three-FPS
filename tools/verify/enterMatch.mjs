@@ -3,7 +3,7 @@
  *
  * Document 5 put a real main menu in front of gameplay, so every harness that
  * tests IN-MATCH behaviour has to get into a match first. This drives the
- * genuine UI path (Play -> level card -> Click to Play) rather than forcing
+ * genuine UI path (MAPS -> map card -> automatic deploy) rather than forcing
  * the state, so the harnesses keep exercising the real flow.
  */
 
@@ -19,32 +19,30 @@ export async function enterMatch(page, { levelIndex = 0, timeout = 90000 } = {})
   );
   if (alreadyPlaying) return;
 
-  // Main menu -> level select.
-  await page.waitForFunction(() => {
-    const b = [...document.querySelectorAll('[data-screen=mainMenu] .btn')];
-    return b.some((x) => x.textContent.trim() === 'Play' && x.offsetParent !== null);
-  }, { timeout });
+  // Main menu -> map browser -> deploy.
+  //
+  // The lobby was rebuilt to match Call of Duty: there is no "Play" button
+  // and no "Click to Play" gate any more. Choosing a map IS the deploy, and
+  // the match starts as soon as the level is ready. This helper drives that
+  // real path rather than forcing state, so harnesses keep testing the flow
+  // players actually use.
+  await page.waitForFunction(
+    () => [...document.querySelectorAll('.cod__mode')]
+      .some((node) => node.textContent.includes('MAPS') && node.offsetParent !== null),
+    { timeout },
+  );
   await page.evaluate(() => {
-    [...document.querySelectorAll('[data-screen=mainMenu] .btn')]
-      .find((b) => b.textContent.trim() === 'Play').click();
+    [...document.querySelectorAll('.cod__mode')]
+      .find((node) => node.textContent.includes('MAPS')).click();
   });
 
   await page.waitForFunction(
-    () => document.querySelectorAll('.level-card').length > 0, { timeout },
+    () => document.querySelectorAll('.mapcard[data-level-id]').length > 0, { timeout },
   );
   await page.evaluate((i) => {
-    const cards = document.querySelectorAll('.level-card');
+    const cards = document.querySelectorAll('.mapcard[data-level-id]');
     (cards[i] ?? cards[0]).click();
   }, levelIndex);
-
-  // Loading -> the click gate (pointer lock needs a real gesture).
-  await page.waitForFunction(() => [...document.querySelectorAll('.btn--primary')]
-    .some((x) => x.textContent.trim() === 'Click to Play' && x.offsetParent !== null),
-  { timeout });
-  await page.evaluate(() => {
-    [...document.querySelectorAll('.btn--primary')]
-      .find((x) => x.textContent.trim() === 'Click to Play').click();
-  });
 
   await page.waitForFunction(
     () => window.__OPERATOR__.gameStateManager.getState() === 'PLAYING', { timeout },

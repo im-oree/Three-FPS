@@ -135,3 +135,19 @@ const overcastDockyard = generateSkyHDR({
   groundColor: [0.2, 0.19, 0.18],
 });
 writeRadianceHDR(overcastDockyard, path.join(OUT_DIR, 'overcast_dockyard.hdr'));
+
+// --- Document N §8: hot, dusty, high-contrast tropical sun ------------------
+// Firing Range is a Guantanamo/jungle-base training compound under a hard
+// midday sun — the opposite of Shipment's flat overcast dockyard. Brighter,
+// tighter sun disc (harder shadows), deep blue zenith, and a warm hazy
+// horizon band for the dust. sunDir here MUST match the sun direction the
+// firingrange level definition drives its shadow-casting light with, or the
+// visible sun and the shadows disagree.
+const tropicalFiringRange = generateSkyHDR({
+  sunDir: [0.42, 0.78, 0.2],
+  sunColor: [9.0, 8.1, 6.4], sunIntensity: 7.5,
+  zenithColor: [0.16, 0.30, 0.56],
+  horizonColor: [0.68, 0.66, 0.58],
+  groundColor: [0.30, 0.25, 0.18],
+});
+writeRadianceHDR(tropicalFiringRange, path.join(OUT_DIR, 'tropical_firingrange.hdr'));

@@ -34,6 +34,7 @@
  * registered with it. Don't hand it objects another system toggles.
  */
 import * as THREE from 'three';
+import type OcclusionCuller from './quality/OcclusionCuller';
 
 export interface CullingEntryOptions {
   /** World-space bounds. Auto-derived from the object graph when omitted. */
@@ -46,6 +47,14 @@ export interface CullingEntryOptions {
   readonly onVisibilityChange?: (visible: boolean) => void;
   /** Debug label for stats dumps. */
   readonly id?: string;
+  /**
+   * Whether this entry may be hidden by the occlusion stage. Default true.
+   * Set false for things that must never pop: the terrain/shell itself (it
+   * IS the world, and its bounding sphere is far larger than any occluder),
+   * and anything whose disappearance would be more noticeable than the draw
+   * call it saves.
+   */
+  readonly occludable?: boolean;
 }
 
 export interface CullingHandle {
@@ -63,6 +72,7 @@ interface CullingEntry {
   onVisibilityChange?: (visible: boolean) => void;
   id: string;
   visible: boolean;
+  occludable: boolean;
 }
 
 const DEFAULT_MARGIN = 0.75;
@@ -82,6 +92,24 @@ export class FrustumCullingManager {
   private readonly projScreen = new THREE.Matrix4();
   private readonly testSphere = new THREE.Sphere();
   private enabled = true;
+  /** Optional second-stage test: hidden behind a big solid occluder. */
+  private occlusion: OcclusionCuller | null = null;
+  /** The camera occlusion is evaluated from (the player's view). Occlusion
+   *  is deliberately single-camera: an object hidden from the player but
+   *  inside the top-down capture camera's frustum must still render, and the
+   *  union rule below preserves exactly that. */
+  private occlusionCamera: THREE.Camera | null = null;
+  private readonly occlusionEye = new THREE.Vector3();
+  private occludedCount = 0;
+
+  /**
+   * Attach the occlusion stage and name the camera it is evaluated from.
+   * Passing null for either disables occlusion without losing frustum work.
+   */
+  setOcclusion(occlusion: OcclusionCuller | null, camera: THREE.Camera | null): void {
+    this.occlusion = occlusion;
+    this.occlusionCamera = camera;
+  }
 
   /** Register a camera that renders (or will render this frame). Returns a
    *  release function; refcounted so independent systems can share one. */
@@ -133,6 +161,7 @@ export class FrustumCullingManager {
       onVisibilityChange: options.onVisibilityChange,
       id: options.id ?? object.name ?? 'object',
       visible: true,
+      occludable: options.occludable ?? true,
     };
     this.entries.push(entry);
     const manager = this;
@@ -173,6 +202,17 @@ export class FrustumCullingManager {
       frustum.setFromProjectionMatrix(projScreen);
       camera.getWorldPosition(camPositions.get(camera) ?? new THREE.Vector3());
     }
+    // OCCLUSION STAGE. Pick the occluders worth testing from the player's
+    // viewpoint once per frame, not once per entry.
+    const occlusionActive = this.occlusion?.isEnabled === true
+      && this.occlusionCamera !== null
+      && this.cameras.has(this.occlusionCamera);
+    if (occlusionActive && this.occlusionCamera) {
+      this.occlusionCamera.getWorldPosition(this.occlusionEye);
+      this.occlusion?.prepare(this.occlusionEye);
+    }
+    this.occludedCount = 0;
+
     for (const entry of this.entries) {
       let visible = false;
       for (const [camera, frustum] of frustums) {
@@ -185,7 +225,19 @@ export class FrustumCullingManager {
         }
         testSphere.copy(entry.sphere);
         testSphere.radius += entry.margin;
-        if (frustum.intersectsSphere(testSphere)) { visible = true; break; }
+        if (!frustum.intersectsSphere(testSphere)) continue;
+        // Inside this camera's frustum. If this is the camera occlusion is
+        // evaluated from, it still has to survive the occlusion test to
+        // count as visible — but ANY other camera seeing it wins, which is
+        // what keeps the top-down capture correct.
+        if (occlusionActive && camera === this.occlusionCamera
+          && entry.occludable
+          && this.occlusion?.isOccluded(entry.sphere, this.occlusionEye)) {
+          this.occludedCount += 1;
+          continue;
+        }
+        visible = true;
+        break;
       }
       if (visible !== entry.visible) {
         entry.visible = visible;
@@ -216,7 +268,9 @@ export class FrustumCullingManager {
     }
   }
 
-  getStats(): { cameras: number; registered: number; visible: number; hidden: number } {
+  getStats(): {
+    cameras: number; registered: number; visible: number; hidden: number; occluded: number;
+  } {
     let visible = 0;
     for (const entry of this.entries) if (entry.visible) visible += 1;
     return {
@@ -224,6 +278,7 @@ export class FrustumCullingManager {
       registered: this.entries.length,
       visible,
       hidden: this.entries.length - visible,
+      occluded: this.occludedCount,
     };
   }
 

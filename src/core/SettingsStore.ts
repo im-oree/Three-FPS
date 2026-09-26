@@ -7,6 +7,7 @@
  * (documented behaviour, never a silent crash).
  */
 import { SETTINGS } from '../utils/Constants';
+import eventBus from './EventBus';
 
 export class SettingsStore {
   private readonly storageKey: string;
@@ -38,15 +39,25 @@ export class SettingsStore {
     return (key in all ? (all[key] as T) : fallback);
   }
 
-  /** Merge `{[key]: value}` into the stored object and write back synchronously. */
+  /**
+   * Merge `{[key]: value}` into the stored object and write back synchronously.
+   *
+   * Also announces the change on the event bus. Settings are written by the
+   * menu but consumed by systems built at very different times (the renderer
+   * exists before the UI; the quality manager after it), so an event is the
+   * only seam that does not force the UI to hold a reference to every system
+   * a checkbox might affect.
+   */
   set<T>(key: string, value: T): void {
     const all = this.getAll();
+    const previous = all[key];
     all[key] = value;
     try {
       localStorage.setItem(this.storageKey, JSON.stringify(all));
     } catch (err) {
       console.error(`[SettingsStore] failed to persist "${this.storageKey}":`, err);
     }
+    if (previous !== value) eventBus.emit('settings:changed', { key, value });
   }
 
   /** Clear the stored key entirely (next read falls back to defaults). */

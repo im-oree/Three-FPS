@@ -32,6 +32,95 @@ export const CLOCK = {
   FIXED_DT: 1 / 60,
 } as const;
 
+/**
+ * Menu operator showcase — the live 3D soldier standing in the main menu.
+ *
+ * Every motion here is deliberately tiny. The reference is a man standing
+ * still while a handheld camera watches him, not an idle animation loop:
+ * amplitudes above a few centimetres stop reading as "a menu" and start
+ * reading as "a character viewer".
+ */
+export const MENU_SHOWCASE = {
+  BODY_PATH: 'characters/body_standard.glb',
+  FOV: 30,
+  /** Base tone-mapping exposure; screens scale this. */
+  EXPOSURE: 0.82,
+  /**
+   * The model faces -Z, so the camera sits at NEGATIVE z to see his face.
+   * Low and slightly off-axis, looking up at chest height: the reference's
+   * hero framing, where the operator fills the centre column.
+   */
+  CAMERA_POS: [0.42, 1.30, -4.35] as const,
+  LOOK_HEIGHT: 0.98,
+  /** Body yaw (radians): a three-quarter turn reads far better than square-on. */
+  BODY_YAW: 0.30,
+  /** Slow positional drift (metres) and its speed (radians/second). */
+  DRIFT_AMPLITUDE: 0.035,
+  DRIFT_SPEED: 0.27,
+  /** Fast, tiny handheld tremor layered on top of the drift. */
+  SHAKE_AMPLITUDE: 0.0045,
+  SHAKE_SPEED: 2.3,
+  /** Breathing and weight-shift periods, deliberately incommensurable. */
+  BREATH_SPEED: 1.15,
+  SWAY_SPEED: 0.41,
+  /**
+   * Where the support hand goes when a weapon has no foregrip (a pistol):
+   * cupped just under and behind the trigger hand, in weapon space.
+   */
+  SUPPORT_HAND_CUP: [-0.055, -0.045, 0.02] as const,
+  /**
+   * Poses anchor the WEAPON in body space; both hands are then IK'd onto the
+   * grips the weapon actually has. Nothing here is a joint angle -- this rig
+   * has no rest bend for Euler angles to build on, and the arms are solved.
+   *
+   * Body faces -Z. Shoulders sit at y=1.34, x=+/-0.20. Upper arm 0.32 m,
+   * forearm 0.28 m, so reach is 0.60 m: keep the weapon inside that.
+   * Poles are DIRECTIONS the elbows bend toward: down-and-out.
+   */
+  POSE_STAND: {
+    /** Gun up across the chest, muzzle forward and slightly down. */
+    weaponPos: [0.06, 1.13, -0.24] as const,
+    weaponRot: [0.10, 0.92, 0.06] as const,
+    poleR: [0.30, -0.94, 0.16] as const,
+    poleL: [-0.26, -0.95, 0.14] as const,
+    torsoLean: 0.03,
+    chestLean: 0.04,
+    chestTwist: -0.20,
+    headTurn: 0.10,
+    headTilt: 0.02,
+  },
+  /** Tighter patrol tuck, gun higher and closer in. Loadout/operators. */
+  POSE_READY: {
+    weaponPos: [0.07, 1.19, -0.22] as const,
+    weaponRot: [0.06, 0.88, 0.04] as const,
+    poleR: [0.28, -0.95, 0.14] as const,
+    poleL: [-0.24, -0.96, 0.12] as const,
+    torsoLean: 0.05,
+    chestLean: 0.06,
+    chestTwist: -0.24,
+    headTurn: 0.07,
+    headTilt: 0.03,
+  },
+  /**
+   * Walk cycle. The reference has the operator advancing toward camera, so a
+   * slow forward march reads far better than a statue -- but the stride must
+   * stay small or he looks like he is marching on the spot.
+   */
+  WALK: {
+    /** Strides per second. Slow and heavy, not a jog. */
+    SPEED: 0.62,
+    /** Peak hip/knee swing in radians. */
+    LEG_SWING: 0.30,
+    KNEE_BEND: 0.34,
+    /** Vertical bounce of the whole body, metres. */
+    BOB: 0.018,
+    /** Side-to-side weight shift, metres. */
+    LATERAL: 0.012,
+    /** Shoulder counter-rotation against the hips. */
+    TORSO_COUNTER: 0.05,
+  },
+} as const;
+
 /** Debug overlay (utils/Debug.ts). */
 export const DEBUG = {
   /** Frames averaged for the on-screen FPS readout. */
@@ -109,6 +198,42 @@ export const DEFAULT_KEY_BINDINGS = {
   killstreakSlot1: 'KeyZ',
   killstreakSlot2: 'KeyX',
   killstreakSlot3: 'KeyB',
+  /**
+   * Vehicles (Document V). `inspect` already owns F, the shooter convention
+   * every player reaches for, so enter/exit sits on E — the other convention,
+   * and free on this keymap.
+   *
+   * Driving deliberately REUSES the on-foot movement binds (WASD) rather than
+   * introducing a second movement keymap: rebinding "left" once should steer
+   * left too. Only the controls with no on-foot equivalent get their own bind.
+   */
+  vehicleEnter: 'KeyE',
+  vehicleExit: 'KeyE',
+  /** Cycle to the next free seat without getting out. */
+  vehicleSeatSwap: 'KeyE',
+  vehicleHandbrake: 'Space',
+  vehicleHorn: 'KeyH',
+  /** Right the vehicle after a roll-over. */
+  vehicleFlip: 'KeyR',
+  /**
+   * Flight controls. Collective (climb/descend) is the one axis with no
+   * on-foot equivalent, so it gets dedicated keys; everything else reuses
+   * the movement binds exactly as driving does:
+   *
+   *   W/S          cyclic pitch  (nose down / nose up)
+   *   A/D          cyclic roll   (bank left / right)
+   *   Q/E          pedals        (yaw left / right)
+   *   Space / Ctrl collective    (climb / descend)
+   *
+   * Yaw sits on Q/E because those are already the lean binds on foot — the
+   * same fingers, the same "rotate me" meaning. E is shared with vehicleEnter
+   * but the two can never be live at once: enter is only polled when NOT
+   * seated, and the pedals only when seated as pilot.
+   */
+  vehicleCollectiveUp: 'Space',
+  vehicleCollectiveDown: 'ControlLeft',
+  vehicleYawLeft: 'KeyQ',
+  vehicleYawRight: 'KeyE',
   debugToggle: 'F3',
   debugGizmos: 'F4', // Document C §3.6 socket/joint orientation axes
   pause: 'Escape',
@@ -1069,9 +1194,21 @@ export const SCOPE = {
 /** Player health (Document 5 §8.1) — the minimal damageable-player concept. */
 export const HEALTH = {
   MAX: 100,
-  /** Seconds without taking damage before regeneration begins. */
-  REGEN_DELAY_SECONDS: 4,
-  REGEN_PER_SECOND: 12,
+  /**
+   * Seconds without taking damage before regeneration begins, then how fast
+   * it refills. Call of Duty's own numbers: MWIII uses a 3 s delay and
+   * 75 hp/s, BO6 3.5 s and 40 hp/s, MW2019 ~4.5 s. The delay is what
+   * actually governs the pace -- it is long enough that losing a fight and
+   * running away costs you the next few seconds, and short enough that a
+   * won fight does not leave you crippled.
+   *
+   * The rate must stay high. A slow trickle (the 12/s this used to be) means
+   * a player hurt once is hurt for the rest of the match, which deadlocked
+   * the bots: Retreat is available only while hurt, so a permanently-hurt
+   * bot re-picked it forever and never moved again.
+   */
+  REGEN_DELAY_SECONDS: 3.5,
+  REGEN_PER_SECOND: 60,
   /** Fraction below which the low-health vignette engages. */
   LOW_THRESHOLD: 0.3,
   /** Debug damage applied by the F6 test bind. */
@@ -1178,6 +1315,11 @@ export const KILLSTREAK = {
   MAX_CONCURRENT: 2,
   /** Fired-and-forget streaks still block re-entry for this long. */
   MIN_ACTIVATION_GAP: 0.4,
+  /**
+   * How many streaks a loadout equips, of however many exist. The HUD renders
+   * whatever the manager hands it, so raising this needs no UI change.
+   */
+  SLOTS: 3,
 } as const;
 
 /** UAV recon orbit + radar ping cadence (Document I §4). */
@@ -1217,6 +1359,31 @@ export const HELICOPTER = {
   MINIGUN_FIRE_RATE_RPM: 1800,
   MINIGUN_DAMAGE: 9,
   HEALTH: 500,
+  /**
+   * How fast the orbit centre eases toward the player, per second. Low on
+   * purpose: the gunship should cover the player's area, not be welded above
+   * their head. At 0.35 it closes ~30% of the gap each second, so a sprinting
+   * player pulls it along without it ever appearing to chase.
+   */
+  FOLLOW_RATE: 0.35,
+  /** How fast the orbit radius eases between patrol and engage widths. */
+  RADIUS_RATE: 0.8,
+  /**
+   * When engaging, how far the orbit centre shifts from the owner toward the
+   * target (0 = ignore the target, 1 = abandon the owner). 0.55 leans into
+   * the fight while keeping the aircraft tethered to the player who called
+   * it, which is the behaviour the streak is supposed to provide.
+   */
+  ENGAGE_CENTRE_BIAS: 0.55,
+  /**
+   * Target scoring. A contact this far from the owner is treated as
+   * equivalent to one at the owner's feet twice as far from the aircraft --
+   * the gunship prefers threats NEAR ITS PLAYER, and only ranges further out
+   * when nothing is close.
+   */
+  OWNER_PROXIMITY_WEIGHT: 1.8,
+  /** Contacts beyond this from the owner are ignored entirely. */
+  MAX_OWNER_DISTANCE: 120,
 } as const;
 
 /** Throwables (Document F). Shared across all three tactical devices. */
@@ -1327,12 +1494,23 @@ export const MISSILE = {
   /** Start looking almost straight down. */
   START_PITCH: -1.30,     // -74 deg
   TURN_RESPONSIVENESS: 4.2,
-  /** Launch height above the designated point. */
-  LAUNCH_ALTITUDE: 210,
+  /**
+   * Launch height above the designated point.
+   *
+   * Raised from 210 m. On a covered map the player has to line the dive up
+   * with a roof opening, and at the old altitude the roof filled the screen
+   * almost immediately -- there was no time to pick a bay, only to react.
+   * The extra height buys roughly two more seconds of approach.
+   */
+  LAUNCH_ALTITUDE: 330,
   /** Slight offset so the dive has a direction rather than being vertical. */
-  LAUNCH_STANDOFF: 46,
-  /** Roughly five seconds of control, per the real streak. */
-  FLIGHT_TIME_BUDGET: 9,
+  LAUNCH_STANDOFF: 62,
+  /**
+   * Seconds of control. Lengthened with the altitude: the budget has to cover
+   * the longer approach or the missile would run out of fuel before it
+   * reached the roof it was aimed at.
+   */
+  FLIGHT_TIME_BUDGET: 14,
   IMPACT_HOLD_SECONDS: 0.7,
   /**
    * Settle beat after the nose-cam seat, before steering handoff. The jet

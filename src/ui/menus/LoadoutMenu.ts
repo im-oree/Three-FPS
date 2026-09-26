@@ -20,12 +20,17 @@ import { SKINS } from '../../customization/SkinManager';
 import settingsStore from '../../core/SettingsStore';
 import equipmentManager from '../../equipment/EquipmentManager';
 import { ALL_THROWABLES } from '../../equipment/definitions';
+import killstreakManager from '../../killstreaks/KillstreakManager';
+import { KILLSTREAK } from '../../utils/Constants';
+import {
+  ALL_KILLSTREAKS, DEFAULT_KILLSTREAK_LOADOUT,
+} from '../../killstreaks/definitions';
 import { button, div, el, uiSound } from '../dom';
 import type SkinManager from '../../customization/SkinManager';
 import type { AssetLoader } from '../../core/AssetLoader';
 import type { Screen } from '../UIManager';
 
-const WEAPON_LABELS: Record<string, string> = {
+export const WEAPON_LABELS: Record<string, string> = {
   rifle: 'Assault Rifle',
   smg: 'Submachine Gun',
   shotgun: 'Pump Shotgun',
@@ -44,7 +49,7 @@ const MODEL_PATHS: Record<string, string> = {
 };
 
 export class LoadoutMenu implements Screen {
-  readonly element = div('screen');
+  readonly element = div('screen screen--cod screen--loadout');
   private readonly previewHost = div('loadout__preview');
   private readonly primaryCol = div();
   private readonly secondaryCol = div();
@@ -63,24 +68,48 @@ export class LoadoutMenu implements Screen {
     private readonly assetLoader: AssetLoader,
     private readonly skins: SkinManager,
   ) {
-    const inner = div('screen__inner');
-    const panel = div('panel');
-    panel.append(el('p', 'subtitle', 'Prepare'), el('h2', 'title', 'LOADOUT'));
+    // Same chrome as the rest of the lobby: a top bar with the screen name
+    // and the tab row, the working columns in the middle, key hints along the
+    // bottom. The weapon preview machinery below is untouched -- this is a
+    // reskin of the shell, not a rewrite of what works.
+    const top = div('cod__topbar');
+    const tabs = div('cod__tabs');
+    for (const [label, target] of [
+      ['PLAY', GameState.MAIN_MENU],
+      ['WEAPONS', null],
+      ['OPERATORS', GameState.OPERATORS],
+    ] as const) {
+      const tab = el('button', 'cod__tab');
+      tab.type = 'button';
+      tab.textContent = label;
+      tab.classList.toggle('cod__tab--active', target === null);
+      if (target !== null) {
+        tab.addEventListener('click', () => {
+          uiSound('back');
+          eventBus.emit('ui:navigate', { to: target });
+        });
+      }
+      tabs.appendChild(tab);
+    }
+    top.append(div('cod__mode-title', 'CREATE A CLASS'), tabs);
 
-    const grid = div('loadout__grid');
-    grid.append(this.primaryCol, this.secondaryCol, this.previewHost);
-    panel.appendChild(grid);
+    const body = div('loadout__body');
+    const columns = div('loadout__columns');
+    columns.append(this.primaryCol, this.secondaryCol);
+    body.append(columns, this.previewHost);
 
-    const footer = div('btn-row');
-    footer.style.marginTop = '22px';
-    footer.appendChild(button('Back', 'btn', () => {
+    const footer = div('cod__footer');
+    const keys = div('cod__keys');
+    const back = div('cod__key');
+    back.append(div('cod__key-cap', 'Esc'), div('cod__key-label', 'Back'));
+    keys.appendChild(back);
+    footer.append(keys, div('cod__ticker', 'Changes save as you make them.'));
+    footer.addEventListener('click', () => {
       uiSound('back');
       eventBus.emit('ui:navigate', { to: GameState.MAIN_MENU });
-    }));
-    panel.appendChild(footer);
+    });
 
-    inner.appendChild(panel);
-    this.element.appendChild(inner);
+    this.element.append(top, body, footer);
 
     this.previewCamera.position.set(0, 0.08, 0.95);
     this.previewCamera.lookAt(0, 0, 0);
@@ -143,7 +172,10 @@ export class LoadoutMenu implements Screen {
     }
     host.appendChild(list);
 
-    if (slot === 'secondary') this.buildTacticalRow(host);
+    if (slot === 'secondary') {
+      this.buildTacticalRow(host);
+      this.buildKillstreakRow(host);
+    }
     host.appendChild(div('section-heading', 'Finish'));
     const row = div('skin-row');
     for (const skin of SKINS) {
@@ -183,6 +215,71 @@ export class LoadoutMenu implements Screen {
       row.appendChild(b);
     }
     host.appendChild(row);
+  }
+
+  /**
+   * Killstreak selection: four exist, three are equipped.
+   *
+   * Modelled as a toggle set rather than three independent dropdowns, because
+   * the real constraint is "choose a subset of a fixed size" and a dropdown
+   * per slot lets the player pick the same streak three times. Clicking an
+   * equipped streak removes it; clicking an unequipped one takes the oldest
+   * slot, so the list always holds exactly KILLSTREAK.SLOTS entries and the
+   * player never has to deselect before selecting.
+   */
+  private buildKillstreakRow(host: HTMLElement): void {
+    host.appendChild(div('section-heading', 'Killstreaks (pick 3)'));
+    const equipped = this.getEquippedKillstreaks();
+
+    const row = div('btn-row');
+    for (const streak of ALL_KILLSTREAKS) {
+      const slot = equipped.indexOf(streak.id);
+      const isEquipped = slot >= 0;
+      // Show the slot number so the mapping to the 1/2/3 activation keys is
+      // visible at a glance -- the order matters at runtime.
+      const label = isEquipped
+        ? `${slot + 1}. ${streak.iconLabel}`
+        : streak.iconLabel;
+
+      const b = button(label, 'btn btn--small', () => {
+        const next = [...this.getEquippedKillstreaks()];
+        const at = next.indexOf(streak.id);
+        if (at >= 0) {
+          // Deselecting would leave a gap in a fixed-size loadout, so instead
+          // swap in the first streak that is NOT equipped. The set always
+          // holds exactly KILLSTREAK.SLOTS entries, which is what the HUD and
+          // the 1/2/3 activation keys assume.
+          const replacement = ALL_KILLSTREAKS
+            .find((k) => !next.includes(k.id));
+          if (!replacement) return;   // nothing to swap to
+          next[at] = replacement.id;
+        } else {
+          if (next.length >= KILLSTREAK.SLOTS) next.shift();
+          next.push(streak.id);
+        }
+        this.setEquippedKillstreaks(next);
+        this.rebuild();
+      });
+      if (isEquipped) b.classList.add('btn--active');
+      b.title = `${streak.displayName} — ${streak.killsRequired} kills`;
+      row.appendChild(b);
+    }
+    host.appendChild(row);
+  }
+
+  private getEquippedKillstreaks(): string[] {
+    const stored = settingsStore.get<string[]>(
+      'loadout.killstreaks', [...DEFAULT_KILLSTREAK_LOADOUT],
+    );
+    // Drop ids that no longer exist, so removing a streak from the game
+    // cannot leave a saved loadout pointing at nothing.
+    const valid = stored.filter((id) => ALL_KILLSTREAKS.some((k) => k.id === id));
+    return valid.length ? valid : [...DEFAULT_KILLSTREAK_LOADOUT];
+  }
+
+  private setEquippedKillstreaks(ids: string[]): void {
+    settingsStore.set('loadout.killstreaks', ids);
+    killstreakManager.setLoadout(ids);
   }
 
   // --- 3D preview ----------------------------------------------------------

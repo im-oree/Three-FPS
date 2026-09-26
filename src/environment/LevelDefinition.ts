@@ -38,6 +38,25 @@ export interface LevelDefinition {
   readonly spawn: readonly [number, number, number];
   readonly spawnYaw: number;
   /** Ground plane extent (metres, half-size) and its surface tag. */
+  /**
+   * Keep this level out of random/automatic map selection.
+   *
+   * Set on developer and test levels: they are reachable by explicitly
+   * choosing them in the map list, but Quick Play and any future game-mode
+   * rotation must never drop a player into one. Declared on the level itself
+   * rather than filtered at each call site, so a new caller cannot forget.
+   */
+  readonly excludeFromRotation?: boolean;
+  /**
+   * Players this map plays well with, when the mode has no opinion.
+   *
+   * Map scale decides how often people meet. Measured on the server: eight
+   * bots on the 520 m prototype sandbox average 258 m apart and manage one
+   * kill a minute, while the same eight on Shipment average 20 m and manage
+   * seven. A mode's player count is balanced for a normal-sized map, so a
+   * large one has to ask for more bodies or it plays like an empty server.
+   */
+  readonly recommendedPlayers?: number;
   readonly groundHalfSize: number;
   readonly groundSurface: string;
   readonly groundColor: number;
@@ -92,6 +111,28 @@ export interface LevelDefinition {
    * below this (bug, exploit, collision gap), they're teleported to spawn.
    */
   readonly killPlaneY?: number;
+  /**
+   * Document N §2.4: heightfield terrain collision, built at LOAD time from
+   * baked sample data rather than from the shell .glb's triangles.
+   *
+   * A 240x240 terrain mesh is ~115k triangles; a trimesh collider over that
+   * is an enormous physics asset for ground a capsule only ever touches the
+   * top of. A Rapier heightfield at 128x128 is a fraction of the memory with
+   * exact, closed-form ray queries — and unlike a trimesh it cannot have
+   * gaps. The same authored height function produced both, so collision and
+   * visuals agree by construction.
+   */
+  readonly terrainCollision?: string;
+  /**
+   * Document N §7: named callout regions (JSON polygon list). Loaded into
+   * CalloutZoneRegistry, consumed by the minimap and position readouts.
+   */
+  readonly calloutZonesFile?: string;
+  /**
+   * Document N §5.3: prop types whose instances sway in the wind (palms).
+   * Named here rather than inferred so a level can opt out cheaply.
+   */
+  readonly windSwayPropTypes?: readonly string[];
 }
 
 /** A rectangular room: four walls, open top, built from eight numbers. */
@@ -124,38 +165,42 @@ function stairs(
 }
 
 // --- WAREHOUSE: crates, catwalk supports, mantle-height stacks --------------
-const WAREHOUSE: LevelDefinition = {
-  id: 'warehouse',
-  displayName: 'Warehouse',
-  description: 'Tight crate corridors and stacked cover. Close-quarters.',
+const KILLHOUSE: LevelDefinition = {
+  id: 'killhouse',
+  // Killhouse is a small, deliberately frantic warehouse -- COD runs it as a
+  // 10-12 player brawl, and the encounter rate is the point of the map. Eight
+  // players in here still left long quiet stretches.
+  recommendedPlayers: 12,
+  displayName: 'Killhouse',
+  description: 'SAS live-fire training warehouse. Tight, symmetrical, brutal.',
   ambientSoundKey: 'ambient_warehouse',
-  skyColor: 0x2a3240,
-  fogDensity: 0.008,
-  hemiIntensity: 1.45,
-  sunIntensity: 2.2,
-  spawn: [0, 0, 22],
-  spawnYaw: 0,
-  groundHalfSize: 34,
-  worldExtents: { centerX: 0, centerZ: 0, halfWidth: 31, halfHeight: 31 },
+  // Indoors: the "sky" is only ever glimpsed through the roof bays, so the
+  // clear colour is the daylight that falls through them.
+  skyColor: 0x9fb4c6,
+  fogDensity: 0.004,
+  hemiIntensity: 1.15,
+  sunIntensity: 2.6,
+  // South platform, looking up the long axis at the tower.
+  spawn: [0, 2.5, 28],
+  spawnYaw: Math.PI,
+  groundHalfSize: 33,
+  worldExtents: { centerX: 0, centerZ: 0, halfWidth: 23, halfHeight: 32 },
   groundSurface: 'concrete',
-  groundColor: 0x7d776e,
-  boxes: [
-    ...room(-30, -30, 30, 30, 8, 1, 'metal', 0x5a6068),
-    // Crate rows, deliberately at vault (0.9) and mantle (1.8) heights.
-    { min: [-14, 0, -6], max: [-11, 0.9, -3], surface: 'wood', color: 0x6b4a2a, name: 'crate_low_a' },
-    { min: [-8, 0, -6], max: [-5, 1.4, -3], surface: 'wood', color: 0x6b4a2a, name: 'crate_mid_a' },
-    { min: [-2, 0, -6], max: [1, 1.8, -3], surface: 'wood', color: 0x6b4a2a, name: 'crate_tall_a' },
-    { min: [5, 0, -6], max: [8, 2.4, -3], surface: 'wood', color: 0x5c3f24, name: 'crate_high_a' },
-    { min: [-14, 0, 6], max: [-9, 1.1, 10], surface: 'wood', color: 0x6b4a2a, name: 'crate_low_b' },
-    { min: [8, 0, 6], max: [13, 2.0, 11], surface: 'wood', color: 0x5c3f24, name: 'crate_high_b' },
-    // Steel shelving columns.
-    { min: [16, 0, -14], max: [17, 6, -13], surface: 'metal', color: 0x3a3f47, name: 'column_a' },
-    { min: [16, 0, 4], max: [17, 6, 5], surface: 'metal', color: 0x3a3f47, name: 'column_b' },
-    { min: [-18, 0, -14], max: [-17, 6, -13], surface: 'metal', color: 0x3a3f47, name: 'column_c' },
-    ...stairs(20, -4, 8, 0.25, 0.55, 4, 'metal', 0x44484f),
-    { min: [24.4, 0, -4], max: [29, 2.0, 0], surface: 'metal', color: 0x4a4f57, name: 'platform' },
-  ],
-  dummies: [[20, 0, 18], [-20, 0, 0], [4, 0, -22]],
+  groundColor: 0x9a948a,
+  boxes: [],
+  dummies: [[-12, 0, 6], [12, 0, -6], [0, 0, -18]],
+  killstreakAirspace: {
+    centerXZ: [0, 0],
+    radius: 95,
+    // Higher than the open maps: a missile here has to be lined up with a
+    // roof bay, so the player needs altitude and time to pick one.
+    arrivalAltitude: 210,
+    uavOrbitHeight: 58,
+  },
+  shellFile: '/assets/models/environment/killhouse_shell.glb',
+  calloutZonesFile: '/assets/environment-meta/killhouse_callouts.json',
+  hdri: '/assets/hdri/tropical_firingrange.hdr',
+  hdriIntensity: 0.55,
 };
 
 // --- FACILITY: clean corridors, low tunnels, long sightlines ---------------
@@ -175,7 +220,10 @@ const FACILITY: LevelDefinition = {
   groundSurface: 'metal',
   groundColor: 0x7f858d,
   boxes: [
-    ...room(-26, -26, 26, 26, 6, 1, 'metal', 0x555d67),
+    // Flush with the ±30 ground slab (room() builds walls outside the rect,
+    // so 29 + 1 m thickness lands exactly on the edge). At 26 this left a
+    // 3 m unfenced lip and players walked off the map.
+    ...room(-29, -29, 29, 29, 6, 1, 'metal', 0x555d67),
     // Central spine wall with two doorways.
     { min: [-1, 0, -18], max: [1, 4, -6], surface: 'metal', color: 0x353b43, name: 'spine_a' },
     { min: [-1, 0, 2], max: [1, 4, 14], surface: 'metal', color: 0x353b43, name: 'spine_b' },
@@ -211,7 +259,14 @@ const TRAINING_RANGE: LevelDefinition = {
   groundSurface: 'dirt',
   groundColor: 0x8a8071,
   boxes: [
-    ...room(-34, -34, 34, 34, 7, 1, 'concrete', 0x6b7280),
+    // The wall ring must sit ON the ground slab's edge, not inside it.
+    // `room()` builds its walls OUTSIDE the rect it is given, so a half-size
+    // of 40 means the inner face belongs at 39: that leaves the 1 m wall
+    // occupying 39..40 and no floor outside it. Previously this was 34,
+    // which left a 5 m unfenced lip all the way round -- players (and bots
+    // especially, since they path to cover near the edge) simply walked off
+    // the map and fell out of the world.
+    ...room(-39, -39, 39, 39, 7, 1, 'concrete', 0x6b7280),
     // Traversal gallery: every height the vault/mantle solver cares about.
     { min: [-22, 0, -22], max: [-19, 0.9, -19], surface: 'concrete', color: 0x6a6558, name: 'ledge_0_9' },
     { min: [-17, 0, -22], max: [-14, 1.4, -19], surface: 'concrete', color: 0x6a6558, name: 'ledge_1_4' },
@@ -268,9 +323,141 @@ const SHIPMENT: LevelDefinition = {
   killPlaneY: -25,
 };
 
+// --- FIRING RANGE (Document N): the Black Ops classic. Unlike every level
+// above it, the ground is a real heightfield (authored greyscale heightmap +
+// noise, flattened under buildings and along worn paths) and the perimeter is
+// an irregular polygon rather than a square. All ~20 structures come from the
+// shared modular building kit, and their collision is derived from the kit
+// panels at build time so doors and windows are passable by construction.
+// Layout is authored in tools/lib/FiringRangeLayout.js and baked from there:
+// terrain, props, callouts and minimap bounds all read the same plan. --------
+const FIRING_RANGE: LevelDefinition = {
+  id: 'firingrange',
+  // A large outdoor range; a standard eight-player lobby spreads too thin.
+  recommendedPlayers: 14,
+  displayName: 'Firing Range',
+  description: 'Tropical military training compound. Three lanes converge on the central tower.',
+  ambientSoundKey: 'ambient_village_dusty_loop',
+  skyColor: 0x7fa3c4,
+  fogDensity: 0.0022,
+  hemiIntensity: 0.65,
+  sunIntensity: 2.3,
+  // West course entrance: on the main road, >5 m clear of every building and
+  // 14 m inside the perimeter, looking east down the lane toward the tower.
+  // (Yaw convention: forward is -Z at yaw 0 — see COORDINATE_CONVENTIONS.md.)
+  spawn: [-27.5, 0, 17.5],
+  spawnYaw: -1.06,
+  groundHalfSize: 75,
+  worldExtents: { centerX: 0, centerZ: 2, halfWidth: 50, halfHeight: 48 },
+  groundSurface: 'dirt',
+  groundColor: 0x8a6f45,
+  boxes: [],
+  dummies: [[-3, 0, -30.5], [2.2, 0, -30.5], [7.4, 0, -30.5]],
+  killstreakAirspace: { centerXZ: [0, 2], radius: 110, arrivalAltitude: 150, uavOrbitHeight: 62 },
+  shellFile: '/assets/models/environment/firingrange_shell.glb',
+  propManifest: '/assets/environment-meta/firingrange_props.json',
+  terrainCollision: '/assets/environment-meta/firingrange_terrain.json',
+  calloutZonesFile: '/assets/environment-meta/firingrange_callouts.json',
+  windSwayPropTypes: ['palm_tree_a', 'palm_tree_b', 'palm_tree_c'],
+  propPoolSizes: { oil_barrel: 16, oil_barrel_explosive: 6 },
+  hdri: '/assets/hdri/tropical_firingrange.hdr',
+  // Harsh tropical sun: the HDRI is far brighter than Shipment's overcast, so
+  // the IBL gain is pulled down harder to keep dirt and plywood from tone-
+  // mapping to white (the Document L white-out failure mode).
+  hdriIntensity: 0.42,
+  killPlaneY: -33,
+};
+
+
+/**
+ * PROTOTYPE — the vehicle development sandbox (Document V).
+ *
+ * Not a playable map: a workshop. Flat tuned ground joined to real terrain,
+ * a lake, and sections for each vehicle class reached by teleport pads.
+ * Sections are deliberately sparse; they fill in as each vehicle lands.
+ */
+const PROTOTYPE: LevelDefinition = {
+  id: 'prototype',
+  // A sandbox for new building kit pieces, not a shipped map: it loads only
+  // when picked by hand.
+  excludeFromRotation: true,
+  // 520 m across. Eight players here never find each other.
+  recommendedPlayers: 20,
+  displayName: 'Prototype Range',
+  description: 'Vehicle development sandbox: airfield, helipads, driving course, harbour.',
+  ambientSoundKey: 'ambient_village_dusty_loop',
+  skyColor: 0x8fb4d4,
+  // Low fog: this map is 520 m across and the whole point is seeing the
+  // airfield from the hub. Shipment-grade fog would erase it.
+  fogDensity: 0.0012,
+  hemiIntensity: 0.72,
+  sunIntensity: 2.5,
+  // Hub centre, facing north up the map toward the airfield.
+  spawn: [0, 0, 20],
+  spawnYaw: 0,
+  groundHalfSize: 260,
+  worldExtents: { centerX: 0, centerZ: 0, halfWidth: 260, halfHeight: 260 },
+  groundSurface: 'concrete',
+  groundColor: 0x5c6b3f,
+  boxes: [],
+  dummies: [],
+  killstreakAirspace: { centerXZ: [0, 0], radius: 300, arrivalAltitude: 180 },
+  shellFile: '/assets/models/environment/prototype_shell.glb',
+  // The shell's authored colliders only cover the built pads (runway, apron,
+  // hub, driving course). Everything between them is terrain, and without a
+  // heightfield there is literally no floor there — the first acceptance run
+  // drove the Humvee off the hub pad and it fell to y = -152.
+  terrainCollision: '/assets/environment-meta/prototype_terrain.json',
+  killPlaneY: -33,
+};
+
+/**
+ * Cache-buster for generated map previews.
+ *
+ * The previews are regenerated by `npm run generate:previews` but keep the
+ * same filenames, so a browser that cached `killhouse.jpg` from an earlier
+ * build serves the stale copy forever — or, for a map whose preview did not
+ * exist yet when the page was first loaded, serves the cached 404. That is
+ * exactly the reported symptom: "the previews didn't change, and Killhouse's
+ * doesn't show".
+ *
+ * Bump this whenever previews are regenerated. It is deliberately a hand-set
+ * constant rather than a build hash: the previews are committed assets, so
+ * their version belongs with them in source control.
+ */
+export const PREVIEW_VERSION = 4;
+
+/** URL for a level's generated aerial preview, cache-busted. */
+export function previewUrl(levelId: string): string {
+  return `assets/previews/${levelId}.jpg?v=${PREVIEW_VERSION}`;
+}
+
 export const LEVELS: readonly LevelDefinition[] = [
-  WAREHOUSE, FACILITY, TRAINING_RANGE, SHIPMENT,
+  KILLHOUSE, FACILITY, TRAINING_RANGE, SHIPMENT, FIRING_RANGE, PROTOTYPE,
 ];
+
+/**
+ * The levels RANDOM selection is allowed to pick from.
+ *
+ * Quick Play and the mode rotation must use this rather than LEVELS.
+ * `excludeFromRotation` says "never roll this by chance" -- it does NOT say
+ * "unplayable". A sandbox map is a poor thing to drop someone into without
+ * asking, but a perfectly fine thing to pick deliberately, which is why
+ * HOSTABLE_LEVELS below is a different list.
+ */
+export const ROTATION_LEVELS: readonly LevelDefinition[] =
+  LEVELS.filter((level) => !level.excludeFromRotation);
+
+/**
+ * The levels a host may choose BY NAME in a custom match.
+ *
+ * Every level with the collision and spawn data a match needs, including the
+ * ones kept out of the random pool. Separating the two lists is the whole
+ * point: "don't surprise me with it" and "I can't play it" are different
+ * statements, and the custom-match dialog is exactly where the player has
+ * asked for the map on purpose.
+ */
+export const HOSTABLE_LEVELS: readonly LevelDefinition[] = LEVELS;
 
 export function getLevel(id: string): LevelDefinition {
   return LEVELS.find((l) => l.id === id) ?? LEVELS[0];

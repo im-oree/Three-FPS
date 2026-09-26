@@ -39,12 +39,27 @@ export class HUDManager {
   private readonly ammoBlock = div('hud__ammo');
   // crosshair
   private readonly chSegs: HTMLElement[] = [];
+  private crosshair: HTMLElement | null = null;
   // markers
   private readonly hitMarker = div('hud__hitmarker');
   private readonly damageDir = div('hud__damage-dir');
   private readonly damageWedge = div('hud__damage-dir-wedge');
   private readonly vignette = div('hud__vignette');
   private readonly hint = div('hud__hint', '');
+
+  /**
+   * Hide the parts of the HUD that only mean something when the player is
+   * holding a weapon.
+   *
+   * Driving keeps the health bar, minimap and killstreaks — those still
+   * apply — but the ammo counter, crosshair and equipment readout describe a
+   * gun the player is not currently using, and the ammo block sits exactly
+   * where the vehicle HUD draws its speed and gear.
+   */
+  setWeaponHudVisible(visible: boolean): void {
+    this.ammoBlock.style.display = visible ? '' : 'none';
+    if (this.crosshair) this.crosshair.style.display = visible ? '' : 'none';
+  }
 
   private hitTimer = 0;
   private damageTimer = 0;
@@ -81,6 +96,7 @@ export class HUDManager {
 
   private buildCrosshair(): void {
     const ch = div('hud__crosshair');
+    this.crosshair = ch;
     for (const cls of ['up', 'down', 'left', 'right']) {
       const seg = div(`hud__ch-seg hud__ch-seg--${cls === 'up' || cls === 'down' ? 'v' : 'h'}`);
       seg.dataset.dir = cls;

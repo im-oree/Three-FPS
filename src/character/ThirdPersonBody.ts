@@ -55,6 +55,15 @@ export interface BodyPoseInput {
   traversalProgress: number;
   /** Which traversal clip to sample, or null when not traversing. */
   traversalKind: 'vault' | 'mantle' | null;
+  /**
+   * 0 = alive, 1 = fully collapsed.
+   *
+   * Drives the death pose. Expressed as a weight rather than a boolean so the
+   * body FALLS rather than snapping flat the instant health hits zero — an
+   * instantly-horizontal corpse is the single most obvious tell that a death
+   * is a state change rather than an event with physical consequences.
+   */
+  deathBlend?: number;
 }
 
 /** Downward ground probe, supplied by whoever owns the collision world. */
@@ -70,6 +79,16 @@ interface LegNodes {
   ikOffset: number;
   ikPitch: number;
 }
+
+/**
+ * Height the body rotates about when it collapses.
+ *
+ * Roughly the hips: a real body folds around its centre of mass, and rotating
+ * about the feet (the rig's own origin) drives the torso through the floor.
+ */
+const PIVOT_HEIGHT = 0.94;
+/** How far the lying body sits above the feet plane once flat. */
+const GROUND_CLEARANCE = 0.18;
 
 const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
@@ -419,6 +438,24 @@ export class ThirdPersonBody {
     this.updateBodyYaw(dt, input);
     this.root.position.copy(input.position);
     this.root.rotation.set(0, this.bodyYaw, 0);
+
+    // A dead body does not stand at attention. Applied to the ROOT so the
+    // whole rig tips over together, which is what makes it read as a body
+    // falling rather than a character playing a crouch.
+    //
+    // The rig's origin is at the FEET, so rotating about it swings the torso
+    // down through the floor. The body is therefore lifted to roughly hip
+    // height before the tip and lowered again after, which pivots it about
+    // its middle -- the way a falling body actually rotates.
+    const death = clamp(input.deathBlend ?? 0, 0, 1);
+    if (death > 0.001) {
+      // Ease-out: the collapse starts fast (the legs give way) and settles.
+      const fall = 1 - (1 - death) * (1 - death);
+      this.root.rotation.x = -fall * Math.PI * 0.5;
+      // Rise to the pivot, then settle onto the ground. Net effect at
+      // fall = 1: the body lies flat, its back on the floor.
+      this.root.position.y += fall * (PIVOT_HEIGHT - GROUND_CLEARANCE);
+    }
     // Eye-anchoring is applied after the full pose is built (see the call to
     // anchorEyesToCamera at the end of this method): the head is posed by the
     // aim offset, so the eye socket's offset is only known once that has run.

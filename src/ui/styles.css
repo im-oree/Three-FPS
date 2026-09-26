@@ -558,6 +558,19 @@ input[type='checkbox'] { pointer-events: auto; width: 17px; height: 17px; accent
 /* Any HUD layer can be suppressed for a cinematic without losing its own
    PLAYING-state gating — the two rules compose rather than fight. */
 .hud--suppressed { display: none !important; }
+/* In-match HUD, shown outside a match. The scoreboard, clock and killfeed
+   are not part of the main menu or the loading screen. */
+.hud--offmatch { display: none !important; }
+
+/* Loading screen: the mode, under the map name. */
+.deploy__mode {
+  margin-top: 0.15rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: var(--ui-accent);
+  text-transform: uppercase;
+}
 
 /* --- Live minimap settings preview ----------------------------------- */
 .field__section {
@@ -586,4 +599,1390 @@ input[type='checkbox'] { pointer-events: auto; width: 17px; height: 17px; accent
   color: rgba(255, 255, 255, 0.45);
   max-width: 340px;
   letter-spacing: 0.04em;
+}
+
+/* ===========================================================================
+   CALL OF DUTY LOBBY
+   ---------------------------------------------------------------------------
+   Matching the reference screenshots: a dark, desaturated, cold-blue stage
+   with a single warm accent, a top navigation bar, a left column of mode
+   cards, the live operator in the centre, and an information rail on the
+   right.
+
+   Colour discipline is what makes it read as COD rather than "a dark theme":
+   almost everything is a blue-grey in a narrow band, and the accent appears
+   only on the active element. Spreading the accent around destroys it.
+   ========================================================================= */
+
+:root {
+  --cod-bg-0: #05070a;
+  --cod-bg-1: #0a0e14;
+  --cod-panel: rgba(13, 18, 25, 0.82);
+  --cod-panel-solid: #0d1219;
+  --cod-line: rgba(150, 178, 210, 0.14);
+  --cod-line-strong: rgba(170, 196, 226, 0.3);
+  --cod-text: #e6ecf3;
+  --cod-dim: #8d9bad;
+  --cod-faint: #5d6a7a;
+  --cod-accent: #7dd3f0;
+  --cod-accent-warm: #f0a84b;
+  --cod-cod-font: 'Bebas Neue', 'Oswald', 'Segoe UI', system-ui, sans-serif;
+}
+
+.screen--cod {
+  display: none;
+  flex-direction: column;
+  background:
+    radial-gradient(ellipse 120% 80% at 50% 0%, #131c27 0%, transparent 60%),
+    radial-gradient(ellipse 90% 60% at 50% 100%, #0c141d 0%, transparent 70%),
+    linear-gradient(180deg, var(--cod-bg-1) 0%, var(--cod-bg-0) 100%);
+  color: var(--cod-text);
+  overflow: hidden;
+}
+.screen--cod.screen--active { display: flex; }
+
+/* Atmosphere: a slow drifting haze and a vignette. Without these the flat
+   gradient reads as a web page rather than a rendered backdrop. */
+.screen--cod::before {
+  content: '';
+  position: absolute;
+  inset: -10%;
+  background:
+    radial-gradient(circle at 22% 30%, rgba(90, 130, 175, 0.09) 0%, transparent 45%),
+    radial-gradient(circle at 78% 65%, rgba(200, 130, 60, 0.06) 0%, transparent 50%);
+  animation: cod-haze 34s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+.screen--cod::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 85% 75% at 50% 45%, transparent 40%, rgba(0, 0, 0, 0.72) 100%);
+  pointer-events: none;
+}
+@keyframes cod-haze {
+  from { transform: translate3d(-1.5%, -1%, 0) scale(1.02); }
+  to   { transform: translate3d(1.5%, 1%, 0) scale(1.06); }
+}
+
+/* ---------- top bar ------------------------------------------------------- */
+
+.cod__topbar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 34px;
+  padding: 14px 28px;
+  border-bottom: 1px solid var(--cod-line);
+  background: linear-gradient(180deg, rgba(8, 12, 17, 0.9) 0%, rgba(8, 12, 17, 0.35) 100%);
+  backdrop-filter: blur(3px);
+}
+
+.cod__mode-title {
+  font-family: var(--cod-cod-font);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--cod-text);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.cod__tabs { display: flex; gap: 4px; flex: 1; }
+
+.cod__tab {
+  position: relative;
+  padding: 9px 20px;
+  background: none;
+  border: none;
+  color: var(--cod-faint);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: color 0.16s ease;
+}
+.cod__tab:hover { color: var(--cod-dim); }
+.cod__tab--active { color: var(--cod-text); }
+/* The active tab is marked by a single bright underline -- the one place
+   the accent colour is allowed in the nav. */
+.cod__tab--active::after {
+  content: '';
+  position: absolute;
+  left: 14px; right: 14px; bottom: 0;
+  height: 2px;
+  background: var(--cod-accent);
+  box-shadow: 0 0 10px rgba(125, 211, 240, 0.7);
+}
+
+.cod__player { display: flex; align-items: center; gap: 12px; }
+.cod__rank { display: flex; align-items: center; gap: 8px; }
+.cod__rank-badge {
+  width: 30px; height: 30px;
+  display: grid; place-items: center;
+  border: 1px solid var(--cod-line-strong);
+  color: var(--cod-accent-warm);
+  font-size: 13px; font-weight: 700;
+  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
+  background: rgba(240, 168, 75, 0.08);
+}
+.cod__rank-label { font-size: 9px; letter-spacing: 0.18em; color: var(--cod-faint); }
+.cod__player-meta { display: flex; flex-direction: column; gap: 5px; min-width: 150px; }
+.cod__player-name { font-size: 11px; letter-spacing: 0.1em; color: var(--cod-dim); }
+.cod__xpbar { height: 3px; background: rgba(255, 255, 255, 0.08); }
+.cod__xpbar-fill { width: 34%; height: 100%; background: var(--cod-accent); }
+
+/* ---------- body ---------------------------------------------------------- */
+
+.cod__body {
+  position: relative;
+  z-index: 2;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(230px, 20%) 1fr minmax(260px, 23%);
+  gap: 18px;
+  padding: 20px 26px;
+  min-height: 0;
+}
+
+/* ---------- mode list (left) ---------------------------------------------- */
+
+.cod__modes {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.cod__modes::-webkit-scrollbar { width: 3px; }
+.cod__modes::-webkit-scrollbar-thumb { background: var(--cod-line-strong); }
+
+.cod__mode {
+  position: relative;
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 12px 15px;
+  background: linear-gradient(90deg, rgba(20, 28, 38, 0.8) 0%, rgba(14, 20, 28, 0.45) 100%);
+  border: none;
+  border-left: 2px solid transparent;
+  color: var(--cod-dim);
+  font: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+.cod__mode:hover {
+  background: linear-gradient(90deg, rgba(34, 47, 62, 0.95) 0%, rgba(18, 26, 36, 0.6) 100%);
+  border-left-color: var(--cod-accent);
+  color: var(--cod-text);
+  transform: translateX(3px);
+}
+.cod__mode--featured {
+  background: linear-gradient(90deg, rgba(30, 58, 74, 0.95) 0%, rgba(16, 30, 40, 0.6) 100%);
+  border-left-color: var(--cod-accent);
+  color: var(--cod-text);
+  padding-bottom: 14px;
+  /* Room for the tag so it cannot clip the card's right edge. */
+  padding-right: 58px;
+  overflow: visible;
+}
+.cod__mode-tag {
+  position: absolute; top: 10px; right: 10px;
+  z-index: 1;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.12em;
+  color: var(--cod-bg-0); background: var(--cod-text);
+  padding: 2px 6px;
+}
+.cod__mode-name {
+  font-family: var(--cod-cod-font);
+  font-size: 16px; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: inherit;
+}
+.cod__mode-desc { font-size: 10.5px; color: var(--cod-faint); margin-top: 3px; line-height: 1.4; }
+.cod__mode-foot {
+  margin-top: 8px; font-size: 9px; letter-spacing: 0.12em;
+  color: var(--cod-accent); text-transform: uppercase;
+}
+
+/* ---------- centre stage: the live operator ------------------------------- */
+
+.cod__stage {
+  position: relative;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+}
+/* A soft floor glow under the operator, so he is planted rather than pasted. */
+.cod__stage::after {
+  content: '';
+  position: absolute;
+  bottom: 4%; left: 50%;
+  width: 46%; height: 14%;
+  transform: translateX(-50%);
+  background: radial-gradient(ellipse, rgba(120, 165, 210, 0.13) 0%, transparent 70%);
+  pointer-events: none;
+}
+.operator-showcase {
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+
+/* ---------- right rail ----------------------------------------------------- */
+
+.cod__rail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  padding-left: 2px;
+}
+.cod__rail::-webkit-scrollbar { width: 3px; }
+.cod__rail::-webkit-scrollbar-thumb { background: var(--cod-line-strong); }
+
+.cod__card {
+  background: var(--cod-panel);
+  border: 1px solid var(--cod-line);
+  border-top: 2px solid var(--cod-line-strong);
+  padding: 13px 15px;
+  backdrop-filter: blur(4px);
+}
+.cod__card--actions { display: flex; flex-direction: column; gap: 8px; }
+.cod__card-title {
+  font-size: 12px; font-weight: 600; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--cod-accent);
+  margin-bottom: 11px;
+}
+.cod__card-body { font-size: 11px; color: var(--cod-dim); line-height: 1.5; margin-bottom: 12px; }
+
+.cod__challenge { margin-bottom: 13px; }
+.cod__challenge:last-child { margin-bottom: 0; }
+.cod__challenge-text { font-size: 11px; color: var(--cod-dim); line-height: 1.4; margin-bottom: 6px; }
+.cod__challenge-track { height: 3px; background: rgba(255, 255, 255, 0.07); margin-bottom: 4px; }
+.cod__challenge-fill { height: 100%; background: var(--cod-accent-warm); min-width: 0; }
+.cod__challenge-count { font-size: 9.5px; color: var(--cod-faint); letter-spacing: 0.06em; }
+
+/* ---------- footer --------------------------------------------------------- */
+
+.cod__footer {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 11px 28px;
+  border-top: 1px solid var(--cod-line);
+  background: rgba(6, 9, 13, 0.85);
+}
+.cod__keys { display: flex; gap: 20px; }
+.cod__key { display: flex; align-items: center; gap: 7px; }
+.cod__key-cap {
+  min-width: 22px; padding: 2px 6px;
+  border: 1px solid var(--cod-line-strong);
+  font-size: 9.5px; text-align: center; color: var(--cod-dim);
+}
+.cod__key-label { font-size: 10px; letter-spacing: 0.1em; color: var(--cod-faint); text-transform: uppercase; }
+.cod__ticker { font-size: 10.5px; color: var(--cod-faint); letter-spacing: 0.04em; }
+
+/* ---------- operator select ------------------------------------------------ */
+
+.screen--operators .cod__topbar { gap: 22px; }
+.cod__faction-row { display: flex; gap: 4px; flex: 1; }
+
+.op__body {
+  position: relative;
+  z-index: 2;
+  flex: 1;
+  padding: 22px 30px 8px;
+  min-height: 0;
+}
+/* The info block floats over the stage rather than taking a grid column, so
+   the operator is centred on the SCREEN. As a grid track the stage centred
+   itself inside its own cell, pushing him off to the right. */
+.op__info {
+  position: absolute;
+  left: 34px;
+  top: 30px;
+  width: 300px;
+  z-index: 3;
+}
+.op__body .cod__stage { width: 100%; height: 100%; }
+
+.op__info { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; padding-top: 22px; }
+.op__crest {
+  width: 78px; height: 78px;
+  display: grid; place-items: center;
+  font-family: var(--cod-cod-font);
+  font-size: 36px; font-weight: 700;
+  color: var(--cod-text);
+  background: linear-gradient(150deg, var(--crest, #23262d), rgba(6, 9, 13, 0.9));
+  border: 1px solid var(--cod-line-strong);
+  clip-path: polygon(50% 0, 100% 27%, 100% 73%, 50% 100%, 0 73%, 0 27%);
+  margin-bottom: 8px;
+}
+.op__faction { font-size: 10px; letter-spacing: 0.22em; color: var(--cod-accent); }
+.op__name {
+  font-family: var(--cod-cod-font);
+  font-size: 40px; font-weight: 700; letter-spacing: 0.1em;
+  line-height: 1;
+}
+.op__role {
+  font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--cod-accent-warm);
+}
+.op__desc { font-size: 11.5px; color: var(--cod-dim); line-height: 1.55; max-width: 34ch; margin-top: 6px; }
+
+.cod__stage--tall { min-height: 0; }
+
+.op__roster {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  gap: 8px;
+  padding: 12px 30px 20px;
+  overflow-x: auto;
+}
+.op__card {
+  flex: 0 0 104px;
+  padding: 0 0 8px;
+  background: rgba(13, 18, 25, 0.8);
+  border: 1px solid var(--cod-line);
+  color: var(--cod-dim);
+  font: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: border-color 0.15s ease, transform 0.15s ease, color 0.15s ease;
+}
+.op__card:hover { border-color: var(--cod-line-strong); color: var(--cod-text); transform: translateY(-2px); }
+.op__card--active { border-color: var(--cod-accent); color: var(--cod-text); }
+.op__card--active .op__card-swatch { filter: none; }
+.op__card-swatch { height: 66px; filter: saturate(0.55) brightness(0.72); transition: filter 0.15s ease; }
+.op__card-name {
+  font-size: 10px; letter-spacing: 0.13em; text-transform: uppercase;
+  padding-top: 7px; text-align: center;
+}
+
+/* ---------- narrow screens -------------------------------------------------- */
+
+@media (max-width: 1100px) {
+  .cod__body { grid-template-columns: minmax(190px, 26%) 1fr; }
+  .cod__rail { display: none; }
+}
+
+/* ---------- top bar without the big title --------------------------------- */
+/* The reference gives the tab row the whole left side and lets the tabs
+   breathe; a large "MULTIPLAYER" wordmark crowds them and is not present in
+   the modern layouts. */
+.cod__topbar { padding: 16px 34px; gap: 40px; }
+.cod__tabs { gap: 10px; }
+.cod__tab { padding: 10px 26px; font-size: 13px; letter-spacing: 0.17em; }
+
+/* ---------- map browser window -------------------------------------------- */
+
+.mapwin {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: rgba(3, 5, 8, 0.72);
+  backdrop-filter: blur(5px);
+  pointer-events: auto;
+  animation: mapwin-in 0.16s ease-out;
+}
+@keyframes mapwin-in { from { opacity: 0; } to { opacity: 1; } }
+
+.mapwin__panel {
+  width: min(1180px, 92vw);
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, rgba(14, 20, 28, 0.98), rgba(8, 12, 17, 0.98));
+  border: 1px solid var(--cod-line-strong);
+  border-top: 2px solid var(--cod-accent);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.7);
+}
+
+.mapwin__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--cod-line);
+}
+.mapwin__title {
+  font-family: var(--cod-cod-font);
+  font-size: 20px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+.mapwin__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 14px;
+  padding: 20px 22px;
+  overflow-y: auto;
+}
+.mapwin__foot {
+  padding: 12px 22px;
+  border-top: 1px solid var(--cod-line);
+  font-size: 10.5px;
+  color: var(--cod-faint);
+  letter-spacing: 0.05em;
+}
+
+.mapcard {
+  display: block;
+  text-align: left;
+  padding: 0 0 12px;
+  background: rgba(18, 25, 34, 0.9);
+  border: 1px solid var(--cod-line);
+  color: var(--cod-dim);
+  font: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: border-color 0.15s ease, transform 0.15s ease, color 0.15s ease;
+  overflow: hidden;
+}
+.mapcard:hover {
+  border-color: var(--cod-accent);
+  color: var(--cod-text);
+  transform: translateY(-3px);
+}
+.mapcard--active { border-color: var(--cod-accent-warm); color: var(--cod-text); }
+
+.mapcard__shot {
+  height: 132px;
+  background-size: cover;
+  background-position: center;
+  background-color: #0a0e14;
+  filter: saturate(0.85) contrast(1.06);
+  transition: filter 0.2s ease, transform 0.35s ease;
+}
+.mapcard:hover .mapcard__shot { filter: saturate(1) contrast(1.1); transform: scale(1.04); }
+.mapcard__shot--any {
+  display: grid;
+  place-items: center;
+  font-family: var(--cod-cod-font);
+  font-size: 28px;
+  letter-spacing: 0.2em;
+  color: var(--cod-faint);
+  background: repeating-linear-gradient(45deg, #10161e 0 12px, #0c1117 12px 24px);
+}
+.mapcard__name {
+  padding: 11px 13px 3px;
+  font-family: var(--cod-cod-font);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: inherit;
+}
+.mapcard__desc { padding: 0 13px; font-size: 10.5px; color: var(--cod-faint); line-height: 1.45; }
+
+.cod__mode--maps { margin-top: 10px; border-left-color: var(--cod-accent-warm); }
+
+/* ---------- deploy / loading screen ---------------------------------------- */
+
+.screen--deploy {
+  display: none;
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--cod-bg-0);
+}
+.screen--deploy.screen--active { display: block; }
+
+/* The generated aerial preview, drifting. The transform is written every
+   frame from JS as a continuous function of time, so there is no keyframe
+   wrap to snap at. Oversized so the drift never exposes an edge. */
+.deploy__backdrop {
+  position: absolute;
+  inset: -8%;
+  background-size: cover;
+  background-position: center;
+  filter: saturate(0.7) contrast(1.05) brightness(0.62);
+  will-change: transform;
+}
+.deploy__scrim {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(4, 7, 11, 0.55) 0%, rgba(4, 7, 11, 0.2) 40%, rgba(4, 7, 11, 0.94) 100%),
+    radial-gradient(ellipse 80% 70% at 50% 50%, transparent 30%, rgba(0, 0, 0, 0.6) 100%);
+}
+
+.deploy__panel {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  padding: 0 60px 58px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.deploy__kicker {
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  color: var(--cod-accent);
+  text-transform: uppercase;
+}
+.deploy__map {
+  margin: 0;
+  font-family: var(--cod-cod-font);
+  font-size: clamp(38px, 6vw, 74px);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  color: var(--cod-text);
+  text-shadow: 0 6px 30px rgba(0, 0, 0, 0.8);
+}
+.deploy__desc {
+  font-size: 12.5px;
+  color: var(--cod-dim);
+  max-width: 62ch;
+  line-height: 1.55;
+  margin-bottom: 18px;
+}
+.deploy__bar {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+.deploy__fill {
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, var(--cod-accent), #d8f0ff);
+  box-shadow: 0 0 14px rgba(125, 211, 240, 0.55);
+  /* Eased so honest jumps between stages still look smooth. */
+  transition: width 0.28s cubic-bezier(0.3, 0, 0.2, 1);
+}
+.deploy__foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 9px;
+}
+.deploy__stage {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--cod-dim);
+  text-transform: uppercase;
+}
+.deploy__pct {
+  font-family: var(--cod-mono, ui-monospace, monospace);
+  font-size: 13px;
+  color: var(--cod-text);
+}
+.deploy__fallback {
+  margin-top: 16px;
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  color: var(--cod-accent-warm);
+  text-transform: uppercase;
+  animation: deploy-pulse 1.5s ease-in-out infinite;
+}
+@keyframes deploy-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+
+/* ---------- create a class (loadout) --------------------------------------- */
+
+.screen--loadout { display: none; flex-direction: column; }
+.screen--loadout.screen--active { display: flex; }
+
+.loadout__body {
+  position: relative;
+  z-index: 2;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(380px, 34%) 1fr;
+  gap: 24px;
+  padding: 20px 30px;
+  min-height: 0;
+}
+.loadout__columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  overflow-y: auto;
+  align-content: start;
+}
+.loadout__columns::-webkit-scrollbar { width: 3px; }
+.loadout__columns::-webkit-scrollbar-thumb { background: var(--cod-line-strong); }
+
+/* The weapon turntable sits in its own lit bay, centred in the panel. */
+.screen--loadout .loadout__preview {
+  display: grid;
+  place-items: center;
+}
+.screen--loadout .loadout__preview canvas {
+  max-width: 100%;
+  max-height: 100%;
+}
+.screen--loadout .loadout__preview,
+.screen--loadout .loadout__preview-host {
+  position: relative;
+  background:
+    radial-gradient(ellipse 70% 60% at 50% 45%, rgba(40, 60, 82, 0.5) 0%, transparent 70%),
+    linear-gradient(180deg, rgba(12, 17, 24, 0.85), rgba(6, 9, 13, 0.9));
+  border: 1px solid var(--cod-line);
+  border-top: 2px solid var(--cod-line-strong);
+}
+
+/* Restyle the existing slot/option controls into COD cards without touching
+   the logic that builds them. The active class those controls actually use is
+   .btn--active (from the original stylesheet), which paints amber from
+   --ui-accent; scoping a COD override here keeps the lobby's cyan accent
+   consistent without touching shared button styles used by other screens. */
+.screen--loadout .loadout__col { display: flex; flex-direction: column; gap: 7px; }
+.screen--loadout .section-heading {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--cod-accent);
+  margin: 10px 0 5px;
+}
+.screen--loadout .btn {
+  background: linear-gradient(90deg, rgba(20, 28, 38, 0.85), rgba(14, 20, 28, 0.5));
+  border: 1px solid var(--cod-line);
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  color: var(--cod-dim);
+  letter-spacing: 0.1em;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.screen--loadout .btn:hover {
+  border-left-color: var(--cod-accent);
+  color: var(--cod-text);
+  background: linear-gradient(90deg, rgba(34, 47, 62, 0.95), rgba(18, 26, 36, 0.6));
+}
+.screen--loadout .btn--active {
+  border-color: var(--cod-line-strong);
+  border-left-color: var(--cod-accent);
+  background: linear-gradient(90deg, rgba(30, 58, 74, 0.95), rgba(16, 30, 40, 0.6));
+  color: var(--cod-text);
+}
+.screen--loadout .skin-swatch--active { outline: 2px solid var(--cod-accent); outline-offset: 1px; }
+
+.screen--loadout .cod__footer { cursor: pointer; }
+
+/* ---------- death overlay + respawn countdown ----------------------------- */
+/*
+ * An OVERLAY, not a .screen: the death camera is rendering the body behind it,
+ * so the canvas must stay visible. Hence no opaque background — only a
+ * vignette that darkens the edges and lifts the text off the scene.
+ */
+
+.death-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  z-index: 24;
+  background: radial-gradient(
+    ellipse at 50% 45%,
+    rgba(0, 0, 0, 0) 32%,
+    rgba(80, 8, 8, 0.28) 74%,
+    rgba(40, 0, 0, 0.62) 100%
+  );
+  animation: death-fade-in 0.35s ease-out both;
+}
+
+@keyframes death-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.death-banner {
+  margin-top: 5.5vh;
+  font-size: 0.82rem;
+  letter-spacing: 0.42em;
+  font-weight: 700;
+  color: var(--ui-accent);
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);
+}
+
+.death-card {
+  margin-top: 7vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 0 2rem;
+}
+
+.death-title {
+  font-size: 0.78rem;
+  letter-spacing: 0.34em;
+  color: rgba(232, 234, 238, 0.68);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.9);
+}
+
+.death-killer {
+  margin-top: 0.45rem;
+  font-size: 2.6rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  line-height: 1.05;
+  text-shadow: 0 3px 18px rgba(0, 0, 0, 0.95);
+}
+
+/* The killer's remaining health — "you nearly had them". */
+.death-killer-health {
+  margin-top: 0.7rem;
+  width: 190px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.death-killer-health-fill {
+  height: 100%;
+  width: 100%;
+  background: var(--ui-good);
+  transition: width 0.25s ease-out;
+}
+
+.death-killer-health-fill.critical { background: var(--ui-danger); }
+
+.death-detail {
+  margin-top: 0.75rem;
+  font-size: 0.74rem;
+  letter-spacing: 0.2em;
+  color: var(--ui-dim);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.9);
+}
+
+.death-countdown {
+  position: absolute;
+  bottom: 12vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.death-countdown-label {
+  font-size: 0.68rem;
+  letter-spacing: 0.32em;
+  color: rgba(232, 234, 238, 0.6);
+}
+
+.death-countdown-number {
+  font-family: var(--ui-mono);
+  font-size: 3.4rem;
+  font-weight: 700;
+  line-height: 1;
+  margin-top: 0.3rem;
+  color: var(--ui-text);
+  text-shadow: 0 3px 18px rgba(0, 0, 0, 0.95);
+}
+
+/* ---------- killfeed ------------------------------------------------------ */
+
+.killfeed {
+  position: absolute;
+  top: 3.2rem;
+  right: 1.6rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  pointer-events: none;
+}
+
+.killfeed__row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 3px 8px;
+  background: rgba(8, 10, 14, 0.58);
+  border-radius: 2px;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  animation: killfeed-in 0.18s ease-out both;
+}
+
+@keyframes killfeed-in {
+  from { opacity: 0; transform: translateX(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* A row the local player is part of. COD lights these so your own kills are
+   findable in a feed that is otherwise other people's. */
+.killfeed__row--mine {
+  background: rgba(228, 162, 42, 0.16);
+  box-shadow: inset 2px 0 0 var(--ui-accent);
+}
+
+.killfeed__name { font-weight: 700; }
+/* Colour by SIDE, as COD does: your team blue, theirs red, you highlighted. */
+.killfeed__name--ally { color: #6fb2ff; }
+.killfeed__name--enemy { color: #e8573f; }
+.killfeed__name--you { color: #ffffff; }
+
+/* The weapon silhouette. Masked, not <img>, so one SVG inherits the row's
+   colour instead of shipping a red, blue and white copy of every gun. */
+.killfeed__icon {
+  width: 34px;
+  height: 11px;
+  flex: none;
+  background-color: rgba(228, 232, 238, 0.92);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+
+.killfeed__headshot { font-size: 0.66rem; line-height: 1; }
+
+/* ---------- match clock / score banner ------------------------------------ */
+
+.match-bar {
+  position: absolute;
+  top: 0.8rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  padding: 0.35rem 1.1rem;
+  background: rgba(8, 10, 14, 0.55);
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+.match-bar__clock {
+  font-family: var(--ui-mono);
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.match-bar__clock--urgent { color: var(--ui-danger); }
+
+.match-bar__score {
+  font-family: var(--ui-mono);
+  font-size: 1.05rem;
+  font-weight: 700;
+  min-width: 2.2rem;
+  text-align: center;
+}
+
+.match-bar__score--a { color: var(--ui-accent); }
+.match-bar__score--b { color: #6fa8d8; }
+.match-bar__mode {
+  font-size: 0.62rem;
+  letter-spacing: 0.24em;
+  color: var(--ui-dim);
+}
+
+/* The pre-match countdown, centre screen. */
+.match-countdown {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.match-countdown__number {
+  font-family: var(--ui-mono);
+  font-size: 6rem;
+  font-weight: 800;
+  line-height: 1;
+  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.95);
+  animation: countdown-pop 0.9s ease-out both;
+}
+
+@keyframes countdown-pop {
+  from { opacity: 0; transform: scale(1.5); }
+  30% { opacity: 1; transform: scale(1); }
+  to { opacity: 0.85; transform: scale(1); }
+}
+
+.match-countdown__label {
+  margin-top: 0.6rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.34em;
+  color: var(--ui-dim);
+}
+
+/* ---------- final scoreboard (debrief) ------------------------------------ */
+
+.debrief-placement {
+  margin-top: 0.2rem;
+  font-size: 1.0rem;
+  font-weight: 800;
+  letter-spacing: 0.24em;
+  color: var(--ui-dim);
+}
+
+.debrief-placement--win { color: var(--ui-accent); }
+
+.scoreboard {
+  margin-top: 1.1rem;
+  width: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scoreboard__row {
+  display: grid;
+  grid-template-columns: 1fr 44px 44px 58px 68px;
+  align-items: center;
+  padding: 5px 10px;
+  background: rgba(255, 255, 255, 0.035);
+  border-radius: 2px;
+  font-size: 0.82rem;
+}
+
+.scoreboard__row--head {
+  background: none;
+  font-size: 0.62rem;
+  letter-spacing: 0.2em;
+  color: var(--ui-dim);
+  padding-bottom: 2px;
+}
+
+/* Your own row is picked out, so the board answers "how did I do" instantly. */
+.scoreboard__row--you {
+  background: var(--ui-accent-dim);
+  box-shadow: inset 2px 0 0 var(--ui-accent);
+}
+
+.scoreboard__row--team-a { box-shadow: inset 2px 0 0 var(--ui-accent); }
+.scoreboard__row--team-b { box-shadow: inset 2px 0 0 #6fa8d8; }
+
+.scoreboard__cell--num {
+  text-align: right;
+  font-family: var(--ui-mono);
+}
+
+.scoreboard__cell--name {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.scoreboard__rank {
+  font-family: var(--ui-mono);
+  font-size: 0.7rem;
+  color: var(--ui-dim);
+  min-width: 1.1rem;
+}
+
+.scoreboard__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
+
+/* ---------- custom match window ------------------------------------------ */
+
+.mapwin__panel--custom { max-width: 720px; }
+
+.custom__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0.4rem 0;
+  max-height: 58vh;
+  overflow-y: auto;
+}
+
+.custom__row {
+  display: grid;
+  grid-template-columns: 116px 1fr;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 5px 4px;
+}
+
+.custom__row:nth-child(odd) { background: rgba(255, 255, 255, 0.03); }
+
+.custom__label {
+  font-size: 0.62rem;
+  letter-spacing: 0.2em;
+  color: var(--ui-dim);
+}
+
+.custom__choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.custom__choice {
+  pointer-events: auto;
+  cursor: pointer;
+  padding: 4px 10px;
+  font-family: var(--ui-font);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  color: var(--ui-dim);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid transparent;
+  border-radius: 2px;
+  transition: background 0.12s, color 0.12s;
+}
+
+.custom__choice:hover {
+  background: rgba(255, 255, 255, 0.11);
+  color: var(--ui-text);
+}
+
+.custom__choice--on {
+  background: var(--ui-accent-dim);
+  border-color: var(--ui-accent);
+  color: var(--ui-accent);
+  font-weight: 700;
+}
+
+.custom__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.custom__summary {
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  color: var(--ui-dim);
+}
+
+.cod__mode--custom { border-left: 2px solid var(--ui-accent); }
+
+/* --- server browser ------------------------------------------------------
+   A dense table, like the Black Ops / MW browser it is modelled on: the four
+   things a player decides on (name, map+mode, population, ping) in fixed
+   columns, so rows can be scanned vertically rather than read. */
+.mapwin__panel--browser { max-width: 1080px; }
+
+.browser__header,
+.browser__row {
+  display: grid;
+  grid-template-columns: minmax(0, 2.4fr) minmax(0, 1.3fr) minmax(0, 1fr) 110px 120px;
+  align-items: center;
+  gap: 12px;
+  padding: 0 18px;
+}
+
+.browser__header {
+  height: 34px;
+  border-bottom: 1px solid var(--cod-line-strong);
+  color: var(--cod-faint);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.browser__rows {
+  flex: 1;
+  min-height: 260px;
+  max-height: 52vh;
+  overflow-y: auto;
+}
+
+.browser__row {
+  width: 100%;
+  height: 46px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--cod-line);
+  border-left: 2px solid transparent;
+  color: var(--cod-text);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.browser__row:hover { background: rgba(125, 211, 240, 0.07); }
+
+.browser__row--on {
+  background: rgba(125, 211, 240, 0.13);
+  border-left-color: var(--cod-accent);
+}
+
+/* Full games stay visible — knowing the game exists matters — but read as
+   unavailable rather than failing silently when JOIN is pressed. */
+.browser__row--full { opacity: 0.45; }
+
+.browser__col {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser__col--name { display: flex; align-items: center; gap: 8px; }
+.browser__col--players,
+.browser__col--ping {
+  font-family: var(--ui-mono);
+  font-variant-numeric: tabular-nums;
+}
+.browser__col--ping { display: flex; align-items: center; gap: 8px; }
+.browser__col--map,
+.browser__col--mode { color: var(--cod-dim); }
+
+.browser__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.browser__lock,
+.browser__live {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 2px;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+}
+
+.browser__lock { background: rgba(141, 155, 173, 0.2); color: var(--cod-dim); }
+.browser__live { background: rgba(216, 87, 75, 0.9); color: #fff; }
+
+/* Four-bar signal glyph: a number alone is hard to scan at a glance. */
+.browser__ping-text { min-width: 34px; text-align: right; }
+
+.browser__bars { display: flex; align-items: flex-end; gap: 2px; height: 14px; }
+.browser__bar {
+  width: 3px;
+  background: rgba(255, 255, 255, 0.14);
+}
+.browser__bar:nth-child(1) { height: 4px; }
+.browser__bar:nth-child(2) { height: 7px; }
+.browser__bar:nth-child(3) { height: 10px; }
+.browser__bar:nth-child(4) { height: 14px; }
+
+.browser__bars--good .browser__bar--on { background: var(--cod-good, #6fc98a); }
+.browser__bars--ok .browser__bar--on { background: var(--cod-accent-warm); }
+.browser__bars--bad .browser__bar--on { background: var(--ui-danger); }
+
+.browser__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 260px;
+  text-align: center;
+}
+
+.browser__empty-title {
+  color: var(--cod-dim);
+  font-size: 18px;
+  letter-spacing: 0.18em;
+}
+
+.browser__empty-hint {
+  max-width: 420px;
+  color: var(--cod-faint);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.browser__foot { justify-content: space-between; }
+.browser__actions { display: flex; align-items: center; gap: 8px; }
+
+.browser__status {
+  color: var(--cod-faint);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+.browser__status--bad { color: var(--ui-danger); }
+
+/* The action button's label changes length (START MATCH / HOST MATCH); keep
+   it on one line so the footer does not reflow when VISIBILITY is toggled. */
+.custom__foot .btn { white-space: nowrap; }
+
+/* ---------- theatre (replay viewer) --------------------------------------- */
+/* The viewport stays visible behind everything here: the replay IS the
+   screen, so the shell is edge-anchored bars rather than a centred panel. */
+.theatre {
+  display: none;
+  pointer-events: none;
+}
+.theatre--open { display: block; }
+
+.theatre__bar {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: linear-gradient(rgba(6, 8, 11, 0.9), rgba(6, 8, 11, 0));
+  pointer-events: auto;
+}
+.theatre__title {
+  font-size: 14px;
+  letter-spacing: 3px;
+  font-weight: 700;
+  color: var(--ui-accent);
+}
+.theatre__spacer { flex: 1; }
+
+.theatre__btn {
+  pointer-events: auto;
+  background: rgba(16, 19, 25, 0.88);
+  border: 1px solid var(--ui-line);
+  color: var(--ui-text);
+  font-family: var(--ui-font);
+  font-size: 12px;
+  letter-spacing: 1px;
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.theatre__btn:hover { background: var(--ui-accent-dim); border-color: var(--ui-accent); }
+.theatre__btn--ghost { opacity: 0.75; }
+.theatre__btn--play { min-width: 46px; font-size: 14px; }
+.theatre__btn--recording {
+  border-color: var(--ui-danger);
+  color: var(--ui-danger);
+  animation: theatre-pulse 1.2s ease-in-out infinite;
+}
+@keyframes theatre-pulse { 50% { opacity: 0.45; } }
+
+.theatre__panel--roster {
+  position: absolute;
+  top: 58px; left: 16px;
+  width: 190px;
+  max-height: 58vh;
+  overflow-y: auto;
+  background: var(--ui-panel);
+  border: 1px solid var(--ui-line);
+  padding: 8px;
+  pointer-events: auto;
+}
+.theatre__panel-title {
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--ui-dim);
+  margin-bottom: 6px;
+}
+.theatre__roster-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-left: 2px solid transparent;
+  color: var(--ui-text);
+  font-family: var(--ui-font);
+  font-size: 12px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+.theatre__roster-row:hover { background: rgba(255, 255, 255, 0.06); }
+.theatre__roster-row--on {
+  border-left-color: var(--ui-accent);
+  background: var(--ui-accent-dim);
+  color: var(--ui-accent);
+}
+/* A dead player is dimmed, not hidden: watching a body is a valid shot. */
+.theatre__roster-row--dead { opacity: 0.45; }
+.theatre__empty { font-size: 11px; color: var(--ui-dim); padding: 6px 8px; }
+
+.theatre__transport {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px 18px;
+  background: linear-gradient(rgba(6, 8, 11, 0), rgba(6, 8, 11, 0.92));
+  pointer-events: auto;
+}
+
+.theatre__scrub {
+  position: relative;
+  flex: 1;
+  height: 26px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--ui-line);
+  cursor: pointer;
+}
+.theatre__markers { position: absolute; inset: 0; }
+.theatre__marker {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--ui-dim);
+}
+.theatre__marker:hover { width: 4px; margin-left: -2px; }
+.theatre__marker--kill { background: var(--ui-danger); }
+.theatre__marker--damage { background: rgba(240, 160, 75, 0.5); top: 60%; }
+.theatre__marker--other { background: var(--ui-good); top: 40%; }
+
+.theatre__playhead {
+  position: absolute;
+  top: -3px; bottom: -3px;
+  width: 2px;
+  margin-left: -1px;
+  background: #fff;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.8);
+  pointer-events: none;
+}
+
+.theatre__time {
+  font-family: var(--ui-mono);
+  font-size: 12px;
+  color: var(--ui-dim);
+  min-width: 132px;
+  text-align: center;
+}
+
+.theatre__speeds { display: flex; gap: 4px; }
+.theatre__speed {
+  pointer-events: auto;
+  background: rgba(16, 19, 25, 0.88);
+  border: 1px solid var(--ui-line);
+  color: var(--ui-dim);
+  font-family: var(--ui-mono);
+  font-size: 11px;
+  padding: 6px 9px;
+  cursor: pointer;
+}
+.theatre__speed--on {
+  border-color: var(--ui-accent);
+  color: var(--ui-accent);
+  background: var(--ui-accent-dim);
+}
+
+.theatre__hint {
+  position: absolute;
+  left: 50%;
+  bottom: 62px;
+  transform: translateX(-50%);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: var(--ui-dim);
+  opacity: 0.6;
+  white-space: nowrap;
+  pointer-events: none;
 }

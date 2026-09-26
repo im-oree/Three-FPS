@@ -16,7 +16,13 @@ export type InputContext =
   | 'tabletUI'
   | 'groundTargeting'
   | 'missileControl'
-  | 'cinematic';
+  | 'cinematic'
+  /**
+   * Document V: the player is in a vehicle. WASD steers instead of walking,
+   * and VehicleCamera owns the transform — PlayerCamera must not write the
+   * player-eye pose over it, exactly as for 'missileControl'.
+   */
+  | 'vehicle';
 
 export class InputContextStack {
   private readonly stack: InputContext[] = ['gameplay'];

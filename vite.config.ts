@@ -21,6 +21,24 @@ export default defineConfig({
     // The preview is served through an external https://<port>-<sandbox>.e2b.app
     // host; Vite's DNS-rebinding guard would otherwise reject those Host headers.
     allowedHosts: true,
+    proxy: {
+      /**
+       * The signalling backend, on the page's own origin.
+       *
+       * The player's browser is NOT the machine running the dev server, so
+       * it cannot dial 127.0.0.1 to reach the backend. Proxying through the
+       * origin the page was served from is the only address that always
+       * works -- in the sandbox preview, on a LAN, and in production.
+       */
+      '/lobby': {
+        target: 'ws://127.0.0.1:8137',
+        ws: true,
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/lobby/, ''),
+      },
+      '/games': { target: 'http://127.0.0.1:8137', changeOrigin: true },
+      '/health': { target: 'http://127.0.0.1:8137', changeOrigin: true },
+    },
   },
 
   preview: {

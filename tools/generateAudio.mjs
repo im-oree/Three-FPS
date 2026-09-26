@@ -397,6 +397,40 @@ w('ambient/ambient_facility.wav', ambience({ secs: 8, base: 62, noiseLevel: 0.26
 w('ambient/ambient_range.wav', ambience({ secs: 8, base: 40, noiseLevel: 0.30, cutoff: 1400,
   partials: [1, 1.49, 2.51] }));
 
+// Document N: Firing Range is an outdoor tropical compound, so its bed is
+// built the opposite way round from the indoor levels — barely any tonal
+// content (no room resonance outdoors), and the character carried almost
+// entirely by wide, slow-moving filtered noise standing in for wind through
+// the treeline. A slow LFO on the cutoff makes it breathe in gusts, which is
+// what stops 12 seconds of noise reading as tape hiss.
+w('ambient/ambient_village_dusty_loop.wav', (() => {
+  const secs = 12;
+  let lpWind = 0;
+  let lpGust = 0;
+  const buf = render(secs, (t) => {
+    // Gust envelope: two incommensurate slow sines, both whole-cycle over the
+    // loop so the seam stays continuous.
+    const g1 = Math.sin(2 * Math.PI * (2 / secs) * t);
+    const g2 = Math.sin(2 * Math.PI * (3 / secs) * t + 1.7);
+    const gust = 0.55 + 0.45 * (g1 * 0.6 + g2 * 0.4);
+    lpWind = lowpass(noise(), lpWind, 380 + gust * 520);
+    lpGust = lowpass(lpWind, lpGust, 140);
+    // A very low, very quiet tonal floor: distant plant/heat haze. Snapped to
+    // whole cycles for the same loop-continuity reason.
+    const hum = Math.sin(2 * Math.PI * (Math.round(31 * secs) / secs) * t) * 0.05
+      + Math.sin(2 * Math.PI * (Math.round(47 * secs) / secs) * t) * 0.03;
+    // Sparse high chatter — insects/birds, deliberately faint.
+    const chirp = noise() * 0.02 * Math.max(0, Math.sin(2 * Math.PI * 7.13 * t)) ** 8;
+    return lpGust * 1.6 * gust + lpWind * 0.22 + hum + chirp;
+  });
+  const xf = Math.floor(0.4 * RATE);
+  for (let i = 0; i < xf; i += 1) {
+    const a = i / xf;
+    buf[buf.length - xf + i] = buf[buf.length - xf + i] * (1 - a) + buf[i] * a;
+  }
+  return normalize(buf, 0.30);
+})());
+
 const totalBytes = written.reduce((a, f) => a + f.bytes, 0);
 for (const f of written) {
   console.log(`[generateAudio] ${f.name.padEnd(42)} ${String(f.secs).padStart(6)}s  ${(f.bytes / 1024).toFixed(1)} KiB`);
