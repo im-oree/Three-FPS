@@ -17,7 +17,10 @@ const {
   registerBuiltinCameraProfiles,
 } = await buildServerBundle();
 
-const { ClipPlayer, KillcamDirector, frameSubject, framePair } = await buildReplayBundle();
+const {
+  ClipPlayer, KillcamDirector, frameSubject, framePair,
+  solveCameraPosition, rayProbeFrom, THREE,
+} = await buildReplayBundle();
 const {
   encodeClip, decodeClip, packQuaternion, unpackQuaternion, FORMAT_VERSION,
 } = await buildFormatBundle();
@@ -757,6 +760,161 @@ console.log('\n[22] A teleport is cut, not flown');
   const walked = walker.sample().players[0].pos[0];
   check('but a normal stride still does', walked > 0 && walked < 0.2,
     `x=${walked.toFixed(3)}`);
+}
+
+
+// --- [23] anti-clip solver ---------------------------------------------------
+// The director asks for an angle; the solver's job is to return one that can
+// actually SEE the subject, staying as close to the request as the geometry
+// allows. Every case below uses analytic fake geometry rather than a loaded
+// level, so a failure points at the solver and not at a map.
+{
+  console.log('\n[23] anti-clip solver');
+
+  /** A single infinite wall plane at x = `wallX`. */
+  const wallAt = (wallX) => ({
+    castStatic(from, dir, max) {
+      if (Math.abs(dir.x) < 1e-9) return null;
+      const t = (wallX - from.x) / dir.x;
+      if (t < 0 || t > max) return null;
+      return { toi: t };
+    },
+  });
+  /** Nothing anywhere. */
+  const openAir = { castStatic: () => null };
+  /** Sealed: every ray hits immediately, from any direction. */
+  const solidRock = { castStatic: () => ({ toi: 0.01 }) };
+
+  const target = new THREE.Vector3(0, 1.1, 0);
+  const planar = (v) => Math.hypot(v.x - target.x, v.z - target.z);
+
+  const clear = solveCameraPosition(openAir, {
+    desired: new THREE.Vector3(-3.2, 3.3, 0), target,
+  });
+  check('a clear line is left exactly alone', clear.method === 'clear'
+    && clear.position.distanceTo(new THREE.Vector3(-3.2, 3.3, 0)) < 1e-6,
+    clear.method);
+
+  // No probe at all: the solver must not invent obstructions it cannot see.
+  const noProbe = solveCameraPosition(rayProbeFrom(null), {
+    desired: new THREE.Vector3(-3.2, 3.3, 0), target,
+  });
+  check('a null probe returns the desired position untouched',
+    noProbe.method === 'clear' && noProbe.position.x === -3.2);
+
+  // Wall between camera and subject, with room to pull in front of it.
+  const pulled = solveCameraPosition(wallAt(-2), {
+    desired: new THREE.Vector3(-6, 2.4, 0), target,
+  });
+  check('a blocked shot is pulled in front of the wall',
+    pulled.method === 'pulled-back' && pulled.position.x > -2,
+    `${pulled.method} x=${pulled.position.x.toFixed(2)}`);
+  check('...and the pulled-back shot can see the subject',
+    Math.abs(pulled.position.x) < 2 && planar(pulled.position) > 1.2,
+    `dist=${planar(pulled.position).toFixed(2)} m`);
+
+  // Pullback preserves the bearing exactly -- that is why it is preferred.
+  const bearingOf = (v) => Math.atan2(v.x - target.x, v.z - target.z);
+  check('...and preserves the requested bearing',
+    Math.abs(bearingOf(pulled.position) - bearingOf(new THREE.Vector3(-6, 2.4, 0))) < 1e-6);
+
+  // The wall is so close that pulling back leaves no shot at all, so the
+  // solver has to go round it instead. This is the case the live cinematic
+  // camera cannot handle and the reason this file exists.
+  const reangled = solveCameraPosition(wallAt(-0.35), {
+    desired: new THREE.Vector3(-4, 2.4, 0), target,
+  });
+  check('an unpullable wall makes the camera go AROUND, not closer',
+    reangled.method === 'reangled', reangled.method);
+  check('...and the reangled shot keeps its distance from the subject',
+    Math.abs(planar(reangled.position) - 4) < 0.6,
+    `dist=${planar(reangled.position).toFixed(2)} m`);
+  check('...and it ends up on the unobstructed side of the wall',
+    reangled.position.x > -0.35, `x=${reangled.position.x.toFixed(2)}`);
+
+  // Scored, not first-found: the answer must be the CLOSEST clear angle to
+  // the one asked for, otherwise the camera jumps to an arbitrary side and
+  // jumps again the moment the subject moves. Brute-force the true optimum
+  // at a much finer resolution than the solver samples and confirm it did
+  // not settle for a worse angle than it had to.
+  //
+  // (The wall here sits 35 cm from the subject, so the honest answer really
+  // is a large swing -- which is exactly why the bound has to be computed
+  // from the geometry rather than guessed.)
+  const wall = wallAt(-0.35);
+  let trueBest = Infinity;
+  for (let deg = 0; deg <= 180; deg += 0.5) {
+    const spread = deg * Math.PI / 180;
+    for (const sign of [1, -1]) {
+      const angle = Math.atan2(-4, 0) + spread * sign;
+      const candidate = new THREE.Vector3(
+        target.x + Math.sin(angle) * 4, target.y + 1.3, target.z + Math.cos(angle) * 4,
+      );
+      const away = new THREE.Vector3().subVectors(candidate, target);
+      const len = away.length();
+      const hit = wall.castStatic(target, away.divideScalar(len), len);
+      if (!hit || hit.toi >= len - 1e-3) trueBest = Math.min(trueBest, spread);
+    }
+  }
+  // One sample step is 135deg/7; allow that plus the height-dodge weighting.
+  const step = (Math.PI * 0.75) / 7;
+  check('...and deviates as little as the geometry allows',
+    reangled.deviation <= trueBest + step + 0.25,
+    `${(reangled.deviation * 180 / Math.PI).toFixed(0)}deg chosen vs `
+    + `${(trueBest * 180 / Math.PI).toFixed(0)}deg optimum`);
+
+  // Sealed geometry: no angle works. Better a tight shot than a wall.
+  const stuck = solveCameraPosition(solidRock, {
+    desired: new THREE.Vector3(-4, 2.4, 0), target,
+  });
+  check('fully enclosed geometry falls back instead of failing',
+    stuck.method === 'fallback', stuck.method);
+  check('...and never returns a position inside the subject',
+    stuck.position.distanceTo(target) > 0.5,
+    `${stuck.position.distanceTo(target).toFixed(2)} m`);
+
+  // A camera under the floor is worse than a bad angle.
+  const lowered = solveCameraPosition(wallAt(-2), {
+    desired: new THREE.Vector3(-6, -5, 0), target, minHeight: 0.4,
+  });
+  check('no solution is ever placed below the height floor',
+    lowered.position.y >= 0.4, `y=${lowered.position.y.toFixed(2)}`);
+
+  // Determinism: the same request twice must not wobble, or a stationary
+  // subject would produce a vibrating shot.
+  const a = solveCameraPosition(wallAt(-0.35), {
+    desired: new THREE.Vector3(-4, 2.4, 0), target,
+  });
+  const b = solveCameraPosition(wallAt(-0.35), {
+    desired: new THREE.Vector3(-4, 2.4, 0), target,
+  });
+  check('the solver is deterministic for an unchanged request',
+    a.position.distanceTo(b.position) < 1e-9);
+
+  // Walking the subject past an obstruction must not teleport the camera
+  // between wildly different sides on consecutive frames.
+  let worstJump = 0;
+  let previous = null;
+  for (let i = 0; i <= 40; i += 1) {
+    const z = -3 + (i / 40) * 6;
+    const subject = new THREE.Vector3(0, 1.1, z);
+    const desired = new THREE.Vector3(-4, 2.4, z);
+    const solved = solveCameraPosition(wallAt(-1.6), { desired, target: subject });
+    if (previous) worstJump = Math.max(worstJump, solved.position.distanceTo(previous));
+    previous = solved.position;
+  }
+  check('a subject walking past cover never jumps the camera more than a stride',
+    worstJump < 1.5, `worst frame-to-frame move ${worstJump.toFixed(2)} m`);
+
+  // Cost: playback is supposed to be CHEAPER than live play, so the solver
+  // must not be casting hundreds of rays per frame.
+  let rays = 0;
+  const counting = {
+    castStatic(from, dir, max) { rays += 1; return wallAt(-0.35).castStatic(from, dir, max); },
+  };
+  solveCameraPosition(counting, { desired: new THREE.Vector3(-4, 2.4, 0), target });
+  check('a worst-case solve stays within a sane ray budget', rays <= 64,
+    `${rays} rays`);
 }
 
 console.log(`\nREPLAY / KILLCAM: ${passed}/${passed + failed} checks passed`);

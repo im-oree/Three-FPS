@@ -128,6 +128,10 @@ import { WORLD_PASS_MASK } from './core/RenderLayers';
 import DeathCamera from './player/DeathCamera';
 import ClientRecorder from './replay/ClientRecorder';
 import ReplayCodec from './replay/ReplayCodec';
+import FreeCameraRig from './replay/FreeCameraRig';
+import TheatreScreen from './ui/menus/TheatreScreen';
+import { solveCameraPosition, rayProbeFrom } from './replay/AntiClipSolver';
+import { frameSubject } from './replay/FollowCameraRig';
 import ClipPlayer from './replay/ClipPlayer';
 import KillcamDirector from './replay/KillcamDirector';
 import { buildKillcamPlan } from './server/CameraDirector';
@@ -920,7 +924,9 @@ engine.setPostRenderHook((renderer) => {
   // Document V: riding a vehicle is a forced third-person exterior view, so
   // the first-person arms/weapon pass is skipped for the same reason as 3PS.
   // Without this the rifle floats in front of the chase camera.
-  if (perspective.viewmodelVisible && !vehicleSystem.isRiding) {
+  // ...and the theatre is an exterior camera by definition: the local
+  // player's arms belong to a body the director may not even be looking at.
+  if (perspective.viewmodelVisible && !vehicleSystem.isRiding && !theatreOpen) {
     viewmodel.renderPass(renderer, engine.sceneManager.getScene());
   }
   drawCalls.viewmodel = renderer.info.render.calls;
@@ -1244,6 +1250,31 @@ const deathOverlay = new DeathOverlay();
 const clientRecorder = new ClientRecorder({ windowSeconds: 12, tickHz: 60 });
 // Encoding and deflate run in a worker: saving a clip must never drop a frame.
 const replayCodec = new ReplayCodec();
+
+// --- theatre ---------------------------------------------------------------
+// The replay viewer. It is an OVERLAY rather than a game state: the match
+// underneath keeps running (the server does not stop for one spectator), and
+// closing the theatre puts the player straight back where they were.
+const theatrePlayer = new ClipPlayer();
+const freeCamera = new FreeCameraRig();
+let theatreOpen = false;
+/** Last anti-clip result, so a test can prove the solver actually ran. */
+let theatreSolve: { method: string; deviation: number } | null = null;
+let theatreFollowId: string | null = null;
+let theatreRecorder: MediaRecorder | null = null;
+const theatreChunks: Blob[] = [];
+
+/** Download bytes as a file. The only way out of the tab, so it lives once. */
+const downloadBlob = (blob: Blob, filename: string): void => {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  // Revoking immediately can cancel the download in some browsers; a frame
+  // of delay is enough for the click to have been consumed.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
 const clipPlayer = new ClipPlayer();
 const killcamDirector = new KillcamDirector();
 /** True while the death camera is showing a replay rather than the body. */
@@ -1374,6 +1405,13 @@ const beginDeathPresentation = (death: DeathWire, respawnIn: number): void => {
     },
   });
 
+  // The theatre owns the camera while it is open. Dying behind it must not
+  // yank the view back to the body: the director is reviewing an earlier
+  // moment and the match is simply continuing without them. The death
+  // OVERLAY and the respawn countdown below still run, because those are
+  // suppressed as part of the match HUD rather than fought over here.
+  if (theatreOpen) return;
+
   // Start on the body. The killcam takes over below if there is enough
   // recorded history to build one -- and if there is not (a death in the
   // first second of a match), this IS the presentation, which is why it is
@@ -1403,7 +1441,10 @@ const endDeathPresentation = (pos: Vec3, yaw: number): void => {
   killcamRunning = false;
   clipPlayer.reset();
   killcamDirector.reset();
-  deathCamera.end();
+  // Same ownership rule as the death side: end() cancels the cinematic
+  // camera, which would re-parent the view onto the respawned body and drop
+  // the director back into first person mid-review.
+  if (!theatreOpen) deathCamera.end();
   deathOverlay.hide();
   // Put the body where the server says it is. The server picked this spawn
   // with the full spawn-selection model (enemy sightlines, recent deaths,
@@ -1584,6 +1625,86 @@ engine.registerAlwaysUpdatable({
           });
         }
       }
+    }
+
+    // The theatre owns the camera and the bodies whenever it is open. It is
+    // checked FIRST and returns early from the death-cam branch below,
+    // because two things writing setDesiredTransform in one frame is the
+    // camera bug that cost an afternoon last time.
+    if (theatreOpen) {
+      theatrePlayer.advance(dt);
+      const frame = theatrePlayer.sample();
+      if (frame) {
+        // Drive the SAME renderer the live game uses, so the replay looks
+        // exactly like play rather than like a separate viewer.
+        remotePlayers.setLocalId('');
+        remotePlayers.sync(frame.players, { snap: true, dt });
+        // The local player has TWO bodies while the theatre is up: the live
+        // one the match is still simulating, and the recorded one drawn from
+        // the clip. Hide the live one or they stand inside each other.
+        // Re-applied per frame because the model may still be loading at open.
+        const liveBody = thirdPersonBody.object;
+        if (liveBody) liveBody.visible = false;
+        // Poses the limbs and the walk cycle. The theatre branch returns
+        // before the live update() call below, so without this every body
+        // would stand frozen in an A-pose.
+        remotePlayers.update(dt);
+
+        // Free camera unless a subject is selected.
+        freeCamera.update(dt);
+        let shot = freeCamera.isEnabled ? freeCamera.composition() : null;
+
+        if (!shot && theatreFollowId) {
+          const subject = frame.players.find((p) => p.id === theatreFollowId);
+          if (subject) {
+            // Derive the subject's motion from the recording itself: the
+            // framing solver pulls back and raises for a sprinter, and with a
+            // hardcoded speed of zero it could never do either.
+            const velocity = theatrePlayer.velocityOf(subject.id) ?? [0, 0, 0];
+            const planar = Math.hypot(velocity[0], velocity[2]);
+            const framed = frameSubject({
+              position: new THREE.Vector3(...subject.pos),
+              speed: planar,
+              // Below a walking shuffle the travel direction is just noise,
+              // and letting it pick the camera side would spin the shot while
+              // the subject stands still.
+              heading: planar > 0.6 ? Math.atan2(-velocity[0], velocity[2]) : null,
+              facing: subject.yaw,
+            });
+            // Only the follow camera is anti-clipped: the free camera is
+            // meant to go through walls, and "correcting" a director who
+            // deliberately flew inside one would be maddening.
+            const solved = solveCameraPosition(rayProbeFrom(physics), {
+              desired: framed.position,
+              target: framed.lookAt,
+            });
+            theatreSolve = { method: solved.method, deviation: solved.deviation };
+            shot = { position: solved.position, lookAt: framed.lookAt };
+          }
+        }
+
+        if (shot) {
+          cinematicCamera.setDesiredTransform(shot.position, shot.lookAt, {
+            fov: 62,
+            // The free camera must feel direct, so no smoothing; a follow
+            // shot glides.
+            followSmoothing: freeCamera.isEnabled ? 1 : 0.2,
+          });
+        }
+
+        theatreScreen.update({
+          playing: theatrePlayer.isPlaying,
+          speed: theatrePlayer.speed,
+          position: theatrePlayer.position,
+          duration: theatrePlayer.duration,
+          progress: theatrePlayer.progress,
+          players: frame.players.map((p) => ({ id: p.id, name: p.name, alive: p.alive })),
+          followId: freeCamera.isEnabled ? null : theatreFollowId,
+          recording: theatreRecorder?.state === 'recording',
+        });
+      }
+      killfeed.update(dt);
+      return;
     }
 
     // Only ONE of the two may drive the camera. The death cam runs the body
@@ -1911,6 +2032,156 @@ ui.registerMatchHud(killfeed.element);
 // still rendering the world behind it, and a routed screen would hide the
 // canvas. That distinction is the whole reason death is no longer a screen.
 ui.registerMatchHud(deathOverlay.element);
+
+// --- theatre wiring --------------------------------------------------------
+const theatreScreen = new TheatreScreen({
+  onClose: () => closeTheatre(),
+  onTogglePlay: () => {
+    if (theatrePlayer.isPlaying) theatrePlayer.pause(); else theatrePlayer.play();
+  },
+  onSeekFraction: (fraction) => {
+    theatrePlayer.seekFraction(fraction);
+    // Scrubbing implies looking, not waiting: a scrub that leaves playback
+    // running fights the user's cursor.
+    theatrePlayer.pause();
+  },
+  onSetSpeed: (speed) => { theatrePlayer.speed = speed; },
+  onFollow: (id) => {
+    theatreFollowId = id;
+    freeCamera.setEnabled(id === null);
+  },
+  onSaveClip: () => { void saveTheatreClip(); },
+  onToggleRecord: () => { void toggleTheatreRecording(); },
+});
+ui.registerPersistent(theatreScreen.element);
+
+/**
+ * Open the viewer on everything the client currently has recorded.
+ *
+ * The match keeps running underneath -- the server does not stop for one
+ * spectator, which is the same rule that governs pausing.
+ */
+const openTheatre = (): void => {
+  const recorder = clientRecorder.recorder;
+  const frames = recorder.window(recorder.oldestTick, recorder.newestTick);
+  if (frames.length < 2) return;
+
+  theatrePlayer.load(frames);
+  theatrePlayer.play();
+  theatreOpen = true;
+  theatreFollowId = null;
+  freeCamera.attach(canvas);
+  freeCamera.setEnabled(true);
+  freeCamera.onCycleTarget = () => {
+    const present = theatrePlayer.sample()?.players ?? [];
+    if (!present.length) return;
+    const index = present.findIndex((p) => p.id === theatreFollowId);
+    const next = present[(index + 1) % present.length];
+    theatreFollowId = next.id;
+    freeCamera.setEnabled(false);
+  };
+
+  // Drop the free camera above the action so the first frame is not the
+  // inside of a wall.
+  const first = theatrePlayer.sample();
+  const focus = first?.players[0];
+  if (focus) {
+    const at = new THREE.Vector3(...focus.pos);
+    freeCamera.placeAt(at.clone().add(new THREE.Vector3(0, 9, 12)), at);
+    freeCamera.markHome();
+  }
+
+  theatreScreen.setEvents(
+    clientRecorder.events.slice(recorder.oldestTick, recorder.newestTick),
+    frames[0].tick,
+    frames[frames.length - 1].tick,
+  );
+  theatreScreen.onShow();
+  cinematicCamera.beginManual();
+  // Document I §6.5 seam: without this PlayerCamera keeps writing the living
+  // player's eye pose onto the same THREE camera every frame and the theatre
+  // shot never survives to the render -- the exact failure the missile cam
+  // hit. Taking the context is also what stops WASD walking the live body
+  // around while the director flies.
+  inputContexts.push('cinematic');
+  inputRelay?.setEnabled(false);
+  // The live HUD reports the PRESENT; the theatre shows the past. Leaving the
+  // killfeed, respawn timer and ammo counter up would caption a replay with
+  // numbers from a different moment.
+  ui.setMatchHudSuppressed(true);
+  document.exitPointerLock?.();
+};
+
+const closeTheatre = (): void => {
+  if (!theatreOpen) return;
+  theatreOpen = false;
+  if (theatreRecorder?.state === 'recording') theatreRecorder.stop();
+  theatrePlayer.reset();
+  freeCamera.setEnabled(false);
+  freeCamera.detach();
+  theatreScreen.onHide();
+  cinematicCamera.cancel();
+  inputContexts.pop('cinematic');
+  ui.setMatchHudSuppressed(false);
+  const liveBody = thirdPersonBody.object;
+  if (liveBody) liveBody.visible = true;
+  remotePlayers.setLocalId(session?.client.id ?? '');
+  if (!awaitingRespawn) inputRelay?.setEnabled(true);
+  if (gameStateManager.is(GameState.PLAYING)) {
+    engine.inputManager.requestPointerLock(canvas);
+  }
+};
+
+/** Encode the loaded clip and hand it to the browser as a file. */
+const saveTheatreClip = async (): Promise<void> => {
+  const recorder = clientRecorder.recorder;
+  const frames = recorder.window(recorder.oldestTick, recorder.newestTick);
+  if (!frames.length) return;
+  const encoded = await replayCodec.encode(frames, true);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  downloadBlob(
+    new Blob([encoded.bytes as BlobPart], { type: 'application/octet-stream' }),
+    `operator-${stamp}.opre${encoded.compressed ? '.z' : ''}`,
+  );
+};
+
+/**
+ * Record the viewport to a webm.
+ *
+ * Optional by design: MediaRecorder and canvas.captureStream are not
+ * everywhere, and a missing video export must not take the rest of the
+ * theatre down with it.
+ */
+const toggleTheatreRecording = async (): Promise<void> => {
+  if (theatreRecorder?.state === 'recording') {
+    theatreRecorder.stop();
+    return;
+  }
+  const capturable = canvas as HTMLCanvasElement & {
+    captureStream?: (fps?: number) => MediaStream;
+  };
+  if (typeof capturable.captureStream !== 'function'
+    || typeof MediaRecorder === 'undefined') return;
+
+  try {
+    const stream = capturable.captureStream(60);
+    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+    theatreChunks.length = 0;
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) theatreChunks.push(event.data);
+    };
+    recorder.onstop = () => {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      downloadBlob(new Blob(theatreChunks, { type: 'video/webm' }), `operator-${stamp}.webm`);
+      theatreRecorder = null;
+    };
+    recorder.start();
+    theatreRecorder = recorder;
+  } catch {
+    theatreRecorder = null;
+  }
+};
+
 equipmentHUD.setKeyLabel(
   prettyKey(engine.inputManager.getBindings().throwTactical),
 );
@@ -1924,7 +2195,23 @@ eventBus.on('game:stateChanged', (p) => {
 });
 
 // --- pause / resume --------------------------------------------------------
+// F2 opens the theatre. Deliberately NOT a rebindable game action: the free
+// camera owns raw keys while it is up, and a binding reachable during play
+// would let a player fly out of their own body mid-match.
 window.addEventListener('keydown', (e) => {
+  if (e.code !== 'F2') return;
+  e.preventDefault();
+  if (theatreOpen) closeTheatre(); else openTheatre();
+});
+
+window.addEventListener('keydown', (e) => {
+  // Escape closes the theatre before it reaches the pause menu, so one press
+  // does one thing.
+  if (e.code === engine.inputManager.getBindings().pause && theatreOpen) {
+    closeTheatre();
+    e.stopImmediatePropagation();
+    return;
+  }
   if (e.code !== engine.inputManager.getBindings().pause) return;
   const state = gameStateManager.getState();
   if (state === GameState.PLAYING) {
@@ -1967,6 +2254,10 @@ eventBus.on('input:pointerlock:lost', () => {
   // the death cam and, worse, read as the match being interrupted by the
   // player rather than by the bullet.
   if (awaitingRespawn) return;
+  // The theatre releases the mouse deliberately so the director can click the
+  // timeline and drag to look. That is a takeover, not the player walking
+  // away from the keyboard.
+  if (theatreOpen) return;
   if (gameStateManager.getState() === GameState.PLAYING) {
     session?.client.requestPause(true);
     gameStateManager.setState(GameState.PAUSED);
@@ -2043,6 +2334,15 @@ interface OperatorTestHook {
   clipPlayer: typeof clipPlayer;
   killcamDirector: typeof killcamDirector;
   replayCodec: typeof replayCodec;
+  theatre: {
+    open: () => void;
+    close: () => void;
+    saveClip: () => Promise<void>;
+    player: typeof theatrePlayer;
+    freeCamera: typeof freeCamera;
+    screen: typeof theatreScreen;
+    state: () => Record<string, unknown>;
+  };
   /** Everything a test needs to prove a killcam ran, in one object. */
   killcamState: () => {
     running: boolean; recordedFrames: number; clipFrames: number;
@@ -2172,6 +2472,27 @@ interface OperatorTestHook {
   clipPlayer,
   killcamDirector,
   replayCodec,
+  theatre: {
+    open: () => openTheatre(),
+    close: () => closeTheatre(),
+    saveClip: () => saveTheatreClip(),
+    player: theatrePlayer,
+    freeCamera,
+    screen: theatreScreen,
+    state: () => ({
+      open: theatreOpen,
+      playing: theatrePlayer.isPlaying,
+      speed: theatrePlayer.speed,
+      position: theatrePlayer.position,
+      duration: theatrePlayer.duration,
+      frames: theatrePlayer.frameCount,
+      followId: freeCamera.isEnabled ? null : theatreFollowId,
+      freeCamera: freeCamera.isEnabled,
+      solve: theatreSolve,
+      markers: theatreScreen.element.querySelectorAll('.theatre__marker').length,
+      rosterRows: theatreScreen.element.querySelectorAll('.theatre__roster-row').length,
+    }),
+  },
   killcamState: () => ({
     running: killcamRunning,
     recordedFrames: clientRecorder.frameCount,

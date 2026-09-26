@@ -119,6 +119,8 @@ export { KillcamDirector } from '${src('src/replay/KillcamDirector.ts')}';
 export {
   frameSubject, framePair, frameFirstPerson,
 } from '${src('src/replay/FollowCameraRig.ts')}';
+export { solveCameraPosition, rayProbeFrom } from '${src('src/replay/AntiClipSolver.ts')}';
+export * as THREE from '${src('node_modules/three/build/three.module.js')}';
 `;
   const dir = mkdtempSync(path.join(tmpdir(), 'replaybundle-'));
   const entryFile = path.join(dir, 'entry.ts');

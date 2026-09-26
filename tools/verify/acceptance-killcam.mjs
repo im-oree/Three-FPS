@@ -311,7 +311,226 @@ try {
       `${result.decodedFrames} frames back`);
   }
 
-  console.log('\n[8] No errors along the way');
+  // --- [8] the theatre ------------------------------------------------------
+  // The viewer is a THIN SHELL: it reads playback state and writes intent.
+  // These checks drive it the way a director would -- open it, scrub it,
+  // click a marker, follow someone, fly -- and assert on the camera and the
+  // playhead rather than on the DOM alone, because a timeline that moves a
+  // div without moving the camera is not a replay viewer.
+  console.log('\n[8] The theatre');
+  {
+    const opened = await page.evaluate(async () => {
+      const hook = window.__OPERATOR__;
+      hook.theatre.open();
+      // The roster is populated from the first rendered frame, not from
+      // open(): the cast is whatever the clip shows at the playhead, so
+      // there is nothing to list until a frame has been sampled.
+      for (let i = 0; i < 10; i += 1) await new Promise((r) => requestAnimationFrame(r));
+      return hook.theatre.state();
+    });
+    check('the theatre opens with a loaded clip', opened.open === true
+      && opened.frames > 2 && opened.duration > 1,
+      `${opened.frames} frames, ${opened.duration.toFixed(1)}s`);
+    check('it lists the cast from the recorded frame', opened.rosterRows > 1,
+      `${opened.rosterRows} rows`);
+    check('it starts on the free camera', opened.freeCamera === true
+      && opened.followId === null);
+
+    // The live HUD reports the present; the theatre shows the past. Both on
+    // screen at once would caption a replay with the wrong numbers.
+    const hudHidden = await page.evaluate(() => {
+      const nodes = Array.from(document.querySelectorAll('.hud--offmatch'));
+      const killfeed = document.querySelector('.killfeed');
+      return {
+        suppressed: nodes.length,
+        killfeedHidden: !killfeed
+          || killfeed.classList.contains('hud--offmatch')
+          || getComputedStyle(killfeed).display === 'none',
+      };
+    });
+    check('the live match HUD is suppressed behind it', hudHidden.suppressed > 0
+      && hudHidden.killfeedHidden, `${hudHidden.suppressed} elements hidden`);
+
+    // Scrub stress: the spec asks for this explicitly. Jumping the playhead
+    // hundreds of times must not throw, must not leave the cursor out of
+    // range, and must not strand the camera at a stale position.
+    const scrub = await page.evaluate(async () => {
+      const hook = window.__OPERATOR__;
+      const player = hook.theatre.player;
+      const seen = [];
+      let threw = null;
+      try {
+        for (let i = 0; i < 400; i += 1) {
+          player.seekFraction((i * 0.017) % 1);
+          const frame = player.sample();
+          if (!frame) { threw = 'null frame'; break; }
+          seen.push(player.position);
+        }
+      } catch (error) { threw = String(error); }
+      return {
+        threw,
+        min: Math.min(...seen),
+        max: Math.max(...seen),
+        duration: player.duration,
+        distinct: new Set(seen.map((v) => v.toFixed(3))).size,
+      };
+    });
+    check('400 random seeks never throw', scrub.threw === null, scrub.threw ?? 'clean');
+    check('...and the playhead stays inside the clip',
+      scrub.min >= 0 && scrub.max <= scrub.duration + 1e-6,
+      `${scrub.min.toFixed(2)}..${scrub.max.toFixed(2)} of ${scrub.duration.toFixed(2)}s`);
+    check('...and actually moved', scrub.distinct > 50,
+      `${scrub.distinct} distinct positions`);
+
+    // Speed control across the spec's full 0.25x-4x range.
+    const speeds = await page.evaluate(() => {
+      const hook = window.__OPERATOR__;
+      const out = [];
+      for (const s of [0.25, 0.5, 1, 2, 4]) {
+        hook.theatre.player.speed = s;
+        out.push(hook.theatre.player.speed);
+      }
+      return out;
+    });
+    check('every offered speed from 0.25x to 4x is accepted',
+      speeds.join(',') === '0.25,0.5,1,2,4', speeds.join(', '));
+
+    // A marker is a seek. Markers come from the EVENT LOG, so this also
+    // proves the timeline is driven by recorded events rather than a
+    // hand-maintained list.
+    const marker = await page.evaluate(async () => {
+      const hook = window.__OPERATOR__;
+      const markers = Array.from(document.querySelectorAll('.theatre__marker'));
+      if (!markers.length) return { markers: 0 };
+      hook.theatre.player.seekFraction(0.999);
+      const before = hook.theatre.player.position;
+      markers[0].dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      await new Promise((r) => requestAnimationFrame(r));
+      return { markers: markers.length, before, after: hook.theatre.player.position };
+    });
+    check('the timeline carries markers built from the event log',
+      marker.markers > 0, `${marker.markers} markers`);
+    if (marker.markers > 0) {
+      check('...and clicking one seeks the playhead to it',
+        Math.abs(marker.after - marker.before) > 0.05,
+        `${marker.before.toFixed(2)}s -> ${marker.after.toFixed(2)}s`);
+    }
+
+    // Following an entity. The camera must end up BEHIND and ABOVE the
+    // subject -- the framing solver's job -- not inside its head.
+    const follow = await page.evaluate(async () => {
+      const hook = window.__OPERATOR__;
+      const frame = hook.theatre.player.sample();
+      const subject = frame.players.find((p) => p.alive) ?? frame.players[0];
+      const rows = Array.from(document.querySelectorAll('.theatre__roster-row'));
+      const row = rows.find((r) => r.textContent.trim() === subject.name);
+      if (row) row.click();
+      hook.theatre.player.pause();
+      // Let the shot glide in; the follow camera eases rather than snapping.
+      for (let i = 0; i < 150; i += 1) await new Promise((r) => requestAnimationFrame(r));
+      const now = hook.theatre.player.sample().players.find((p) => p.id === subject.id)
+        ?? subject;
+      const camera = hook.engine.sceneManager.getCamera();
+      return {
+        state: hook.theatre.state(),
+        height: camera.position.y - now.pos[1],
+        planar: Math.hypot(camera.position.x - now.pos[0], camera.position.z - now.pos[2]),
+      };
+    });
+    check('clicking a player follows them', follow.state.followId !== null
+      && follow.state.freeCamera === false, `following ${follow.state.followId}`);
+    check('...from behind and above, not inside their head',
+      follow.planar > 1.5 && follow.height > 0.8,
+      `${follow.planar.toFixed(2)} m back, ${follow.height.toFixed(2)} m up`);
+    check('...and the anti-clip solver vetted the position',
+      follow.state.solve !== null
+      && ['clear', 'pulled-back', 'reangled', 'fallback'].includes(follow.state.solve.method),
+      follow.state.solve ? follow.state.solve.method : 'never ran');
+
+    // The camera follows an ENTITY ID and knows nothing about what it is
+    // following, so cycling to the next subject is a pure id swap.
+    const cycled = await page.evaluate(async () => {
+      const hook = window.__OPERATOR__;
+      const before = hook.theatre.state().followId;
+      hook.theatre.freeCamera.onCycleTarget();
+      await new Promise((r) => requestAnimationFrame(r));
+      return { before, after: hook.theatre.state().followId };
+    });
+    check('cycling moves to a different subject',
+      cycled.after !== null && cycled.after !== cycled.before,
+      `${cycled.before} -> ${cycled.after}`);
+
+    // Free flight. Driven through the rig's own key handling, so this tests
+    // the real input path rather than a private setter.
+    const flew = await page.evaluate(async () => {
+      const hook = window.__OPERATOR__;
+      const rig = hook.theatre.freeCamera;
+      const rows = Array.from(document.querySelectorAll('.theatre__roster-row'));
+      rows[0].click(); // "Free camera"
+      const camera = hook.engine.sceneManager.getCamera();
+      const from = camera.position.clone();
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW' }));
+      for (let i = 0; i < 60; i += 1) await new Promise((r) => requestAnimationFrame(r));
+      window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyW' }));
+      await new Promise((r) => requestAnimationFrame(r));
+      return {
+        moved: camera.position.distanceTo(from),
+        enabled: rig.isEnabled,
+        freeCamera: hook.theatre.state().freeCamera,
+      };
+    });
+    check('selecting Free camera hands control back to the rig',
+      flew.enabled === true && flew.freeCamera === true);
+    check('...and W flies it through the scene', flew.moved > 0.5,
+      `${flew.moved.toFixed(2)} m travelled`);
+
+    // Playback does ZERO physics and ZERO AI -- it is decode plus
+    // interpolate. If the theatre were stepping the simulation, pausing it
+    // would still leave bodies drifting.
+    const frozen = await page.evaluate(async () => {
+      const hook = window.__OPERATOR__;
+      hook.theatre.player.pause();
+      const at = () => hook.theatre.player.sample().players
+        .map((p) => p.pos.join(',')).join('|');
+      const before = at();
+      for (let i = 0; i < 40; i += 1) await new Promise((r) => requestAnimationFrame(r));
+      return { same: before === at(), playing: hook.theatre.player.isPlaying };
+    });
+    check('paused playback advances nothing -- no physics, no AI',
+      frozen.same === true && frozen.playing === false);
+
+    // Save Clip must produce real, decodable bytes.
+    const saved = await page.evaluate(async () => {
+      const hook = window.__OPERATOR__;
+      const recorder = hook.clientRecorder.recorder;
+      const frames = recorder.window(recorder.oldestTick, recorder.newestTick);
+      const encoded = await hook.replayCodec.encode(frames, true);
+      const back = await hook.replayCodec.decode(encoded.bytes, encoded.compressed);
+      return { bytes: encoded.bytes.byteLength, frames: frames.length, back: back.length };
+    });
+    check('Save Clip produces bytes that decode back to the same frames',
+      saved.bytes > 0 && saved.back === saved.frames,
+      `${(saved.bytes / 1024).toFixed(1)} KB, ${saved.back} frames`);
+
+    // Closing must hand everything back: HUD, camera, input context.
+    const closed = await page.evaluate(async () => {
+      const hook = window.__OPERATOR__;
+      hook.theatre.close();
+      for (let i = 0; i < 30; i += 1) await new Promise((r) => requestAnimationFrame(r));
+      return {
+        open: hook.theatre.state().open,
+        context: hook.inputContexts.current(),
+        hidden: document.querySelectorAll('.hud--offmatch').length,
+        screenVisible: getComputedStyle(hook.theatre.screen.element).display !== 'none',
+      };
+    });
+    check('closing releases the camera and the input context',
+      closed.open === false && closed.context === 'gameplay', closed.context);
+    check('...and gives the match HUD back', closed.hidden === 0
+      && closed.screenVisible === false, `${closed.hidden} still hidden`);
+  }
+
+  console.log('\n[9] No errors along the way');
   check('the page raised no errors', pageErrors.length === 0,
     pageErrors[0] ?? 'clean');
 } finally {

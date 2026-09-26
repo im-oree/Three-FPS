@@ -231,6 +231,55 @@ export class ClipPlayer {
     return { tick: a.tick, time: target, players, entities };
   }
 
+  /**
+   * How fast something is moving at the cursor, in m/s, derived.
+   *
+   * Player states carry no velocity on the wire, and the recorder is
+   * forbidden from inventing a field the netcode never sent -- so a camera
+   * that wants to frame a sprinter differently from someone standing still
+   * has to difference two recorded positions. Deriving it here rather than in
+   * the camera keeps that arithmetic in one place, and means the value
+   * improves for free whenever the recording rate does.
+   *
+   * Returns null when the subject is not present, so a caller can tell
+   * "absent" from "stationary".
+   */
+  velocityOf(id: string, window = 0.16): Vec3 | null {
+    if (this.frames.length < 2) return null;
+    const at = (frame: RecordedFrame): Vec3 | null => {
+      const player = frame.players.find((p) => p.id === id);
+      if (player) return player.pos;
+      const entity = frame.snapshot.entities.find((e) => e.id === id);
+      return entity ? entity.pos : null;
+    };
+
+    const target = this.frames[0].time + this.cursor;
+    const laterIndex = Math.min(this.indexBefore(target) + 1, this.frames.length - 1);
+    const later = this.frames[laterIndex];
+    const now = at(later);
+    if (!now) return null;
+
+    // Walk back far enough to span the window. One frame apart at 60 Hz is
+    // 1.6 cm of travel for a walking player -- quantisation noise would
+    // dominate and the camera would jitter between framings.
+    let earlierIndex = laterIndex;
+    while (earlierIndex > 0 && later.time - this.frames[earlierIndex].time < window) {
+      earlierIndex -= 1;
+    }
+    const earlier = this.frames[earlierIndex];
+    const then = at(earlier);
+    const span = later.time - earlier.time;
+    if (!then || span <= 1e-6) return [0, 0, 0];
+
+    // A respawn is not a 90 m/s sprint. Same threshold the interpolator uses
+    // to cut rather than blend.
+    const dx = now[0] - then[0];
+    const dy = now[1] - then[1];
+    const dz = now[2] - then[2];
+    if (dx * dx + dy * dy + dz * dz > TELEPORT_SQ) return [0, 0, 0];
+    return [dx / span, dy / span, dz / span];
+  }
+
   /** Where something is at the cursor, players first then entities. */
   positionOf(id: string): Vec3 | null {
     const frame = this.sample();

@@ -29,6 +29,8 @@ export class UIManager {
   /** Screens that render ON TOP of the routed screen (pause > settings). */
   private readonly overlays: string[] = [];
   private activeName: string | null = null;
+  /** Set while a full-screen takeover (the theatre) owns the viewport. */
+  private matchHudSuppressed = false;
 
   constructor(rootId = 'ui-root') {
     const root = document.getElementById(rootId);
@@ -65,12 +67,28 @@ export class UIManager {
     this.applyMatchHudVisibility(gameStateManager.getState());
   }
 
+  /**
+   * Hide the match HUD without leaving the match.
+   *
+   * The theatre renders the SAME scene the match is rendering, so the live
+   * HUD -- killfeed, respawn counter, minimap, ammo -- would otherwise sit on
+   * top of a replay of a different moment, reporting the present over the
+   * past. This is a takeover, not a state change: the match keeps running and
+   * everything reappears untouched on close.
+   */
+  setMatchHudSuppressed(suppressed: boolean): void {
+    if (this.matchHudSuppressed === suppressed) return;
+    this.matchHudSuppressed = suppressed;
+    this.applyMatchHudVisibility(gameStateManager.getState());
+  }
+
   /** States during which the in-match HUD is allowed on screen. */
   private applyMatchHudVisibility(state: GameStateValue): void {
     // PAUSED counts: the pause menu sits OVER the match, and COD keeps the
     // HUD visible behind it. Everything else (menus, loading, debrief) is
     // outside the match.
-    const inMatch = state === GameState.PLAYING || state === GameState.PAUSED;
+    const inMatch =
+      (state === GameState.PLAYING || state === GameState.PAUSED) && !this.matchHudSuppressed;
     for (const element of this.matchHud) {
       element.classList.toggle('hud--offmatch', !inMatch);
     }

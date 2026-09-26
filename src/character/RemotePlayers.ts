@@ -39,6 +39,17 @@ import { LAYER } from '../core/RenderLayers';
 import { PERSPECTIVE } from '../utils/Constants';
 
 /** How fast a body eases toward the server's position (fraction per second). */
+/** Per-call overrides for `sync`. */
+export interface SyncOptions {
+  /**
+   * Take the given positions as final rather than interpolating toward them.
+   * For sources that have already done their own interpolation.
+   */
+  readonly snap?: boolean;
+  /** Seconds since the previous sync, when it is not the snapshot cadence. */
+  readonly dt?: number;
+}
+
 const POSITION_LERP = 14;
 /** How fast a body eases toward the server's facing. */
 const YAW_LERP = 12;
@@ -113,7 +124,7 @@ export class RemotePlayers {
    * Called on every `playerStates` message. Players who left are disposed,
    * new ones are created, and the rest have their targets updated.
    */
-  sync(states: readonly PlayerPublicState[]): void {
+  sync(states: readonly PlayerPublicState[], options?: SyncOptions): void {
     void this.ensureTemplate();
     const seen = new Set<string>();
 
@@ -141,10 +152,24 @@ export class RemotePlayers {
       // Speed drives the walk cycle. Derived from how far the SERVER moved
       // them between snapshots, so the legs match the actual travel rather
       // than a guess from input the client cannot see.
-      body.speed = Math.hypot(dx, dz) * 12;
+      // Speed drives the walk cycle. `* 12` is the live snapshot cadence; a
+      // caller that ticks this at a different rate (replay playback runs at
+      // the frame rate) must say so, or the legs read as a slow shuffle.
+      body.speed = options?.dt && options.dt > 1e-6
+        ? Math.hypot(dx, dz) / options.dt
+        : Math.hypot(dx, dz) * 12;
       body.target.set(x, y, z);
       body.targetYaw = state.yaw;
       body.pitch = state.pitch;
+
+      // Replay states are ALREADY interpolated by the clip player, so
+      // smoothing them again would draw every body lagging behind the
+      // position the director's camera is framing -- and would smear them
+      // across the level on a scrub.
+      if (options?.snap) {
+        body.current.copy(body.target);
+        body.currentYaw = body.targetYaw;
+      }
 
       if (body.alive !== state.alive) {
         body.alive = state.alive;

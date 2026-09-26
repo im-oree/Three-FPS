@@ -1817,3 +1817,172 @@ input[type='checkbox'] { pointer-events: auto; width: 17px; height: 17px; accent
 /* The action button's label changes length (START MATCH / HOST MATCH); keep
    it on one line so the footer does not reflow when VISIBILITY is toggled. */
 .custom__foot .btn { white-space: nowrap; }
+
+/* ---------- theatre (replay viewer) --------------------------------------- */
+/* The viewport stays visible behind everything here: the replay IS the
+   screen, so the shell is edge-anchored bars rather than a centred panel. */
+.theatre {
+  display: none;
+  pointer-events: none;
+}
+.theatre--open { display: block; }
+
+.theatre__bar {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: linear-gradient(rgba(6, 8, 11, 0.9), rgba(6, 8, 11, 0));
+  pointer-events: auto;
+}
+.theatre__title {
+  font-size: 14px;
+  letter-spacing: 3px;
+  font-weight: 700;
+  color: var(--ui-accent);
+}
+.theatre__spacer { flex: 1; }
+
+.theatre__btn {
+  pointer-events: auto;
+  background: rgba(16, 19, 25, 0.88);
+  border: 1px solid var(--ui-line);
+  color: var(--ui-text);
+  font-family: var(--ui-font);
+  font-size: 12px;
+  letter-spacing: 1px;
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.theatre__btn:hover { background: var(--ui-accent-dim); border-color: var(--ui-accent); }
+.theatre__btn--ghost { opacity: 0.75; }
+.theatre__btn--play { min-width: 46px; font-size: 14px; }
+.theatre__btn--recording {
+  border-color: var(--ui-danger);
+  color: var(--ui-danger);
+  animation: theatre-pulse 1.2s ease-in-out infinite;
+}
+@keyframes theatre-pulse { 50% { opacity: 0.45; } }
+
+.theatre__panel--roster {
+  position: absolute;
+  top: 58px; left: 16px;
+  width: 190px;
+  max-height: 58vh;
+  overflow-y: auto;
+  background: var(--ui-panel);
+  border: 1px solid var(--ui-line);
+  padding: 8px;
+  pointer-events: auto;
+}
+.theatre__panel-title {
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--ui-dim);
+  margin-bottom: 6px;
+}
+.theatre__roster-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-left: 2px solid transparent;
+  color: var(--ui-text);
+  font-family: var(--ui-font);
+  font-size: 12px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+.theatre__roster-row:hover { background: rgba(255, 255, 255, 0.06); }
+.theatre__roster-row--on {
+  border-left-color: var(--ui-accent);
+  background: var(--ui-accent-dim);
+  color: var(--ui-accent);
+}
+/* A dead player is dimmed, not hidden: watching a body is a valid shot. */
+.theatre__roster-row--dead { opacity: 0.45; }
+.theatre__empty { font-size: 11px; color: var(--ui-dim); padding: 6px 8px; }
+
+.theatre__transport {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px 18px;
+  background: linear-gradient(rgba(6, 8, 11, 0), rgba(6, 8, 11, 0.92));
+  pointer-events: auto;
+}
+
+.theatre__scrub {
+  position: relative;
+  flex: 1;
+  height: 26px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--ui-line);
+  cursor: pointer;
+}
+.theatre__markers { position: absolute; inset: 0; }
+.theatre__marker {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--ui-dim);
+}
+.theatre__marker:hover { width: 4px; margin-left: -2px; }
+.theatre__marker--kill { background: var(--ui-danger); }
+.theatre__marker--damage { background: rgba(240, 160, 75, 0.5); top: 60%; }
+.theatre__marker--other { background: var(--ui-good); top: 40%; }
+
+.theatre__playhead {
+  position: absolute;
+  top: -3px; bottom: -3px;
+  width: 2px;
+  margin-left: -1px;
+  background: #fff;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.8);
+  pointer-events: none;
+}
+
+.theatre__time {
+  font-family: var(--ui-mono);
+  font-size: 12px;
+  color: var(--ui-dim);
+  min-width: 132px;
+  text-align: center;
+}
+
+.theatre__speeds { display: flex; gap: 4px; }
+.theatre__speed {
+  pointer-events: auto;
+  background: rgba(16, 19, 25, 0.88);
+  border: 1px solid var(--ui-line);
+  color: var(--ui-dim);
+  font-family: var(--ui-mono);
+  font-size: 11px;
+  padding: 6px 9px;
+  cursor: pointer;
+}
+.theatre__speed--on {
+  border-color: var(--ui-accent);
+  color: var(--ui-accent);
+  background: var(--ui-accent-dim);
+}
+
+.theatre__hint {
+  position: absolute;
+  left: 50%;
+  bottom: 62px;
+  transform: translateX(-50%);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: var(--ui-dim);
+  opacity: 0.6;
+  white-space: nowrap;
+  pointer-events: none;
+}
